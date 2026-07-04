@@ -20,6 +20,7 @@ import { PROVIDER_DEFAULTS } from "@dissertator/shared";
 import { LibraryPanel } from "./components/LibraryPanel";
 import { CenterPane } from "./components/CenterPane";
 import { ChatPanel } from "./components/ChatPanel";
+import type { ChatPanelHandle } from "./components/ChatPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
 import type { Tab } from "./lib/tabs";
 import { kindForSource } from "./lib/tabs";
@@ -173,6 +174,7 @@ export default function App() {
   // fire N back-to-back fetches.
   const esRef = useRef<EventSource | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const chatPanelRef = useRef<ChatPanelHandle>(null);
 
   useEffect(() => {
     const initialized = !!project?.initialized;
@@ -251,6 +253,9 @@ export default function App() {
       const doc = await api.createDocument({ title: trimmed });
       await refreshDocuments();
       openDocument(doc);
+      // Kick off a fresh chat seeded with the New Document planning prompt
+      // so the user can talk through structure with the agent.
+      void chatPanelRef.current?.startNewDocumentChat();
     } catch (e) {
       setError((e as Error)?.message ?? String(e));
     } finally {
@@ -325,6 +330,7 @@ export default function App() {
           onNewDocument={handleNewDocument}
         />
         <ChatPanel
+          ref={chatPanelRef}
           health={health}
           configured={configured}
           apiKey={apiKey}

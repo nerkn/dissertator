@@ -16,7 +16,15 @@
 // Quick-fire prompt buttons come from the per-project `Dissertator/prompts.md`
 // file; clicking one drops its text into the composer for review/send.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useEffect,
+  useImperativeHandle,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   PaperPlaneTilt,
   Plus,
@@ -37,7 +45,25 @@ interface Props {
   sources: SourceFile[];
 }
 
-export function ChatPanel({ health, configured, apiKey, sources }: Props) {
+/**
+ * Imperative API exposed via ref for the parent (App). The New Document
+ * button in App needs to (a) start a fresh chat and (b) prefill that chat's
+ * composer with the "New document" planning prompt — without App knowing any
+ * chat internals or the prompt text. Resolved from the loaded prompts list,
+ * with a built-in fallback if the user removed that prompt from prompts.md.
+ */
+export interface ChatPanelHandle {
+  startNewDocumentChat: () => Promise<void>;
+}
+
+/** Fallback prompt if the user deleted "New document" from prompts.md. */
+const NEW_DOCUMENT_PROMPT_FALLBACK =
+  "I just created a new, empty document. Help me plan its structure. Ask me what kind of manuscript this is (journal article, thesis chapter, literature review, conference paper), my topic, and any structure I already have in mind. Then propose a clear heading outline we can refine before writing.";
+
+export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
+  { health, configured, apiKey, sources },
+  ref
+) {
   // --- chats + active chat -------------------------------------------------
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
@@ -121,6 +147,7 @@ export function ChatPanel({ health, configured, apiKey, sources }: Props) {
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Autoscroll to bottom as the transcript or the live reply grows.
   useEffect(() => {
@@ -192,6 +219,35 @@ export function ChatPanel({ health, configured, apiKey, sources }: Props) {
       setError((e as Error)?.message ?? String(e));
     }
   }, [selectChat]);
+
+  /**
+   * New Document flow (App → ChatPanel): create a fresh chat, switch to it,
+   * and prefill the composer with the "New document" planning prompt. Used by
+   * App's New Document button so the user lands in a chat ready to plan the
+   * doc they just created. The prompt is resolved from the loaded prompts
+   * list (so it tracks user edits to prompts.md); falls back to a constant if
+   * the user deleted that entry.
+   */
+  const startNewDocumentChat = useCallback(async () => {
+    try {
+      const c = await api.createChat();
+      setChats((prev) => [c, ...prev]);
+      selectChat(c.id);
+      const found = prompts.find(
+        (p) => p.label.toLowerCase() === "new document"
+      );
+      setInput(found?.prompt ?? NEW_DOCUMENT_PROMPT_FALLBACK);
+      // Focus after the new-chat re-render enables the textarea.
+      requestAnimationFrame(() => inputRef.current?.focus());
+    } catch (e) {
+      setError((e as Error)?.message ?? String(e));
+    }
+  }, [prompts, selectChat]);
+
+  // Expose the imperative API to the parent (App's New Document button).
+  useImperativeHandle(ref, () => ({ startNewDocumentChat }), [
+    startNewDocumentChat,
+  ]);
 
   const renameChat = useCallback(async () => {
     if (!activeChat) return;
@@ -469,6 +525,7 @@ export function ChatPanel({ health, configured, apiKey, sources }: Props) {
           {/* Composer. */}
           <div className="chat-composer">
             <textarea
+              ref={inputRef}
               className="chat-input"
               placeholder={
                 activeChat ? "Message the agent…  (Enter to send)" : ""
@@ -509,7 +566,7 @@ export function ChatPanel({ health, configured, apiKey, sources }: Props) {
       )}
     </aside>
   );
-}
+});
 
 /** One transcript row. `live` flags the in-flight assistant stream. */
 function MessageBubble({

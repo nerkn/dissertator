@@ -12,7 +12,7 @@
 // sqlite-vec extension). No other test file calls `initProject`, so the
 // module-level `current` project is owned exclusively here.
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -27,6 +27,7 @@ import {
   initProject,
   lockDimensions,
 } from "./db.ts";
+import { parsePrompts } from "./prompts.ts";
 
 let dir: string;
 
@@ -180,4 +181,25 @@ test("getSourceText on an unknown id returns empty filename + text", () => {
   expect(got.filename).toBe("");
   expect(got.text).toBe("");
   expect(got.pageCount).toBe(0);
+});
+
+test("initProject seeds a default prompts.md that parses + is write-once", async () => {
+  // The seeded prompts.md (Dissertator/prompts.md) must exist after init,
+  // parse into a non-empty Prompt[], include the "New document" entry the
+  // New Document button looks for, and NOT be overwritten on re-init.
+  const project = getCurrentProject()!;
+  const promptsPath = join(project.dissertatorDir, "prompts.md");
+  expect(existsSync(promptsPath)).toBe(true);
+
+  const parsed = parsePrompts(readFileSync(promptsPath, "utf8"));
+  expect(parsed.length).toBeGreaterThan(0);
+  expect(parsed.some((p) => p.label.toLowerCase() === "new document")).toBe(
+    true
+  );
+
+  // Write-once: user edits must survive a re-init.
+  writeFileSync(promptsPath, "- **Mine**: custom\n", "utf8");
+  await initProject(dir); // reopen
+  const after = readFileSync(promptsPath, "utf8");
+  expect(after.trim()).toBe("- **Mine**: custom");
 });

@@ -30,6 +30,43 @@ import { generateCitekey } from "./cite/citekey.ts";
 
 const DISS_DIR_NAME = "Dissertator";
 
+/**
+ * Default `prompts.md` content, written once into `Dissertator/prompts.md` on
+ * first project init. User-editable thereafter. Parsed by `prompts.ts` →
+ * `## Category` headings + `- **Label**: prompt` bullets.
+ */
+const DEFAULT_PROMPTS_MD = `# Prompts
+
+Quick-fire prompts for the chat. Edit this file freely — changes apply on the
+next message. Format: a \`## Category\` heading, then one prompt per line as
+\`- **Short label**: the actual prompt text\`.
+
+## Start a new document
+
+- **New document**: I just created a new, empty document. Help me plan its structure. Ask me what kind of manuscript this is (journal article, thesis chapter, literature review, conference paper), my topic, and any structure I already have in mind. Then propose a clear heading outline we can refine before writing.
+
+## Read & synthesize
+
+- **Summarize a source**: Summarize the key arguments of the pinned source in about 200 words.
+- **Compare sources**: Compare how the pinned sources treat the same idea. Where do they agree, where do they differ, and whose evidence is stronger?
+- **Find the gap**: Based on the pinned sources, what gaps, tensions, or open questions could a new paper address?
+- **Trace a concept**: Trace how the concept of [concept] developed across these sources.
+
+## Write
+
+- **Draft a section**: Draft the [section] of my paper using the pinned sources. Use [@citekey] citations and keep it grounded in what the sources actually say.
+- **Improve a paragraph**: Rewrite the selected paragraph to be clearer, more concise, and better signposted, without changing the meaning.
+- **Suggest an outline**: Suggest a three-level outline for a paper on [topic] grounded in these sources.
+- **Sharpen the thesis**: Read my draft and propose three sharper, more arguable versions of the thesis.
+
+## Cite & evidence
+
+- **Find supporting evidence**: Find passages in the sources that support this claim: "[claim]". Quote them with page numbers.
+- **Stress-test a claim**: Which sources push back against this claim, and how strongly?
+- **Check citations**: Scan my draft's main claims and tell me which ones still need a citation or stronger evidence.
+`;
+
+
 interface ProjectState {
   projectPath: string;
   dissertatorDir: string;
@@ -298,6 +335,15 @@ export async function initProject(
       ``,
     ].join("\n");
     await writeFile(tomlPath, toml, "utf8");
+  }
+
+  // prompts.md — written once, not overwritten on reopen. The user can edit
+  // this freely; `GET /prompts` re-parses it each call. Provides sensible
+  // defaults (new-document planner + reading/writing/citation helpers) so the
+  // quick-pick menu is populated out of the box.
+  const promptsPath = join(dissertatorDir, "prompts.md");
+  if (!(await exists(promptsPath))) {
+    await writeFile(promptsPath, DEFAULT_PROMPTS_MD, "utf8");
   }
 
   current = { projectPath, dissertatorDir, dbPath, db, createdAt, vecExtensionOk };
