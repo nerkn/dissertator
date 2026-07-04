@@ -331,6 +331,11 @@ never confuses what it's operating on:
 - `gui_` — **user-facing side-effects** (opens a viewer, asks the human,
   narrates a beat). Distinguished from silent data ops.
 
+> **Full tool reference**: [`docs/tools.md`](docs/tools.md) — per-tool
+> signatures, types, returns, errors, examples, and implementation status.
+> This section is the design rationale + summary table; the operational
+> contract lives in the standalone doc.
+
 | Tool | Purpose |
 |---|---|
 | `corpus_list({text?, author?, title?, vector?, page?})` | query the index → ≤20 hits (ids + short info only; call `doc_read` for depth) |
