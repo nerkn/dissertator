@@ -1,12 +1,21 @@
-import { ArrowsClockwise } from "@phosphor-icons/react";
+import { useEffect, useMemo, useState } from "react";
+import {
+  ArrowsClockwise,
+  CaretDown,
+  CaretRight,
+} from "@phosphor-icons/react";
 import type {
+  Document,
+  EmbeddingStatus,
   OcrStrategy,
   ProjectStatus,
   Provider,
   SourceFile,
   SourcesResponse,
 } from "@dissertator/shared";
+import { api } from "../lib/api";
 import { AttentionPanel } from "./AttentionPanel";
+import { StatusBadge } from "./StatusBadge";
 
 interface Props {
   project: ProjectStatus | null;
@@ -24,6 +33,14 @@ interface Props {
   provider?: Provider;
   ocrStrategy?: OcrStrategy;
   apiKey?: string;
+  /** Open a source in the CenterPane viewer (click-to-open). */
+  onOpen?: (src: SourceFile) => void;
+  /** Manuscript documents for the 🟡 Documents group. */
+  documents?: Document[];
+  /** Create + open a new document. */
+  onNewDocument?: () => void;
+  /** Open an existing document in the editor. */
+  onOpenDocument?: (doc: Document) => void;
 }
 
 const ATTENTION_STATUSES: SourceFile["textStatus"][] = [
@@ -31,6 +48,24 @@ const ATTENTION_STATUSES: SourceFile["textStatus"][] = [
   "pending_vision",
   "failed",
 ];
+
+/** CSS class suffix for a source row's colored dot, by ingest kind.
+ *  Maps to `.source-dot.<suffix>` rules in styles.css. */
+function kindDotClass(kind: string): string {
+  switch (kind) {
+    case "pdf":
+      return "pdf";
+    case "image":
+      return "image";
+    case "text":
+      return "text";
+    case "docx":
+    case "xlsx":
+      return "doc";
+    default:
+      return "other"; // unsupported / unknown → muted
+  }
+}
 
 export function LibraryPanel({
   project,
@@ -41,7 +76,54 @@ export function LibraryPanel({
   provider,
   ocrStrategy,
   apiKey,
+  onOpen,
+  documents,
+  onNewDocument,
+  onOpenDocument,
 }: Props) {
+  // All hooks run BEFORE the early return (rules of hooks): the panel mounts
+  // even on a not-yet-initialized project, so hook order must stay stable.
+  const [query, setQuery] = useState("");
+  const [expanded, setExpanded] = useState(true);
+  const [embed, setEmbed] = useState<EmbeddingStatus | null>(null);
+
+  // Aggregate embedding progress (5s poll). Cheap; drives the one-line
+  // summary in the Sources group header. Per-file embed status isn't exposed
+  // by the sidecar yet, so this is corpus-wide only (see P3 workstream spec).
+  useEffect(() => {
+    if (!project?.initialized) return;
+    let stopped = false;
+    const tick = async (): Promise<void> => {
+      try {
+        const e = await api.embedStatus();
+        if (!stopped) setEmbed(e);
+      } catch {
+        /* sidecar mid-restart; next tick retries */
+      }
+    };
+    void tick();
+    const id = setInterval(tick, 5000);
+    return () => {
+      stopped = true;
+      clearInterval(id);
+    };
+  }, [project?.initialized]);
+
+  // Sorted + filtered source list. Filtering is client-side substring on
+  // filename + relPath (case-insensitive) — semantic search is a separate flow.
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const items = (sources?.items ?? [])
+      .slice()
+      .sort((a, b) => a.filename.localeCompare(b.filename));
+    if (!q) return items;
+    return items.filter(
+      (s) =>
+        s.filename.toLowerCase().includes(q) ||
+        s.relPath.toLowerCase().includes(q),
+    );
+  }, [sources, query]);
+
   if (!project?.initialized) {
     return (
       <aside className="panel lib">
@@ -67,20 +149,49 @@ export function LibraryPanel({
     ATTENTION_STATUSES.includes(i.textStatus),
   );
 
+  // One-line aggregate embedding summary (corpus-wide). Hidden until we have
+  // a status fetch back; degrades to nothing rather than "0/0".
+  const embedLine = (() => {
+    if (!embed) return null;
+    if (!embed.vecLoaded) return "embeddings disabled";
+    if (embed.total > 0) return `${embed.done}/${embed.total} embedded`;
+    return null;
+  })();
+
   return (
     <aside className="panel lib">
       <div className="panel-title">Library</div>
       <div className="search">
-        <input placeholder="🔍 search sources (P3)" disabled />
+        <input
+          placeholder="🔍 search sources…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
       </div>
 
       <div className="group blue">
-        <div className="group-head group-head-row">
-          <span>🔵 Sources</span>
+        <div
+          className="group-head group-head-row sources-head"
+          onClick={() => setExpanded((v) => !v)}
+          role="button"
+          aria-expanded={expanded}
+          title={expanded ? "Collapse" : "Expand"}
+        >
+          <span className="sources-head-title">
+            {expanded ? (
+              <CaretDown size={13} weight="bold" />
+            ) : (
+              <CaretRight size={13} weight="bold" />
+            )}
+            🔵 Sources
+          </span>
           {onRescan && (
             <button
               className="btn ghost tiny-btn"
-              onClick={onRescan}
+              onClick={(e) => {
+                e.stopPropagation();
+                onRescan();
+              }}
               disabled={busy}
               title="Re-scan project root for new/changed files"
             >
@@ -102,12 +213,64 @@ export function LibraryPanel({
             PDFs, DOCX, XLSX, CSV, MD, TXT, images
           </div>
         )}
+        {embedLine && <div className="muted small">{embedLine}</div>}
+
+        {expanded && (
+          <div className="source-tree">
+            {filtered.length === 0 ? (
+              <div className="muted small source-tree-empty">
+                {query ? "No matching sources." : "No sources yet."}
+              </div>
+            ) : (
+              filtered.map((src) => (
+                <div
+                  key={src.id}
+                  className="source-row"
+                  title={src.relPath}
+                  onClick={() => onOpen?.(src)}
+                >
+                  <span
+                    className={`source-dot ${kindDotClass(src.kind)}`}
+                  />
+                  <span className="source-name">{src.filename}</span>
+                  <StatusBadge status={src.textStatus} />
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </div>
 
       <div className="group yellow">
-        <div className="group-head">🟡 Documents</div>
-        <div className="count">{c.documents} drafts</div>
+        <div className="group-head group-head-row">
+          <span>🟡 Documents</span>
+          {onNewDocument && (
+            <button
+              className="btn ghost tiny-btn"
+              onClick={onNewDocument}
+              title="Create a new document"
+            >
+              + New
+            </button>
+          )}
+        </div>
+        <div className="count">{(documents ?? []).length} drafts</div>
         <div className="muted small">Your papers &amp; dissertations</div>
+        {(documents ?? []).length > 0 && (
+          <div className="source-tree">
+            {(documents ?? []).map((d) => (
+              <div
+                key={d.id}
+                className="source-row"
+                title={d.title}
+                onClick={() => onOpenDocument?.(d)}
+              >
+                <span className="source-dot doc" />
+                <span className="source-name">{d.title}</span>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <div className="group purple">

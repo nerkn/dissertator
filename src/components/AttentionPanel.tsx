@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api } from "../lib/api";
-import type { OcrStrategy, Provider, SourceFile, TextStatus } from "@dissertator/shared";
+import type { OcrStrategy, Provider, SourceFile } from "@dissertator/shared";
+import { StatusBadge } from "./StatusBadge";
 
 interface Props {
   items: SourceFile[];
@@ -11,21 +12,6 @@ interface Props {
 }
 
 type Engine = "tesseract" | "vision";
-
-/** Small colored badge for a file's text-status. */
-function StatusBadge({ status }: { status: TextStatus }) {
-  const map: Record<TextStatus, { label: string; cls: string }> = {
-    new: { label: "new", cls: "badge gray" },
-    extracting: { label: "extracting", cls: "badge yellow" },
-    done: { label: "done", cls: "badge green" },
-    needs_ocr: { label: "needs OCR", cls: "badge orange" },
-    ocr_tesseract: { label: "OCR tesseract", cls: "badge yellow" },
-    pending_vision: { label: "pending vision", cls: "badge orange" },
-    failed: { label: "failed", cls: "badge red" },
-  };
-  const m = map[status];
-  return <span className={m.cls}>{m.label}</span>;
-}
 
 export function AttentionPanel({
   items,

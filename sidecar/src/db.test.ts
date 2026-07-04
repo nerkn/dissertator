@@ -19,8 +19,11 @@ import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 
 import {
+  getCurrentProject,
   getEmbeddingStatus,
   getSettings,
+  getSourceById,
+  getSourceText,
   initProject,
   lockDimensions,
 } from "./db.ts";
@@ -95,4 +98,86 @@ test("getEmbeddingStatus reports vecLoaded + zero counts on a fresh project", ()
   expect(st.pending).toBe(0);
   expect(st.done).toBe(0);
   expect(st.failed).toBe(0);
+});
+
+// --- P3 Workstream 2: getSourceById + getSourceText -----------------------
+// These back the sidecar's `/files/:id` and `/sources/:id/text` endpoints.
+// We seed rows directly (the ingest pipeline writes the same shape) and pin:
+//   - getSourceById maps snake_case → camelCase SourceFile, null when unknown;
+//   - getSourceText concatenates chunks page-tagged, in `ord` order, with the
+//     source filename + page_count; empty text (NOT an error) when no chunks.
+const SRC_ID = "src-getsource-tests-todo-md";
+const SRC_NO_CHUNKS_ID = "src-getsource-tests-empty-pdf";
+
+function seedGetSourceRows(): void {
+  const db = getCurrentProject()!.db;
+  // A text source with two chunks across two pages (inserted OUT of `ord`
+  // order to prove the ORDER BY ord ASC matters).
+  db.prepare(
+    `INSERT OR REPLACE INTO source_files
+     (id, rel_path, filename, ext, kind, mime_type, page_count, text_status, added_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(SRC_ID, "notes/todo.md", "todo.md", "md", "text", "text/markdown", 2, "done", 1700000000);
+  db.prepare(
+    `INSERT OR REPLACE INTO chunks (id, source_file_id, ord, physical_page, text)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run("chk-2", SRC_ID, 2, 2, "buy milk");
+  db.prepare(
+    `INSERT OR REPLACE INTO chunks (id, source_file_id, ord, physical_page, text)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run("chk-1", SRC_ID, 1, 1, "wake up");
+  // A second source that exists but has NO chunks (failed/uneextracted).
+  db.prepare(
+    `INSERT OR REPLACE INTO source_files
+     (id, rel_path, filename, ext, kind, page_count, text_status, added_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    SRC_NO_CHUNKS_ID,
+    "broken.pdf",
+    "broken.pdf",
+    "pdf",
+    "pdf",
+    null,
+    "failed",
+    1700000001
+  );
+}
+
+test("getSourceById maps the row to a camelCase SourceFile, null when unknown", () => {
+  seedGetSourceRows();
+  const src = getSourceById(SRC_ID)!;
+  expect(src).not.toBeNull();
+  expect(src.id).toBe(SRC_ID);
+  expect(src.relPath).toBe("notes/todo.md");
+  expect(src.filename).toBe("todo.md");
+  expect(src.kind).toBe("text");
+  expect(src.mimeType).toBe("text/markdown");
+  expect(src.pageCount).toBe(2);
+  expect(src.textStatus).toBe("done");
+  // Unknown id → null (the route turns this into a 404).
+  expect(getSourceById("does-not-exist-id")).toBeNull();
+});
+
+test("getSourceText concatenates chunks page-tagged in `ord` order", () => {
+  const got = getSourceText(SRC_ID);
+  expect(got.filename).toBe("todo.md");
+  expect(got.pageCount).toBe(2);
+  // `ord` 1 chunk (page 1) comes before `ord` 2 (page 2) despite insert order.
+  expect(got.text).toBe("[p.1] wake up\n\n[p.2] buy milk");
+});
+
+test("getSourceText returns empty text (not an error) for a chunkless source", () => {
+  const got = getSourceText(SRC_NO_CHUNKS_ID);
+  expect(got.filename).toBe("broken.pdf");
+  expect(got.text).toBe("");
+  expect(got.pageCount).toBe(0); // page_count was NULL → coerced to 0
+});
+
+test("getSourceText on an unknown id returns empty filename + text", () => {
+  // Mirrors the route's 404 path: getSourceById nulls first, but getSourceText
+  // itself must not throw on a bare unknown id.
+  const got = getSourceText("totally-unknown-id");
+  expect(got.filename).toBe("");
+  expect(got.text).toBe("");
+  expect(got.pageCount).toBe(0);
 });

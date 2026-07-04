@@ -131,10 +131,39 @@ export interface EmbeddingConfig {
 export type OcrStrategy = "tesseract" | "vision" | "skip";
 
 /**
+ * Optional CHAT provider override (P3). All three fields are OPTIONAL: when
+ * `chatProvider` is unset, the chat endpoint falls back to the main
+ * `provider`/`apiUrl`/`model` block (decision #1 — "default provider if not
+ * specified"). When `chatProvider` IS set, empty `chatApiUrl`/`chatModel`
+ * fall back to that provider's `PROVIDER_DEFAULTS`. The API key is NEVER
+ * stored here — it lives in the OS keychain under the resolved provider's
+ * `keyUser` slot.
+ */
+export interface ChatConfig {
+  /** Override provider for chat only (e.g. "claude" while vision stays openai). */
+  chatProvider?: Provider;
+  /** Override base URL; empty → `PROVIDER_DEFAULTS[chatProvider].apiUrl`. */
+  chatApiUrl?: string;
+  /** Override model; empty → `PROVIDER_DEFAULTS[chatProvider].defaultModel`. */
+  chatModel?: string;
+}
+
+/**
+ * Resolved chat endpoint configuration (computed, never stored). When the
+ * optional `ChatConfig` override is absent/incomplete, fields mirror the
+ * main `provider`/`apiUrl`/`model` block.
+ */
+export interface ResolvedChatConfig {
+  provider: Provider;
+  apiUrl: string;
+  model: string;
+}
+
+/**
  * Provider configuration stored in the project DB (Dissertator/dissertator.db).
  * NOTE: the API key is NOT stored here — it lives in the OS keychain.
  */
-export interface Settings {
+export interface Settings extends ChatConfig {
   provider: Provider;
   apiUrl: string;
   model: string;
@@ -251,9 +280,99 @@ export interface SearchResponse {
   embedded: boolean;
 }
 
+/** Embedding lifecycle counts + lock info, surfaced at `GET /embed/status`. */
+export interface EmbeddingStatus {
+  pending: number;
+  done: number;
+  failed: number;
+  /** Chunks mid-flight (`embedding_status='embedding'`). */
+  embedding: number;
+  total: number;
+  /** Locked dimensionality (0 = not yet locked / vec0 table not created). */
+  dimensions: number;
+  /** Configured embedding model id. */
+  model: string;
+  /** sqlite-vec extension loaded? False → embeddings disabled. */
+  vecLoaded: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Citations & references (P2 Track 3)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Chat (P3)
+// ---------------------------------------------------------------------------
+
+/**
+ * A freeform, persisted chat thread (NOT bound to any document).
+ *
+ * The user picks which source files are in scope per chat (stored on
+ * {@link contextSources} for UI persistence); messages belong to a chat via
+ * {@link ChatMessage.chatId}. A chat may have an empty `contextSources`
+ * (no pinned sources — the agent just answers from the system prompt).
+ */
+export interface Chat {
+  id: string;
+  title: string;
+  /** source_file ids the user pinned to this chat (may be empty). */
+  contextSources: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Persisted chat message row (`chat_messages` table). */
+export interface ChatMessage {
+  id: string;
+  /** FK to the chat this message belongs to. */
+  chatId: string;
+  role: "user" | "assistant" | "system";
+  content: string | null;
+  /** Source-file ids the user had open when this message was sent. */
+  openFiles: string[];
+  /** LLM-reported token usage for this turn (assistant turns only). */
+  costTokens: number | null;
+  createdAt: number;
+}
+
+/** Body of `POST /chat`. The API key travels as the Authorization header. */
+export interface ChatRequest {
+  /** REQUIRED: the chat this turn belongs to. */
+  chatId: string;
+  message: string;
+  /** Source-file ids to inject as context (their concatenated chunks). */
+  openFiles?: string[];
+}
+
+/**
+ * A predefined prompt loaded from the project's `Dissertator/prompts.md`.
+ * `category` comes from a `## Heading` (applies to following bullets); `label`
+ * comes from a `**Label**:` prefix, else a truncated prompt. Surfaced at
+ * `GET /prompts` so the frontend can render a quick-pick menu.
+ */
+export interface Prompt {
+  category?: string;
+  label: string;
+  prompt: string;
+}
+
+/**
+ * Resolve the effective chat provider/model/url. Decision #1: if `chatProvider`
+ * is unset, mirror the main `provider`/`apiUrl`/`model`. If set but incomplete,
+ * fill gaps from `PROVIDER_DEFAULTS[chatProvider]`. Pure + exported so the
+ * sidecar and tests share one resolution path.
+ */
+export function resolveChatConfig(s: Settings): ResolvedChatConfig {
+  if (!s.chatProvider) {
+    return { provider: s.provider, apiUrl: s.apiUrl, model: s.model };
+  }
+  const d = PROVIDER_DEFAULTS[s.chatProvider];
+  return {
+    provider: s.chatProvider,
+    apiUrl: (s.chatApiUrl && s.chatApiUrl.trim()) || d.apiUrl,
+    model: (s.chatModel && s.chatModel.trim()) || d.defaultModel,
+  };
+}
 
 /** A bibliographic author. CSL shape (`{ family, given }`). */
 export interface Author {
@@ -282,4 +401,36 @@ export interface Reference {
   csl_json: Record<string, unknown> | null;
   /** FK if linked to a source file; null for fileless references. */
   source_file_id: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Documents (editor) (P3)
+// ---------------------------------------------------------------------------
+
+/** The structural template a document is authored against. */
+export type DocType = "paper" | "thesis" | "lit_review" | "chapters" | "free";
+
+/**
+ * A manuscript document (paper / thesis / lit review / chapters).
+ *
+ * A Document is ONE body, not a tree of sections: markdown headers (`## intro`)
+ * are just lines in {@link bodyMd}. "Stats" (line count, header positions)
+ * are computed by the frontend by parsing the body; nothing structural is
+ * stored beyond the body itself.
+ */
+export interface Document {
+  id: string;
+  title: string;
+  docType: DocType | null;
+  thesis: string | null;
+  /** Parsed from the JSON `research_questions` column. */
+  researchQuestions: string[];
+  focusPrompt: string | null;
+  /**
+   * The manuscript body — a single markdown blob. Holds `[@citekey:page]`
+   * tokens; always at least `""` (the app never stores null).
+   */
+  bodyMd: string;
+  /** Unix epoch ms (INTEGER column). */
+  createdAt: number;
 }

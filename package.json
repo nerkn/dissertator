@@ -19,9 +19,17 @@
   ],
   "dependencies": {
     "@dissertator/shared": "workspace:*",
+    "@milkdown/kit": "^7.21.2",
+    "@milkdown/plugin-history": "^7.21.2",
+    "@milkdown/plugin-listener": "^7.21.2",
+    "@milkdown/prose": "^7.21.2",
+    "@milkdown/react": "^7.21.2",
+    "@milkdown/theme-nord": "^7.21.2",
+    "@milkdown/transformer": "^7.21.2",
     "@phosphor-icons/react": "^2.1.7",
     "@tauri-apps/api": "^2.1.1",
     "@tauri-apps/plugin-dialog": "^2.2.0",
+    "pdfjs-dist": "^4.7.76",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

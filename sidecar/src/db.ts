@@ -13,7 +13,12 @@ import {
   EMBEDDING_DEFAULTS,
   PROVIDER_DEFAULTS,
   type Author,
+  type Chat,
+  type ChatMessage,
+  type DocType,
+  type Document,
   type EmbeddingConfig,
+  type EmbeddingStatus,
   type InitProjectResponse,
   type ProjectStatus,
   type Reference,
@@ -115,6 +120,87 @@ function migrate(db: Database): void {
         );
       }
     }
+  }
+  // documents (P3 → P3.1): the manuscript body moved ONTO the document row.
+  // The `sections` subsystem was removed — a Document is ONE body, not a tree
+  // of sections. Existing project DBs gain `documents.body_md`; the now-orphan
+  // `sections` table is dropped (safe: nothing references it via FK except
+  // agent_runs.section_id, which is a free-text column with no constraint).
+  const docCols = db
+    .prepare("PRAGMA table_info(documents)")
+    .all() as Array<{ name: string }>;
+  const docHave = new Set(docCols.map((c) => c.name));
+  if (!docHave.has("body_md")) {
+    try {
+      db.exec("ALTER TABLE documents ADD COLUMN body_md TEXT");
+    } catch (e) {
+      console.warn(
+        `[db] migrate: could not add column body_md:`,
+        (e as Error)?.message
+      );
+    }
+  }
+  db.exec("DROP TABLE IF EXISTS sections");
+
+  // Chats (P4): freeform chat threads, scoped by chat_id. On a FRESH db the
+  // `chats` + `chat_messages` tables are created by schema.sql (above). On an
+  // OLD db that predates the `chats` table, create it here. SQLite makes
+  // ALTER TABLE ADD COLUMN ignore the REFERENCES clause, so the FK/cascade is
+  // NOT enforced at the DB layer for the new column — deleteChat deletes the
+  // chat's messages explicitly in a transaction (we intentionally do NOT rely
+  // on `PRAGMA foreign_keys=ON` here because flipping global pragma behavior
+  // could surprise other tables; the app-layer cascade is explicit + tested).
+  const tables = db
+    .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='chats'")
+    .get() as { name?: string } | null;
+  if (!tables?.name) {
+    db.exec(
+      "CREATE TABLE IF NOT EXISTS chats (" +
+        "id TEXT PRIMARY KEY, title TEXT NOT NULL, context_sources TEXT, " +
+        "created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+    );
+  }
+
+  // chat_messages.chat_id column (additive).
+  const cmCols = db
+    .prepare("PRAGMA table_info(chat_messages)")
+    .all() as Array<{ name: string }>;
+  const cmHave = new Set(cmCols.map((c) => c.name));
+  if (!cmHave.has("chat_id")) {
+    try {
+      // REFERENCES is ignored by SQLite on ALTER TABLE ADD COLUMN — see the
+      // comment above; the cascade is enforced app-side in deleteChat.
+      db.exec(
+        "ALTER TABLE chat_messages ADD COLUMN chat_id TEXT REFERENCES chats(id) ON DELETE CASCADE"
+      );
+    } catch (e) {
+      console.warn(
+        "[db] migrate: could not add column chat_id:",
+        (e as Error)?.message
+      );
+    }
+  }
+
+  // Backfill: any pre-existing rows (single-global-chat era) get attached to
+  // a deterministic "General" chat so the transcript survives the migration.
+  // Uses INSERT ... ON CONFLICT DO NOTHING so re-running migrate is safe.
+  const orphanCount = db
+    .prepare("SELECT COUNT(*) AS c FROM chat_messages WHERE chat_id IS NULL")
+    .get() as { c: number };
+  if (orphanCount.c > 0) {
+    const GENERAL_CHAT_ID = "00000000-0000-4000-8000-000000000000";
+    const now = Date.now();
+    db.prepare(
+      "INSERT INTO chats(id, title, context_sources, created_at, updated_at) " +
+        "VALUES (?, 'General', '[]', ?, ?) " +
+        "ON CONFLICT(id) DO NOTHING"
+    ).run(GENERAL_CHAT_ID, now, now);
+    db.prepare(
+      "UPDATE chat_messages SET chat_id = ? WHERE chat_id IS NULL"
+    ).run(GENERAL_CHAT_ID);
+    console.log(
+      `[db] migrate: backfilled ${orphanCount.c} chat_messages to "General" chat`
+    );
   }
   // Idempotent schema-version bump (P0 → '2', P2 → '3').
   db.prepare(
@@ -303,6 +389,11 @@ export function getSettings(): Settings {
     ocrStrategy: (obj.ocrStrategy as Settings["ocrStrategy"]) ?? "tesseract",
     embedding: embeddingFromSettings(obj),
     contactEmail: obj.contactEmail ?? "",
+    // Optional P3 chat override (decision #1). Empty → fall back to the main
+    // provider/apiUrl/model block in `resolveChatConfig`.
+    chatProvider: (obj.chat_provider as Settings["chatProvider"]) || undefined,
+    chatApiUrl: obj.chat_api_url || undefined,
+    chatModel: obj.chat_model || undefined,
   };
 }
 
@@ -327,6 +418,11 @@ export function saveSettings(s: Settings): Settings {
   upsert.run("embedding_api_url", s.embedding.apiUrl);
   upsert.run("embedding_model", s.embedding.model);
   upsert.run("embedding_dimensions", String(s.embedding.dimensions ?? 0));
+  // Optional P3 chat override. NULL/empty stored as "" so the round-trip is
+  // uniform; `getSettings` coerces "" → undefined.
+  upsert.run("chat_provider", s.chatProvider ?? "");
+  upsert.run("chat_api_url", s.chatApiUrl ?? "");
+  upsert.run("chat_model", s.chatModel ?? "");
   return getSettings();
 }
 
@@ -426,26 +522,7 @@ export function lockDimensions(dimensions: number, modelId: string): void {
 }
 
 /** Embedding lifecycle counts + lock info, surfaced at `GET /embed/status`. */
-export interface EmbeddingStatus {
-  pending: number;
-  done: number;
-  failed: number;
-  /** Chunks mid-flight (`embedding_status='embedding'`). */
-  embedding: number;
-  total: number;
-  /** Locked dimensionality (0 = not yet locked / vec0 table not created). */
-  dimensions: number;
-  /** Configured embedding model id. */
-  model: string;
-  /** sqlite-vec extension loaded? False → embeddings disabled. */
-  vecLoaded: boolean;
-}
-
-/**
- * Aggregate per-chunk embedding status counts + the current lock. Safe to
- * call before the vec0 table exists (counts come from `chunks`, not from
- * `embeddings`).
- */
+/** Embedding lifecycle counts + lock info, surfaced at `GET /embed/status`. */
 export function getEmbeddingStatus(): EmbeddingStatus {
   if (!current) {
     return {
@@ -511,6 +588,16 @@ export function mapSourceFile(row: SourceFileRow): SourceFile {
     needsOcrReason: row.needs_ocr_reason ?? null,
     addedAt: row.added_at,
   };
+}
+
+/** Fetch a single source file by id, or null if not found. Used by the
+ *  sidecar's byte-stream + text endpoints (`/files/:id`, `/sources/:id/text`). */
+export function getSourceById(id: string): SourceFile | null {
+  if (!current) throw new Error("no project initialized");
+  const row = current.db
+    .prepare("SELECT * FROM source_files WHERE id = ?")
+    .get(id) as SourceFileRow | null;
+  return row ? mapSourceFile(row) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -801,4 +888,504 @@ export function linkReferenceToSource(
   if (res.changes === 0) {
     throw new Error(`linkReferenceToSource: reference ${refId} not found`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Documents (editor) (P3): manuscript CRUD.
+//
+// A Document is ONE body, not a tree of sections. The `body_md` column holds
+// the entire manuscript body as a single markdown blob — markdown headers
+// (`## intro`) are just lines in the body, not separate rows. "Stats"
+// (line count, header positions) are computed by the frontend by parsing
+// `body_md`; nothing structural is stored beyond the body itself. Snake↔camel
+// mapping mirrors the references layer: `mapDocument` parses JSON columns
+// defensively (never throws). `research_questions` is a JSON string[].
+// ---------------------------------------------------------------------------
+
+/**
+ * Snake_case shape of a `documents` row as returned by `bun:sqlite`.
+ * `research_questions` is a JSON string at this layer; parsed back to a
+ * string[] by {@link mapDocument}. `body_md` holds the manuscript body
+ * (nullable in SQL, but the app always sets it to at least `""`).
+ */
+export interface DocumentRow {
+  id: string;
+  title: string;
+  doc_type: string | null;
+  thesis: string | null;
+  research_questions: string | null; // JSON "[\"...\"]"
+  focus_prompt: string | null;
+  body_md: string | null; // manuscript body (single markdown blob)
+  created_at: number;
+}
+
+/**
+ * Map a snake_case `documents` DB row to the {@link Document} contract.
+ * `research_questions` is JSON-parsed back to a string[] (empty array on
+ * parse failure — never throws, mirroring {@link mapReference}). `body_md`
+ * defaults to `""` when null so the app always sees a defined body.
+ */
+export function mapDocument(row: DocumentRow): Document {
+  let researchQuestions: string[] = [];
+  if (row.research_questions) {
+    try {
+      const parsed = JSON.parse(row.research_questions) as unknown;
+      if (Array.isArray(parsed)) researchQuestions = parsed as string[];
+    } catch {
+      researchQuestions = [];
+    }
+  }
+  return {
+    id: row.id,
+    title: row.title,
+    docType: (row.doc_type as DocType | null) ?? null,
+    thesis: row.thesis ?? null,
+    researchQuestions,
+    focusPrompt: row.focus_prompt ?? null,
+    bodyMd: row.body_md ?? "",
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * List all documents, newest-first (insertion/created_at desc). Mirrors
+ * {@link listReferences} (no filter needed yet — single-user, local).
+ */
+export function listDocuments(): Document[] {
+  if (!current) throw new Error("no project initialized");
+  const rows = current.db
+    .prepare("SELECT * FROM documents ORDER BY created_at DESC, id ASC")
+    .all() as DocumentRow[];
+  return rows.map(mapDocument);
+}
+
+/**
+ * INSERT a document with an empty body.
+ *
+ * The manuscript body lives ON the document row as `body_md`, seeded to `""`
+ * so the editor always has a body to write into. `researchQuestions` is
+ * JSON-serialized (default `[]`). Returns the created {@link Document}.
+ */
+export function createDocument(input: {
+  title: string;
+  docType?: DocType;
+  thesis?: string;
+  researchQuestions?: string[];
+  focusPrompt?: string;
+}): Document {
+  if (!current) throw new Error("no project initialized");
+  const db = current.db;
+  const id = randomUUID();
+  const createdAt = Date.now();
+  db.prepare(
+    "INSERT INTO documents " +
+      "(id, title, doc_type, thesis, research_questions, focus_prompt, body_md, created_at) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+  ).run(
+    id,
+    input.title,
+    input.docType ?? null,
+    input.thesis ?? null,
+    JSON.stringify(input.researchQuestions ?? []),
+    input.focusPrompt ?? null,
+    "", // body_md seeded empty; the editor writes into it
+    createdAt
+  );
+  return mapDocument(
+    db.prepare("SELECT * FROM documents WHERE id = ?").get(id) as DocumentRow
+  );
+}
+
+/**
+ * Fetch a document by id. Returns null if the id is unknown (the route
+ * turns this into a 404). The body is carried on the returned document.
+ */
+export function getDocument(id: string): Document | null {
+  if (!current) throw new Error("no project initialized");
+  const row = current.db
+    .prepare("SELECT * FROM documents WHERE id = ?")
+    .get(id) as DocumentRow | null;
+  return row ? mapDocument(row) : null;
+}
+
+/**
+ * Partial-patch a document by id. Omitted fields keep their DB value; `null`
+ * clears a nullable field (docType/thesis/focusPrompt). `bodyMd` follows a
+ * `!== undefined` discipline so an explicit `""` is a valid SET (empty body),
+ * distinct from omitting the field (keep the existing body). Returns null if
+ * the document id is unknown (404-style). `researchQuestions` is
+ * JSON-serialized when provided.
+ */
+export function updateDocument(
+  id: string,
+  patch: Partial<{
+    title: string;
+    docType: DocType | null;
+    thesis: string | null;
+    researchQuestions: string[];
+    focusPrompt: string | null;
+    bodyMd: string;
+  }>
+): Document | null {
+  if (!current) throw new Error("no project initialized");
+  const db = current.db;
+  const existing = db.prepare("SELECT * FROM documents WHERE id = ?").get(
+    id
+  ) as DocumentRow | null;
+  if (!existing) return null;
+  // Merge patch over the existing row. `!== undefined` distinguishes
+  // "omitted" (keep) from an explicit value (set, including "" for bodyMd
+  // and null for the other nullable columns).
+  const title = patch.title ?? existing.title;
+  const docType = patch.docType !== undefined ? patch.docType : existing.doc_type;
+  const thesis = patch.thesis !== undefined ? patch.thesis : existing.thesis;
+  const researchQuestions =
+    patch.researchQuestions !== undefined
+      ? JSON.stringify(patch.researchQuestions)
+      : existing.research_questions;
+  const focusPrompt =
+    patch.focusPrompt !== undefined ? patch.focusPrompt : existing.focus_prompt;
+  const bodyMd = patch.bodyMd !== undefined ? patch.bodyMd : existing.body_md;
+  db.prepare(
+    "UPDATE documents SET title = ?, doc_type = ?, thesis = ?, " +
+      "research_questions = ?, focus_prompt = ?, body_md = ? WHERE id = ?"
+  ).run(title, docType, thesis, researchQuestions, focusPrompt, bodyMd, id);
+  return mapDocument(
+    db.prepare("SELECT * FROM documents WHERE id = ?").get(id) as DocumentRow
+  );
+}
+
+/**
+ * Delete a document by id. Returns true if a row was deleted, false if the
+ * id was unknown (idempotent).
+ */
+export function deleteDocument(id: string): boolean {
+  if (!current) throw new Error("no project initialized");
+  const res = current.db
+    .prepare("DELETE FROM documents WHERE id = ?")
+    .run(id);
+  return res.changes > 0;
+}
+
+// ---------------------------------------------------------------------------
+// Chat (P3 → P4): freeform chat threads, scoped by chat_id.
+//
+// A chat is a persisted thread (NOT bound to any document). The user picks
+// which source files are in scope per chat (stored on the chat row for UI
+// persistence). Messages belong to a chat via `chat_messages.chat_id`. The
+// agent loop replays only that chat's recent turns (see POST /chat). The
+// legacy single-global-chat DBs are migrated forward to a deterministic
+// "General" chat by migrate(). Open-files context (`buildOpenFilesContext`)
+// is unchanged — plain full-text injection from `chunks`.
+// ---------------------------------------------------------------------------
+
+/**
+ * Snake_case shape of a `chats` row as returned by `bun:sqlite`.
+ * `context_sources` is a JSON string[] at this layer; parsed by
+ * {@link mapChat} (empty array on null/parse-failure — never throws).
+ */
+export interface ChatRow {
+  id: string;
+  title: string;
+  context_sources: string | null; // JSON "[\"...\"]"
+  created_at: number;
+  updated_at: number;
+}
+
+/**
+ * Map a snake_case `chats` DB row to the {@link Chat} contract.
+ * `context_sources` is JSON-parsed back to a string[] (empty array on null or
+ * parse failure — never throws, mirroring {@link mapReference}).
+ */
+export function mapChat(row: ChatRow): Chat {
+  let contextSources: string[] = [];
+  if (row.context_sources) {
+    try {
+      const parsed = JSON.parse(row.context_sources) as unknown;
+      if (Array.isArray(parsed)) contextSources = parsed as string[];
+    } catch {
+      contextSources = [];
+    }
+  }
+  return {
+    id: row.id,
+    title: row.title,
+    contextSources,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * List all chats, most-recently-touched first (`updated_at` DESC). Mirrors
+ * {@link listDocuments} ordering intent, but keyed on `updated_at` so the
+ * chat the user just used floats to the top of the sidebar.
+ */
+export function listChats(): Chat[] {
+  if (!current) throw new Error("no project initialized");
+  const rows = current.db
+    .prepare("SELECT * FROM chats ORDER BY updated_at DESC, id ASC")
+    .all() as ChatRow[];
+  return rows.map(mapChat);
+}
+
+/**
+ * INSERT a new chat. Default title "New chat", default contextSources `[]`.
+ * Sets created_at=updated_at=Date.now(). Returns the created {@link Chat}.
+ */
+export function createChat(input: {
+  title?: string;
+  contextSources?: string[];
+}): Chat {
+  if (!current) throw new Error("no project initialized");
+  const db = current.db;
+  const id = randomUUID();
+  const now = Date.now();
+  db.prepare(
+    "INSERT INTO chats(id, title, context_sources, created_at, updated_at) " +
+      "VALUES (?, ?, ?, ?, ?)"
+  ).run(
+    id,
+    input.title ?? "New chat",
+    JSON.stringify(input.contextSources ?? []),
+    now,
+    now
+  );
+  return mapChat(db.prepare("SELECT * FROM chats WHERE id = ?").get(id) as ChatRow);
+}
+
+/** Fetch a single chat by id, or null if not found. */
+export function getChat(id: string): Chat | null {
+  if (!current) throw new Error("no project initialized");
+  const row = current.db
+    .prepare("SELECT * FROM chats WHERE id = ?")
+    .get(id) as ChatRow | null;
+  return row ? mapChat(row) : null;
+}
+
+/**
+ * Partial-patch a chat by id. Omitted fields keep their DB value (`!==
+ * undefined` discipline — mirrors {@link updateDocument}). ANY update (even an
+ * empty patch) stamps `updated_at = Date.now()`, which is how POST /chat
+ * touches a chat's recency. Returns null if the chat id is unknown (404-style).
+ */
+export function updateChat(
+  id: string,
+  patch: { title?: string; contextSources?: string[] }
+): Chat | null {
+  if (!current) throw new Error("no project initialized");
+  const db = current.db;
+  const existing = db.prepare("SELECT * FROM chats WHERE id = ?").get(
+    id
+  ) as ChatRow | null;
+  if (!existing) return null;
+  const title = patch.title ?? existing.title;
+  const contextSources =
+    patch.contextSources !== undefined
+      ? JSON.stringify(patch.contextSources)
+      : existing.context_sources;
+  // Always bump updated_at — even when the patch is empty (a touch).
+  db.prepare(
+    "UPDATE chats SET title = ?, context_sources = ?, updated_at = ? WHERE id = ?"
+  ).run(title, contextSources, Date.now(), id);
+  return mapChat(db.prepare("SELECT * FROM chats WHERE id = ?").get(id) as ChatRow);
+}
+
+/**
+ * Delete a chat by id. In a transaction: delete the chat's `chat_messages`
+ * rows, then the chat row. This app-side cascade is intentional — the
+ * `chat_id` column is added via ALTER TABLE on old DBs, and SQLite ignores
+ * REFERENCES on ALTER, so we cannot rely on `ON DELETE CASCADE` at the DB
+ * layer. Returns true if a chat row was deleted, false if the id was unknown.
+ */
+export function deleteChat(id: string): boolean {
+  if (!current) throw new Error("no project initialized");
+  const db = current.db;
+  db.exec("BEGIN");
+  try {
+    db.prepare("DELETE FROM chat_messages WHERE chat_id = ?").run(id);
+    const res = db.prepare("DELETE FROM chats WHERE id = ?").run(id);
+    db.exec("COMMIT");
+    return res.changes > 0;
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+interface ChatMessageRow {
+  chat_id: string | null;
+  id: string;
+  role: string;
+  content: string | null;
+  open_files: string | null;
+  cost_tokens: number | null;
+  created_at: number;
+}
+
+function mapChatMessage(row: ChatMessageRow): ChatMessage {
+  let openFiles: string[] = [];
+  try {
+    const parsed = row.open_files ? JSON.parse(row.open_files) : null;
+    if (Array.isArray(parsed)) openFiles = parsed as string[];
+  } catch {
+    /* malformed JSON → empty */
+  }
+  return {
+    id: row.id,
+    chatId: row.chat_id!,
+    role: row.role as ChatMessage["role"],
+    content: row.content,
+    openFiles,
+    costTokens: row.cost_tokens,
+    createdAt: row.created_at,
+  };
+}
+
+/**
+ * Insert a chat message scoped to a chat (`chat_id` REQUIRED). `costTokens`
+ * is optional (assistant turns); only `.completion` is persisted to the
+ * INTEGER column (mirrors the original single-number behavior). Mirrors
+ * {@link createDocument}'s insert-then-return-row shape.
+ */
+export function insertChatMessage(msg: {
+  chatId: string;
+  role: ChatMessage["role"];
+  content: string | null;
+  openFiles?: string[];
+  costTokens?: { prompt: number; completion: number } | null;
+}): ChatMessage {
+  if (!current) throw new Error("no project initialized");
+  const id = randomUUID();
+  const createdAt = Date.now();
+  const costTokens = msg.costTokens ? msg.costTokens.completion : null;
+  current.db
+    .prepare(
+      "INSERT INTO chat_messages(chat_id, id, role, content, open_files, cost_tokens, created_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?)"
+    )
+    .run(
+      msg.chatId,
+      id,
+      msg.role,
+      msg.content,
+      JSON.stringify(msg.openFiles ?? []),
+      costTokens,
+      createdAt
+    );
+  return {
+    id,
+    chatId: msg.chatId,
+    role: msg.role,
+    content: msg.content,
+    openFiles: msg.openFiles ?? [],
+    costTokens,
+    createdAt,
+  };
+}
+
+/**
+ * Recent chat messages for ONE chat, oldest-first (insertion order — the
+ * transcript replay order). Uses the implicit `rowid` (monotonically
+ * increasing with insertion) rather than `created_at`, which collides for
+ * rapid turns inserted within the same ms. Scoped by `chat_id`.
+ */
+export function listChatMessages(chatId: string, limit = 50): ChatMessage[] {
+  if (!current) throw new Error("no project initialized");
+  const rows = current.db
+    .prepare(
+      "SELECT * FROM chat_messages WHERE chat_id = ? ORDER BY rowid DESC LIMIT ?"
+    )
+    .all(chatId, limit) as ChatMessageRow[];
+  return rows.reverse().map(mapChatMessage);
+}
+
+/**
+ * Build a single context string from the open source files' chunks. Each
+ * file's chunks are concatenated with page markers, and files are capped so
+ * the total stays under `maxChars` (rough token proxy ≈ chars/4). Pure-text
+ * injection — no embedding/vector work. Files with no extracted text are
+ * skipped silently. Returns `null` if nothing usable was found.
+ */
+export function buildOpenFilesContext(
+  sourceIds: string[],
+  maxChars = 12000
+): string | null {
+  if (!current || sourceIds.length === 0) return null;
+  const placeholders = sourceIds.map(() => "?").join(",");
+  const rows = current.db
+    .prepare(
+      `SELECT source_file_id, physical_page, text FROM chunks
+       WHERE source_file_id IN (${placeholders})
+       ORDER BY source_file_id, ord ASC`
+    )
+    .all(...sourceIds) as Array<{
+    source_file_id: string;
+    physical_page: number | null;
+    text: string;
+  }>;
+  if (rows.length === 0) return null;
+
+  // Group by source file, prefix with filename for readability.
+  const fileNames = new Map<string, string>();
+  const nameRows = current.db
+    .prepare(
+      `SELECT id, filename FROM source_files WHERE id IN (${placeholders})`
+    )
+    .all(...sourceIds) as Array<{ id: string; filename: string }>;
+  for (const r of nameRows) fileNames.set(r.id, r.filename);
+
+  const parts: string[] = [];
+  let total = 0;
+  let currentFile = "";
+  for (const r of rows) {
+    if (r.source_file_id !== currentFile) {
+      currentFile = r.source_file_id;
+      const label = fileNames.get(r.source_file_id) ?? r.source_file_id;
+      parts.push(`\n--- ${label} ---`);
+    }
+    const pageTag =
+      r.physical_page != null ? `[p.${r.physical_page}] ` : "";
+    const chunk = `${pageTag}${r.text}`;
+    if (total + chunk.length > maxChars) break;
+    parts.push(chunk);
+    total += chunk.length;
+  }
+  return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
+/**
+ * Concatenated extracted text for a SINGLE source file, page-tagged. Used by
+ * `GET /sources/:id/text` for the text/docx/xlsx viewer tabs and "search
+ * inside". Mirrors {@link buildOpenFilesContext}'s chunk query + page-marker
+ * pattern, but for one source and with no char cap (the UI scrolls).
+ *
+ * If the source has no chunks yet (not extracted / needs OCR), returns an
+ * EMPTY `text` with `pageCount: 0` — this is NOT an error; the UI shows
+ * "not extracted yet". `filename` is always populated when the source row
+ * exists (empty string only if the id is unknown, which the route 404s on).
+ */
+export function getSourceText(id: string): {
+  filename: string;
+  text: string;
+  pageCount: number;
+} {
+  if (!current) return { filename: "", text: "", pageCount: 0 };
+  const src = current.db
+    .prepare("SELECT filename, page_count FROM source_files WHERE id = ?")
+    .get(id) as { filename: string; page_count: number | null } | null;
+  if (!src) return { filename: "", text: "", pageCount: 0 };
+  const rows = current.db
+    .prepare(
+      "SELECT physical_page, text FROM chunks WHERE source_file_id = ? ORDER BY ord ASC"
+    )
+    .all(id) as Array<{ physical_page: number | null; text: string }>;
+  const text = rows
+    .map((r) => (r.physical_page != null ? `[p.${r.physical_page}] ` : "") + r.text)
+    .join("\n\n");
+  return {
+    filename: src.filename,
+    text,
+    pageCount: src.page_count ?? 0,
+  };
 }

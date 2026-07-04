@@ -5,7 +5,8 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
-import { SIDECAR_PORT, type Reference, type Settings } from "@dissertator/shared";
+import { join } from "node:path";
+import { SIDECAR_PORT, type ChatRequest, type DocType, type Document, type Reference, type Settings, resolveChatConfig } from "@dissertator/shared";
 import {
   getCurrentProject,
   getProjectStatus,
@@ -17,10 +18,27 @@ import {
   listReferences,
   saveSettings,
   upsertReference,
+  createChat,
+  deleteChat,
+  getChat,
+  insertChatMessage,
+  listChatMessages,
+  listChats,
+  updateChat,
+  buildOpenFilesContext,
+  getSourceById,
+  getSourceText,
+  listDocuments,
+  createDocument,
+  getDocument,
+  updateDocument,
+  deleteDocument,
 } from "./db";
+import { getPrompts } from "./prompts.ts";
 import { searchCorpus } from "./search";
 import { crossrefByDoi, crossrefSearch } from "./cite/crossref.ts";
 import { exportBibtex, parseBibtex } from "./cite/bibtex.ts";
+import { streamChat, type ChatTurn } from "./chat/index.ts";
 import {
   start,
   scanAll,
@@ -98,6 +116,15 @@ app.put("/settings", async (c) => {
     ocrStrategy: body.ocrStrategy ?? current.ocrStrategy,
     embedding,
     contactEmail: body.contactEmail ?? current.contactEmail,
+    // Optional P3 chat override. A PUT that includes ANY chat_* field treats
+    // the whole block as provided (fields it omits clear to undefined); a
+    // PUT that omits all three preserves the existing override untouched.
+    chatProvider:
+      "chatProvider" in body ? body.chatProvider : current.chatProvider,
+    chatApiUrl:
+      "chatApiUrl" in body ? body.chatApiUrl : current.chatApiUrl,
+    chatModel:
+      "chatModel" in body ? body.chatModel : current.chatModel,
   };
   return c.json(saveSettings(merged));
 });
@@ -110,6 +137,43 @@ app.put("/settings", async (c) => {
 app.get("/sources", (c) => {
   if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
   return c.json({ items: listSources(), counts: getSourceCounts() });
+});
+
+// Raw file bytes for PDF/image viewing in the frontend. The Tauri asset
+// protocol is NOT scoped in this project (and we avoid Rust/permission
+// changes), so the sidecar streams bytes directly. Content-Type comes from
+// the row's `mime_type` (set during extraction); falls back to a generic
+// octet-stream. 404 if the source id or the file on disk is missing.
+app.get("/files/:id", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = c.req.param("id");
+  const src = getSourceById(id);
+  if (!src) return c.json({ error: "not found" }, 404);
+  const absPath = join(getCurrentProject()!.projectPath, src.relPath);
+  const file = Bun.file(absPath);
+  if (!(await file.exists())) {
+    return c.json({ error: "file missing on disk" }, 404);
+  }
+  // Hono forwards a raw `Response` to Bun.serve unchanged. Loading the bytes
+  // into an ArrayBuffer is simplest and correct for typical document sizes;
+  // Bun.file is already zero-copy on the runtime side.
+  return new Response(await file.arrayBuffer(), {
+    headers: {
+      "Content-Type": src.mimeType ?? "application/octet-stream",
+    },
+  });
+});
+
+// Concatenated extracted text (page-tagged) for text/docx/xlsx viewer tabs.
+// Reuses the chunks table (same source as `buildOpenFilesContext`). Returns
+// HTTP 200 with empty `text` when the source exists but has no chunks yet
+// (not extracted) — the UI shows "not extracted yet"; this is NOT an error.
+app.get("/sources/:id/text", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = c.req.param("id");
+  const src = getSourceById(id);
+  if (!src) return c.json({ error: "not found" }, 404);
+  return c.json(getSourceText(id));
 });
 
 app.post("/ingest", async (c) => {
@@ -359,6 +423,335 @@ app.post("/references/import-bibtex", async (c) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Documents (editor) (P3): manuscript editor CRUD.
+//
+// A Document is ONE body: the manuscript markdown lives on the document row
+// as `bodyMd`. There are no section rows — markdown headers are just lines in
+// the body, and "stats" are computed by the frontend by parsing the body. The
+// manuscript editor loads `GET /documents/:id` and autosaves the body via
+// `PUT /documents/:id` (typically just `{ bodyMd }`). Same guards / body-parse
+// / 404 / 201 conventions as /references.
+// ---------------------------------------------------------------------------
+
+app.get("/documents", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  return c.json(listDocuments());
+});
+
+app.post("/documents", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const body = await c.req
+    .json<{
+      title?: string;
+      docType?: DocType;
+      thesis?: string;
+      researchQuestions?: string[];
+      focusPrompt?: string;
+    }>()
+    .catch(
+      () =>
+        ({}) as {
+          title?: string;
+          docType?: DocType;
+          thesis?: string;
+          researchQuestions?: string[];
+          focusPrompt?: string;
+        }
+    );
+  if (!body.title) return c.json({ error: "title required" }, 400);
+  try {
+    const doc = createDocument({
+      title: body.title,
+      docType: body.docType,
+      thesis: body.thesis,
+      researchQuestions: body.researchQuestions,
+      focusPrompt: body.focusPrompt,
+    });
+    return c.json(doc, 201);
+  } catch (e) {
+    return c.json({ error: (e as Error)?.message ?? String(e) }, 500);
+  }
+});
+
+app.get("/documents/:id", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = c.req.param("id");
+  const doc = getDocument(id);
+  if (!doc) return c.json({ error: "not found" }, 404);
+  return c.json(doc);
+});
+
+app.put("/documents/:id", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = c.req.param("id");
+  const body = await c.req
+    .json<{
+      title?: string;
+      docType?: DocType | null;
+      thesis?: string | null;
+      researchQuestions?: string[];
+      focusPrompt?: string | null;
+      bodyMd?: string;
+    }>()
+    .catch(() => ({}) as Record<string, never>);
+  const doc = updateDocument(id, body);
+  if (!doc) return c.json({ error: "not found" }, 404);
+  return c.json(doc);
+});
+
+app.delete("/documents/:id", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = c.req.param("id");
+  deleteDocument(id);
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Chats (P4): freeform chat thread CRUD. A chat is NOT bound to a document;
+// it carries its own pinned `contextSources` (source_file ids) for UI
+// persistence, and owns a transcript of `chat_messages` (POST /chat appends).
+// Mirrors the /documents guards (400 if no project, 404 if id unknown).
+// ---------------------------------------------------------------------------
+
+app.get("/chats", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  return c.json(listChats());
+});
+
+app.post("/chats", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const body = await c.req
+    .json<{ title?: string; contextSources?: string[] }>()
+    .catch(
+      () =>
+        ({}) as { title?: string; contextSources?: string[] }
+    );
+  const chat = createChat({
+    title: body.title,
+    contextSources: Array.isArray(body.contextSources)
+      ? body.contextSources
+      : undefined,
+  });
+  return c.json(chat, 201);
+});
+
+app.get("/chats/:id", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = c.req.param("id");
+  const chat = getChat(id);
+  if (!chat) return c.json({ error: "not found" }, 404);
+  return c.json(chat);
+});
+
+app.put("/chats/:id", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = c.req.param("id");
+  const body = await c.req
+    .json<{ title?: string; contextSources?: string[] }>()
+    .catch(
+      () => ({}) as { title?: string; contextSources?: string[] }
+    );
+  const chat = updateChat(id, body);
+  if (!chat) return c.json({ error: "not found" }, 404);
+  return c.json(chat);
+});
+
+app.delete("/chats/:id", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = c.req.param("id");
+  const ok = deleteChat(id);
+  if (!ok) return c.json({ error: "not found" }, 404);
+  return c.json({ ok: true });
+});
+
+app.get("/chats/:id/messages", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = c.req.param("id");
+  if (!getChat(id)) return c.json({ error: "not found" }, 404);
+  const limitRaw = c.req.query("limit");
+  const limit = limitRaw ? parseInt(limitRaw, 10) : undefined;
+  return c.json(
+    listChatMessages(id, Number.isFinite(limit) ? limit : undefined)
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Prompts (P4): predefined prompt quick-pick from `Dissertator/prompts.md`.
+// ---------------------------------------------------------------------------
+
+app.get("/prompts", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  return c.json(await getPrompts());
+});
+
+// ---------------------------------------------------------------------------
+// Chat (P3 Track E): streaming `POST /chat` with open-files context.
+//
+// Streams an OpenAI-compatible chat completion. The chat provider/model/url
+// come from `Settings` (optionally overridden by the P3 `chat_*` block —
+// decision #1: fall back to the main provider if not specified). The API key
+// travels ONLY as a Bearer header — never stored, never logged (mirrors the
+// /embed + ocr/vision discipline).
+//
+// CONTEXT: `open_files` source ids are concatenated (their chunks, page-
+// tagged) up to a char budget and injected as a system message. This is plain
+// full-text injection, NOT semantic retrieval (that's /search). The full
+// transcript is persisted to `chat_messages` AFTER the turn completes (user
+// msg up-front, assistant msg once the stream ends — so an aborted stream
+// still records the user turn + whatever completed).
+//
+// STREAM PROTOCOL: each delta is forwarded as an SSE `delta` event carrying
+// the text fragment; a final `done` event carries usage + persisted message
+// ids. Errors mid-stream are emitted as an `error` event then the stream
+// closes (the client sees the partial text + the error message).
+//
+// SCOPING (P4): `chatId` is REQUIRED — the turn is persisted to + replayed
+// from THAT chat only. `GET /chat/messages?chatId=` is retained as a thin
+// backward-compat alias for `GET /chats/:id/messages` (canonical).
+// ---------------------------------------------------------------------------
+
+app.get("/chat/messages", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const chatId = c.req.query("chatId");
+  if (!chatId) return c.json({ error: "chatId required" }, 400);
+  const limitRaw = c.req.query("limit");
+  const limit = limitRaw ? parseInt(limitRaw, 10) : undefined;
+  return c.json(
+    listChatMessages(chatId, Number.isFinite(limit) ? limit : undefined)
+  );
+});
+
+app.post("/chat", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const body = await c
+    .req.json<ChatRequest>()
+    .catch(() => ({}) as ChatRequest);
+  const chatId = (body.chatId ?? "").trim();
+  if (!chatId) return c.json({ error: "chatId required" }, 400);
+  if (!getChat(chatId)) return c.json({ error: "chat not found" }, 404);
+  const message = (body.message ?? "").trim();
+  if (!message) return c.json({ error: "message required" }, 400);
+  const openFiles = Array.isArray(body.openFiles) ? body.openFiles : [];
+
+  // API key travels ONLY as a Bearer header (same discipline as /embed +
+  // ocr/vision). Never logged.
+  const auth = c.req.header("Authorization") ?? "";
+  const apiKey = auth.startsWith("Bearer ") ? auth.slice(7) : undefined;
+  if (!apiKey) return c.json({ error: "chat api key required" }, 400);
+
+  const settings = getSettings();
+  const config = resolveChatConfig(settings);
+
+  return streamSSE(c, async (stream) => {
+    // Persist the user turn immediately (so an aborted stream still records it).
+    const userMsg = insertChatMessage({
+      chatId,
+      role: "user",
+      content: message,
+      openFiles,
+    });
+
+    // Build the system message: role + optional open-files context.
+    const systemParts: string[] = [
+      "You are Dissertator, a research writing assistant. Answer grounded in the provided source context. If the context is insufficient, say so. Cite sources as [@citekey] when relevant.",
+    ];
+    const ctx = buildOpenFilesContext(openFiles);
+    if (ctx) {
+      systemParts.push(
+        `\nThe user has the following source files open. Use this as grounding context:\n\n${ctx}`
+      );
+    }
+    const messages: ChatTurn[] = [
+      { role: "system", content: systemParts.join("\n") },
+      // Replay THIS chat's recent turns for conversational continuity (omit
+      // system rows; we synthesize our own above).
+      ...listChatMessages(chatId, 20)
+        .filter((m) => m.role !== "system" && m.id !== userMsg.id)
+        .slice(-12)
+        .map(
+          (m): ChatTurn => ({
+            role: m.role === "assistant" ? "assistant" : "user",
+            content: m.content ?? "",
+          })
+        ),
+      { role: "user", content: message },
+    ];
+
+    let assistantText = "";
+    let usage = { prompt: 0, completion: 0 };
+    let aborted = false;
+    const ac = new AbortController();
+    stream.onAbort(() => {
+      aborted = true;
+      ac.abort();
+    });
+
+    try {
+      await streamChat({
+        apiKey,
+        config,
+        messages,
+        signal: ac.signal,
+        onDelta: async (delta) => {
+          assistantText += delta;
+          await stream.writeSSE({ event: "delta", data: delta });
+        },
+        onUsage: (p, comp) => {
+          usage = { prompt: p, completion: comp };
+        },
+        onAbort: () => {
+          aborted = true;
+        },
+      });
+    } catch (e) {
+      const errMsg = (e as Error)?.message ?? String(e);
+      // Surface the error but still persist whatever streamed before the
+      // failure, so the transcript isn't lost.
+      const partial = assistantText
+        ? insertChatMessage({
+            chatId,
+            role: "assistant",
+            content: assistantText,
+            openFiles,
+            costTokens: usage,
+          })
+        : null;
+      // Touch the chat's updated_at even on failure.
+      updateChat(chatId, {});
+      await stream.writeSSE({
+        event: "error",
+        data: JSON.stringify({
+          message: errMsg,
+          assistantMessageId: partial?.id ?? null,
+        }),
+      });
+      return;
+    }
+
+    const assistantMsg = insertChatMessage({
+      chatId,
+      role: "assistant",
+      content: assistantText || "",
+      openFiles,
+      costTokens: usage,
+    });
+    // Touch the chat's updated_at so it floats to the top of the sidebar.
+    updateChat(chatId, {});
+    await stream.writeSSE({
+      event: "done",
+      data: JSON.stringify({
+        userMessageId: userMsg.id,
+        assistantMessageId: assistantMsg.id,
+        aborted,
+        usage,
+      }),
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Ingest events SSE (P1): fans out per-file status transitions to the UI.
 app.get("/events", (c) => {
   // SSE fans out per-file ingest status transitions; it needs an open
   // project (the orchestrator emits against the active project's DB).

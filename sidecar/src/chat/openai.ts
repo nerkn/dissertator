@@ -1,0 +1,166 @@
+// OpenAI-compatible streaming chat adapter (P3).
+//
+// Streams a chat completion from `POST {apiUrl}/chat/completions` with
+// `stream:true`, yielding incremental text deltas to `onDelta`. The API key
+// (`opts.apiKey`) is sent ONLY in the `Authorization` header — it is never
+// persisted, embedded in the request body, or logged, and is never cached in
+// a module variable (read at call time). Provider error bodies are truncated
+// to ≤500 chars before being thrown so a key-bearing payload can't leak
+// through an error string.
+//
+// Provider notes: openai, z.ai (`https://api.z.ai/api/paas/v4`), openrouter,
+// and any OpenAI-compatible `/chat/completions` endpoint work on this single
+// path. Anthropic (`provider==="claude"`) uses a different schema and is
+// surfaced as a clean `Error("chat adapter: claude provider is not OpenAI...")`
+// — acceptable for v1 (mirrors ocr/vision.ts discipline); a native Anthropic
+// adapter can be added later without touching this file's signature.
+//
+// STREAM PROTOCOL: the response is `text/event-stream` of `data: {json}\n\n`
+// lines, terminated by `data: [DONE]`. Each chunk's `choices[0].delta.content`
+// carries the incremental text. We parse line-by-line so we never buffer the
+// whole transcript in memory; deltas are forwarded as soon as they arrive.
+//
+// ABORT: pass an `AbortSignal` via `opts.signal` to cancel a stream mid-flight
+// (e.g. user clicks Stop). The in-flight fetch is aborted and the error is
+// swallowed (`onAbort` callback fires instead of `onError`).
+
+import type { ResolvedChatConfig } from "@dissertator/shared";
+
+/** Cap on echoed provider error bodies — never let a key leak via an error. */
+const ERR_BODY_CAP = 500;
+
+export interface ChatTurn {
+  role: "system" | "user" | "assistant";
+  content: string;
+}
+
+export interface StreamChatOptions {
+  /** Chat API key. Sent ONLY as a Bearer header; never stored or logged. */
+  apiKey: string;
+  /** Resolved chat endpoint config (provider/apiUrl/model). */
+  config: ResolvedChatConfig;
+  /** Conversation turns (system + history + new user message). */
+  messages: ChatTurn[];
+  /** Max output tokens. Provider default if omitted. */
+  maxTokens?: number;
+  /** Aborts the in-flight fetch when signaled. */
+  signal?: AbortSignal;
+  /** Called for each incremental text delta. */
+  onDelta: (text: string) => void;
+  /** Called if the stream is aborted via `signal` (no error thrown). */
+  onAbort?: () => void;
+  /** Called with the final total token usage, if the provider reports it. */
+  onUsage?: (prompt: number, completion: number) => void;
+}
+
+function truncate(body: string): string {
+  return body.length > ERR_BODY_CAP ? body.slice(0, ERR_BODY_CAP) : body;
+}
+
+/**
+ * Stream an OpenAI-compatible chat completion. Throws
+ * `Error("chat adapter requires an api key")` (caller guards this),
+ * `Error("chat adapter: <provider> provider is not OpenAI-compatible")` for
+ * Anthropic, or `Error("chat adapter failed: <status> <body-truncated>")` on
+ * a non-2xx response. Network/abort errors are rethrown verbatim unless the
+ * signal aborted, in which case `onAbort` fires and the function returns.
+ */
+export async function streamOpenAIChat(
+  opts: StreamChatOptions
+): Promise<void> {
+  const { apiKey, config, messages, signal, onDelta, onAbort, onUsage } = opts;
+  if (!apiKey) throw new Error("chat adapter requires an api key");
+  // Anthropic is intentionally unsupported on this path (see file header).
+  if (config.provider === "claude") {
+    throw new Error(
+      "chat adapter: claude provider is not OpenAI-compatible (set a non-claude chat provider)"
+    );
+  }
+
+  const apiUrl = config.apiUrl.replace(/\/+$/, "");
+  const url = `${apiUrl}/chat/completions`;
+
+  const body: Record<string, unknown> = {
+    model: config.model,
+    stream: true,
+    messages,
+  };
+  if (opts.maxTokens && opts.maxTokens > 0) {
+    body.stream_options = { include_usage: true };
+    body.max_tokens = opts.maxTokens;
+  } else if (opts.onUsage) {
+    // Usage only arrives when we ask for it via stream_options.
+    body.stream_options = { include_usage: true };
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        // Key transmitted ONLY here; never logged or persisted.
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (e) {
+    if (signal?.aborted) {
+      onAbort?.();
+      return;
+    }
+    throw e;
+  }
+
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    throw new Error(`chat adapter failed: ${res.status} ${truncate(errBody)}`);
+  }
+  if (!res.body) {
+    throw new Error("chat adapter failed: no response body");
+  }
+
+  // Parse the SSE stream line-by-line. A complete `data:` line is JSON; an
+  // empty line is the event delimiter; `data: [DONE]` ends the stream.
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let nl: number;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line || !line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (payload === "[DONE]") return;
+        try {
+          const chunk = JSON.parse(payload) as {
+            choices?: Array<{
+              delta?: { content?: string };
+            }>;
+            usage?: { prompt_tokens?: number; completion_tokens?: number };
+          };
+          const delta = chunk.choices?.[0]?.delta?.content;
+          if (delta) onDelta(delta);
+          const u = chunk.usage;
+          if (u && onUsage) {
+            onUsage(u.prompt_tokens ?? 0, u.completion_tokens ?? 0);
+          }
+        } catch {
+          // Partial JSON mid-chunk or a keep-alive comment — skip.
+        }
+      }
+    }
+  } catch (e) {
+    if (signal?.aborted) {
+      onAbort?.();
+      return;
+    }
+    throw e;
+  }
+}

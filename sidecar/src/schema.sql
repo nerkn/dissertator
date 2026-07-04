@@ -71,21 +71,20 @@ CREATE TABLE IF NOT EXISTS documents (
   thesis             TEXT,
   research_questions TEXT,       -- JSON array
   focus_prompt       TEXT,
+  body_md            TEXT,       -- the manuscript body (single markdown blob)
   created_at         INTEGER NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS sections (
-  id          TEXT PRIMARY KEY,
-  document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  parent_id   TEXT,
-  ord         INTEGER NOT NULL,
-  level       INTEGER NOT NULL DEFAULT 1,
-  heading     TEXT,
-  body_md     TEXT
+CREATE TABLE IF NOT EXISTS chats (
+  id              TEXT PRIMARY KEY,
+  title           TEXT NOT NULL,
+  context_sources TEXT,        -- JSON array of source_file ids
+  created_at      INTEGER NOT NULL,
+  updated_at      INTEGER NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_sections_doc ON sections(document_id);
 
 CREATE TABLE IF NOT EXISTS chat_messages (
+  chat_id     TEXT REFERENCES chats(id) ON DELETE CASCADE,
   id          TEXT PRIMARY KEY,
   role        TEXT NOT NULL,
   content     TEXT,

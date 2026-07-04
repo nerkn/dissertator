@@ -9,12 +9,20 @@ import {
 } from "@phosphor-icons/react";
 import { api, SIDECAR_BASE } from "./lib/api";
 import { ipc } from "./ipc";
-import type { ProjectStatus, Settings, SourcesResponse } from "@dissertator/shared";
+import type {
+  Document,
+  ProjectStatus,
+  Settings,
+  SourceFile,
+  SourcesResponse,
+} from "@dissertator/shared";
 import { PROVIDER_DEFAULTS } from "@dissertator/shared";
 import { LibraryPanel } from "./components/LibraryPanel";
 import { CenterPane } from "./components/CenterPane";
 import { ChatPanel } from "./components/ChatPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
+import type { Tab } from "./lib/tabs";
+import { kindForSource } from "./lib/tabs";
 
 type Health = "checking" | "up" | "down";
 
@@ -27,6 +35,61 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // --- Open-document tab model (P3 Workstream 2) ---------------------------
+  // One tab per source id; opening an already-open source just activates its
+  // existing tab. Closing the active tab falls through to the last remaining
+  // one (or null) so the pane never shows a stale viewer.
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  // Manuscript documents (the writable output). Fetched alongside sources so
+  // the Library can list them and the editor can be opened from there.
+  const [documents, setDocuments] = useState<Document[]>([]);
+
+  const openSource = useCallback((src: SourceFile) => {
+    setTabs((prev) => {
+      if (prev.some((t) => t.sourceId === src.id)) return prev;
+      return [
+        ...prev,
+        {
+          sourceId: src.id,
+          kind: kindForSource(src.kind),
+          title: src.filename,
+        },
+      ];
+    });
+    setActiveTabId(src.id);
+  }, []);
+
+  // Open a manuscript document in a new editor tab (one tab per document id).
+  const openDocument = useCallback((doc: Document) => {
+    setTabs((prev) => {
+      if (prev.some((t) => t.sourceId === doc.id)) return prev;
+      return [
+        ...prev,
+        { sourceId: doc.id, kind: "doc" as const, title: doc.title },
+      ];
+    });
+    setActiveTabId(doc.id);
+  }, []);
+
+  const closeTab = useCallback(
+    (sourceId: string) => {
+      setTabs((prev) => prev.filter((t) => t.sourceId !== sourceId));
+      // Closing the active tab → activate the last remaining one (or null).
+      // `tabs` here is the render-time value, which matches the `prev` the
+      // setTabs updater starts from, so `remaining` is consistent with the
+      // filter applied above.
+      setActiveTabId((cur) => {
+        if (cur !== sourceId) return cur;
+        const remaining = tabs.filter((t) => t.sourceId !== sourceId);
+        return remaining.length > 0
+          ? remaining[remaining.length - 1].sourceId
+          : null;
+      });
+    },
+    [tabs],
+  );
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -90,6 +153,19 @@ export default function App() {
   useEffect(() => {
     if (project?.initialized) refreshSources();
   }, [project?.initialized, project?.projectPath, refreshSources]);
+
+  // Refresh the document list (same triggers as sources).
+  const refreshDocuments = useCallback(async () => {
+    if (!project?.initialized) return;
+    try {
+      setDocuments(await api.listDocuments());
+    } catch {
+      /* sidecar mid-restart; UI degrades to an empty list */
+    }
+  }, [project?.initialized]);
+  useEffect(() => {
+    if (project?.initialized) refreshDocuments();
+  }, [project?.initialized, project?.projectPath, refreshDocuments]);
 
   // --- SSE: live updates as files ingest -----------------------------------
   // Open a single EventSource once the sidecar is up and a project is open.
@@ -162,6 +238,26 @@ export default function App() {
     }
   };
 
+  // Create a blank manuscript and open it. Title via prompt with a sensible
+  // default; empty/cancel aborts. Replaces the P4 wizard for now.
+  const handleNewDocument = async () => {
+    setError(null);
+    const title = window.prompt("Document title", "Untitled document");
+    if (title == null) return; // cancelled
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    setBusy(true);
+    try {
+      const doc = await api.createDocument({ title: trimmed });
+      await refreshDocuments();
+      openDocument(doc);
+    } catch (e) {
+      setError((e as Error)?.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onSaveSettings = async (s: Settings, key: string) => {
     await api.saveSettings(s);
     setSettings(s);
@@ -208,15 +304,32 @@ export default function App() {
         <LibraryPanel
           project={project}
           sources={sources}
+          documents={documents}
           onRescan={handleRescan}
           onAttentionResolved={refreshSources}
           busy={busy}
           provider={settings?.provider}
           ocrStrategy={settings?.ocrStrategy}
           apiKey={apiKey}
+          onOpen={openSource}
+          onNewDocument={handleNewDocument}
+          onOpenDocument={openDocument}
         />
-        <CenterPane initialized={initialized} />
-        <ChatPanel health={health} configured={configured} />
+        <CenterPane
+          initialized={initialized}
+          tabs={tabs}
+          activeTabId={activeTabId}
+          onActivate={setActiveTabId}
+          onClose={closeTab}
+          onOpen={openSource}
+          onNewDocument={handleNewDocument}
+        />
+        <ChatPanel
+          health={health}
+          configured={configured}
+          apiKey={apiKey}
+          sources={sources?.items ?? []}
+        />
       </main>
 
       <footer className="statusbar">
