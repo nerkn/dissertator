@@ -54,6 +54,7 @@ import {
   wrapInBlockquoteCommand,
   toggleLinkCommand,
 } from "@milkdown/kit/preset/commonmark";
+import { replaceAll } from "@milkdown/kit/utils";
 import {
   TextB,
   TextItalic,
@@ -74,6 +75,10 @@ import { api } from "../lib/api";
 
 interface Props {
   documentId: string;
+  /** P5: bumps whenever the agent edits this document. The editor refetches
+   *  on change and live-swaps the body via `replaceAll` when it has no unsaved
+   *  local edits (otherwise it shows a stale banner the user can accept). */
+  revision?: number;
 }
 
 /** Autosave lifecycle, shown as a small status pip in the toolbar. */
@@ -81,7 +86,7 @@ type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
 const AUTOSAVE_DEBOUNCE_MS = 800;
 
-export function ManuscriptEditor({ documentId }: Props) {
+export function ManuscriptEditor({ documentId, revision = 0 }: Props) {
   const [doc, setDoc] = useState<Document | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -106,7 +111,7 @@ export function ManuscriptEditor({ documentId }: Props) {
     return () => {
       aborted = true;
     };
-  }, [documentId]);
+  }, [documentId, revision]);
 
   if (loading) return <div className="editor-status">Loading document…</div>;
   if (error)
@@ -115,7 +120,10 @@ export function ManuscriptEditor({ documentId }: Props) {
 
   return (
     <MilkdownProvider>
-      <EditorInner document={doc} initialMarkdown={doc.bodyMd ?? ""} />
+      <EditorInner
+        document={doc}
+        initialMarkdown={doc.bodyMd ?? ""}
+      />
     </MilkdownProvider>
   );
 }
@@ -134,6 +142,9 @@ interface InnerProps {
 function EditorInner({ document, initialMarkdown }: InnerProps) {
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [showSource, setShowSource] = useState<boolean>(false);
+  // P5: the agent edited this doc while we had unsaved local changes. Show a
+  // banner offering to reload (discard local) — we never auto-clobber edits.
+  const [staleExternal, setStaleExternal] = useState<boolean>(false);
   // Live markdown mirror — drives the read-only source view without round-
   // tripping through the editor.
   const [sourceMd, setSourceMd] = useState<string>(initialMarkdown);
@@ -143,6 +154,13 @@ function EditorInner({ document, initialMarkdown }: InnerProps) {
   const latestMd = useRef<string>(initialMarkdown);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialMdRef = useRef<string>(initialMarkdown);
+  // The server's current body (from the latest fetch). Updated on every
+  // successful autosave and every agent-edit reload; used to decide whether
+  // a revision bump is a genuine external change vs. our own just-saved write.
+  const serverMdRef = useRef<string>(initialMarkdown);
+  // saveState in a ref so the revision effect (created once) reads current.
+  const saveStateRef = useRef<SaveState>(saveState);
+  saveStateRef.current = saveState;
 
   const doSave = useCallback(
     async (md: string) => {
@@ -157,6 +175,16 @@ function EditorInner({ document, initialMarkdown }: InnerProps) {
     [document.id],
   );
 
+  // Record the freshly-saved body so a revision bump comparing against it can
+  // tell our own write apart from a true external (agent) edit.
+  const doSaveWithTrack = useCallback(
+    async (md: string) => {
+      await doSave(md);
+      serverMdRef.current = md;
+    },
+    [doSave],
+  );
+
   // Called from the Milkdown `markdownUpdated` listener on every keystroke.
   const scheduleSave = useCallback(
     (md: string) => {
@@ -166,10 +194,10 @@ function EditorInner({ document, initialMarkdown }: InnerProps) {
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
         saveTimer.current = null;
-        void doSave(latestMd.current);
+        void doSaveWithTrack(latestMd.current);
       }, AUTOSAVE_DEBOUNCE_MS);
     },
-    [doSave],
+    [doSaveWithTrack],
   );
 
   // keep scheduleSave reachable from the (once-created) factory via a ref
@@ -182,10 +210,10 @@ function EditorInner({ document, initialMarkdown }: InnerProps) {
       if (saveTimer.current) {
         clearTimeout(saveTimer.current);
         saveTimer.current = null;
-        void doSave(latestMd.current);
+        void doSaveWithTrack(latestMd.current);
       }
     };
-  }, [doSave]);
+  }, [doSaveWithTrack]);
 
   // Create the Milkdown editor once. Empty deps + ref-captured callbacks
   // mean the editor is never rebuilt on re-render (which would wipe undo
@@ -221,8 +249,69 @@ function EditorInner({ document, initialMarkdown }: InnerProps) {
     [],
   );
 
+  // P5 live reload: when the parent refetches on an agent edit, `initialMarkdown`
+  // changes to the new server body. Swap it into the editor IN PLACE (no
+  // remount → no undo-wipe, no autosave-flush race) — but only when the editor
+  // is clean. If the user has unsaved local edits, show a stale banner instead
+  // of clobbering them. Skip the very first run (initial mount already set it).
+  const firstServerRun = useRef(true);
+  const applyServerMarkdown = useCallback(
+    (md: string, force: boolean) => {
+      serverMdRef.current = md;
+      latestMd.current = md;
+      setSourceMd(md);
+      get()?.action(replaceAll(md));
+      if (force) setStaleExternal(false);
+      setSaveState("idle");
+    },
+    [get],
+  );
+
+  useEffect(() => {
+    if (firstServerRun.current) {
+      firstServerRun.current = false;
+      serverMdRef.current = initialMarkdown;
+      return;
+    }
+    // No-op if the server body matches what we already show (e.g. our own
+    // just-saved write echoed back, or a no-op edit).
+    if (initialMarkdown === latestMd.current) {
+      serverMdRef.current = initialMarkdown;
+      return;
+    }
+    const dirty =
+      saveStateRef.current === "dirty" || saveStateRef.current === "saving";
+    if (dirty) {
+      setStaleExternal(true);
+      return;
+    }
+    applyServerMarkdown(initialMarkdown, false);
+  }, [initialMarkdown, applyServerMarkdown]);
+
   return (
     <div className="manuscript-editor">
+      {staleExternal && (
+        <div className="editor-stale-banner">
+          <span>
+            The agent edited this document. You have unsaved changes that would
+            be lost.
+          </span>
+          <button
+            type="button"
+            className="btn small primary"
+            onClick={() => applyServerMarkdown(initialMarkdown, true)}
+          >
+            Reload agent version
+          </button>
+          <button
+            type="button"
+            className="btn small ghost"
+            onClick={() => setStaleExternal(false)}
+          >
+            Keep mine
+          </button>
+        </div>
+      )}
       <Toolbar
         getEditor={get}
         title={document.title}

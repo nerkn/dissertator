@@ -1,4 +1,4 @@
-// Chat provider dispatcher (P3).
+// Chat provider dispatcher (P3, extended in P5 for the tool-using agent loop).
 //
 // Public entry point: `streamChat(opts)`. Currently a single OpenAI-compatible
 // adapter (covers openai/zai/openrouter/custom). Anthropic (claude) is NOT
@@ -12,19 +12,29 @@
 // ONLY via `opts.apiKey` → the Authorization Bearer header. It is never
 // stored, never logged, never cached in a module variable.
 
-export { streamOpenAIChat } from "./openai.ts";
-export type { ChatTurn, StreamChatOptions } from "./openai.ts";
+export {
+  streamOpenAIChat,
+} from "./openai.ts";
+export type {
+  ChatTurn,
+  LoopMessage,
+  StreamChatOptions,
+  StreamResult,
+  ToolCall,
+  ToolSpec,
+} from "./openai.ts";
 
 import { streamOpenAIChat } from "./openai.ts";
-import type { StreamChatOptions } from "./openai.ts";
+import type { StreamChatOptions, StreamResult } from "./openai.ts";
 
 /**
  * Stream a chat completion via the configured provider. Currently routes
  * everything to the OpenAI-compatible adapter; throws
  * `Error("chat adapter: <provider> provider is not OpenAI-compatible")` for
  * Anthropic (clean error, not a crash). See openai.ts for the streaming
- * protocol and key-isolation discipline.
+ * protocol and key-isolation discipline. Returns the assembled tool calls +
+ * finish reason (empty toolCalls for plain text answers).
  */
-export function streamChat(opts: StreamChatOptions): Promise<void> {
+export function streamChat(opts: StreamChatOptions): Promise<StreamResult> {
   return streamOpenAIChat(opts);
 }

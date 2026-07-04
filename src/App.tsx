@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import {
   Gear,
@@ -16,7 +16,10 @@ import type {
   SourceFile,
   SourcesResponse,
 } from "@dissertator/shared";
-import { PROVIDER_DEFAULTS } from "@dissertator/shared";
+import {
+  EMBEDDING_DEFAULTS,
+  PROVIDER_DEFAULTS,
+} from "@dissertator/shared";
 import { LibraryPanel } from "./components/LibraryPanel";
 import { CenterPane } from "./components/CenterPane";
 import { ChatPanel } from "./components/ChatPanel";
@@ -46,6 +49,12 @@ export default function App() {
   // Manuscript documents (the writable output). Fetched alongside sources so
   // the Library can list them and the editor can be opened from there.
   const [documents, setDocuments] = useState<Document[]>([]);
+  // P5: per-document revision counters. Bumped whenever the agent edits a
+  // document so its editor live-reloads the new body. Keyed by document id.
+  const [docRevisions, setDocRevisions] = useState<Record<string, number>>({});
+  // Embedding key (separate from the chat key; travels as X-Embedding-Key so
+  // the agent's corpus_* vector tools can query the index).
+  const [embeddingApiKey, setEmbeddingApiKey] = useState<string>("");
 
   const openSource = useCallback((src: SourceFile) => {
     setTabs((prev) => {
@@ -273,6 +282,82 @@ export default function App() {
     setShowSettings(false);
   };
 
+  // Fetch the EMBEDDING key (separate keychain slot from the chat key) once
+  // settings are known, so the agent's corpus_* vector tools can authenticate.
+  useEffect(() => {
+    if (!settings) return;
+    let stopped = false;
+    const slot = EMBEDDING_DEFAULTS[settings.embedding.provider].keyUser;
+    (async () => {
+      try {
+        const k = await ipc.getSecret(slot);
+        if (!stopped) setEmbeddingApiKey(k ?? "");
+      } catch {
+        /* keychain unavailable */
+      }
+    })();
+    return () => {
+      stopped = true;
+    };
+  }, [settings]);
+
+  // P5 callbacks: the agent edited a document, or asked the UI to open a
+  // viewer/editor. Document edits bump the per-doc revision so its editor
+  // live-reloads; the Library list refreshes for title changes.
+  const handleDocumentEdited = useCallback(
+    (doc: Document) => {
+      setDocuments((prev) =>
+        prev.some((d) => d.id === doc.id)
+          ? prev.map((d) => (d.id === doc.id ? { ...d, ...doc } : d))
+          : [...prev, doc],
+      );
+      setDocRevisions((prev) => ({
+        ...prev,
+        [doc.id]: (prev[doc.id] ?? 0) + 1,
+      }));
+    },
+    [],
+  );
+
+  const handleOpenSourceById = useCallback(
+    (sourceId: string) => {
+      const src = sources?.items.find((s) => s.id === sourceId);
+      if (src) openSource(src);
+    },
+    [sources, openSource],
+  );
+
+  const handleOpenDocumentById = useCallback(
+    (documentId: string) => {
+      const doc = documents.find((d) => d.id === documentId);
+      if (doc) {
+        openDocument(doc);
+        return;
+      }
+      // Not in the loaded list yet (e.g. the agent just created it) — fetch.
+      void api
+        .getDocument(documentId)
+        .then((d) => {
+          setDocuments((prev) =>
+            prev.some((x) => x.id === d.id) ? prev : [...prev, d],
+          );
+          openDocument(d);
+        })
+        .catch(() => {
+          /* ignore — the doc may not exist */
+        });
+    },
+    [documents, openDocument],
+  );
+
+  // The document the user is currently editing (active doc tab), if any. Sent
+  // each chat turn as the default target for the agent's p_* tools.
+  const activeDocumentId = useMemo(() => {
+    if (!activeTabId) return undefined;
+    const tab = tabs.find((t) => t.sourceId === activeTabId);
+    return tab && tab.kind === "doc" ? tab.sourceId : undefined;
+  }, [activeTabId, tabs]);
+
   const initialized = !!project?.initialized;
   const configured = !!settings && !!apiKey;
 
@@ -324,6 +409,7 @@ export default function App() {
           initialized={initialized}
           tabs={tabs}
           activeTabId={activeTabId}
+          docRevisions={docRevisions}
           onActivate={setActiveTabId}
           onClose={closeTab}
           onOpen={openSource}
@@ -335,6 +421,11 @@ export default function App() {
           configured={configured}
           apiKey={apiKey}
           sources={sources?.items ?? []}
+          activeDocumentId={activeDocumentId}
+          embeddingApiKey={embeddingApiKey}
+          onDocumentEdited={handleDocumentEdited}
+          onOpenSource={handleOpenSourceById}
+          onOpenDocument={handleOpenDocumentById}
         />
       </main>
 

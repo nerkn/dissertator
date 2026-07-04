@@ -22,7 +22,7 @@ to guess what kind of object an id refers to — the domain tells it.
 |---|---|---|---|
 | `corpus_` | the **index** (references: title/author/year + vectors) | read + write metadata | `references`, `chunks` |
 | `doc_` | **source bundles** (research PDFs/DOCX/etc.) | **read-only** | `source_files`, `chunks` |
-| `p_` | the **paper / manuscript** (the thesis) | **read-write** | `documents`, `sections` |
+| `p_` | the **paper / manuscript** (the thesis) | **read-write** | `documents` (`body_md`) |
 | `gui_` | **user-facing side-effects** (viewer, prompts, narration) | n/a | Tauri IPC to frontend |
 
 **Why the split** (DESIGN §10): a source bundle is read-only (you don't edit a
@@ -177,97 +177,119 @@ small `readSourceSlice()` helper assembles page/line output. Needs building in P
 
 ## 4. `p_*` — the manuscript (read-write)
 
-The thesis being written. Addressed by **section + location**. Locations use
-**lines** as the primary unit (manuscripts aren't paginated like PDFs);
-`page` is a soft viewport concept for very long sections.
+The thesis being written. A manuscript is **one body**: the `documents.body_md`
+column holds a single markdown blob (DESIGN §3 — no `sections` table; headers
+are just markdown lines). All `p_*` tools address that blob **content-first**,
+never by line number or section id: the agent names the text it is editing
+(`oldtext` / `anchor`) and the server locates it. This is robust to the user
+re-typing above the edit (line numbers would drift; matched text does not).
+
+`id` is a document id. When omitted, the tools fall back to the run's
+**active document** (the doc the user has open in the editor, surfaced to the
+loop as `ToolContext.activeDocumentId` from the `POST /chat` body's
+`activeDocumentId`).
 
 ### `p_read`
 
-> Read a manuscript section.
+> Read a manuscript body.
 
 ```ts
-p_read(id: string, loc?: {
-  lines?: [number, number],    // [start, end] inclusive, 1-based
-  page?:  number,              // viewport page (~50 lines/page); default 1
-}): Promise<{
-  sectionId:    string,
-  documentId:   string,
-  heading:      string,
-  text:         string,        // markdown body for the requested slice
-  totalLines:   number,
+p_read(id?: string): Promise<{
+  id:       string,
+  title:    string,
+  bodyMd:   string,        // the full markdown body
 }>
 ```
 
-**Errors**: `404` if `id` unknown.
+**Errors**: `404` if `id` unknown (or no active document when `id` omitted).
 
-*Impl: ⬜ — depends on `sections` table population (P4 wizard).*
+*Impl: ✅ — `documents` table.*
+
+---
+
+### `p_create`
+
+> Create a new manuscript document with an initial body. Used by the
+> new-document-via-chat flow (the agent drafts the first scaffold).
+
+```ts
+p_create(title: string, text?: string): Promise<{
+  id:       string,
+  title:    string,
+  bodyMd:   string,
+}>
+```
+
+**Behavior**: inserts a `documents` row; `text` defaults to `""`. Emits a
+live `edit` SSE event so the frontend can open/refresh the new doc.
+
+*Impl: ✅ — `documents` table.*
 
 ---
 
 ### `p_write`
 
-> Replace text in a manuscript section. **`oldtext` makes the optimistic-
-> concurrency check explicit** (DESIGN §11 #18) — conflict rejection is
-> concrete, not magic.
+> Replace the first occurrence of `oldtext` in the body with `text`.
+> **`oldtext` is the optimistic-concurrency check** (DESIGN §11 #18) — made
+> explicit and concrete, not magic.
 
 ```ts
-p_write(id: string, loc: {
-  lines: [number, number],     // [start, end] inclusive being replaced
-  oldtext: string,             // what the agent believes is currently there
-  text:    string,             // the replacement (may contain [@citekey:page] tokens)
-}): Promise<{ accepted: true, sectionId: string } | { accepted: false, reason: "conflict", currentText: string }>
+p_write(id: string, {
+  oldtext: string,   // what the agent believes is currently in the body
+  text:    string,   // the replacement (may contain [@citekey:page] tokens)
+}): Promise<{ ok: true, id: string, bodyMd: string } | { ok: false, error: string }>
 ```
 
 **Behavior**
-- The server checks that `lines[start..end]` currently equals `oldtext`
-  (after normalization). If it does → write succeeds. If not → **rejected**,
-  `currentText` returned so the agent can re-read and retry.
+- The server finds the **first** occurrence of `oldtext` in `body_md`. If
+  found → replace it, persist, emit a live `edit` event, return the new body.
+  If not found → `ok:false` with an `error` like `"oldtext not found"` (the
+  body changed under the agent — it should `p_read` and retry).
 - This is the **only** conflict mechanism: no read-only locking, no blocking
-  (DESIGN §10). If the user edits while the agent thinks, the agent's write is
-  rejected and it may escalate via `gui_options`.
-- In `confirm_edits` mode, an accepted write is staged for user approval before
-  commit (the return still says `accepted:true` for the optimistic check; the
-  approval gate is separate).
+  (DESIGN §10). If the user edits while the agent thinks, the agent's
+  `oldtext` won't match and the call fails harmlessly.
+- `accept_all` mode (the only mode for now): accepted writes commit
+  immediately. `confirm_edits` is deferred.
 
-**Errors**: `404` if section unknown. `accepted:false` is **not** an error —
-it's a normal control-flow signal.
+**Errors**: `404` (id unknown) is an error; `ok:false` (oldtext absent) is
+  **not** — it's a normal control-flow signal.
 
 **Example**
 ```ts
-const r = await p_write("sec_3", {
-  lines: [10, 12],
+const r = await p_write("doc_3", {
   oldtext: "Crime rose in 2020.",
   text: "Crime rose 12% in 2020 [@smith2020:42].",
 })
-if (!r.accepted) {
-  // user edited section mid-thought — re-read and retry, or ask
-  await gui_options([{ short:"Retry", prompt:"Section changed; retry the edit?" }])
+if (!r.ok) {
+  // body changed mid-thought — re-read and retry, or ask the user
+  await gui_options([{ short:"Retry", prompt:"The text changed; retry the edit?" }])
 }
 ```
 
-*Impl: ⬜ — `sections` table exists; the write + conflict check builds in P5.*
+*Impl: ✅ — `documents.body_md`; first-occurrence replace.*
 
 ---
 
 ### `p_insert`
 
-> Insert text into a manuscript section at a location (does not replace).
+> Insert `text` immediately **after** the first occurrence of `anchor`.
+> Does not replace existing text.
 
 ```ts
-p_insert(id: string, loc: {
-  line:  number,               // insert BEFORE this line (1-based; line 1 = top)
-  text:  string,               // may contain [@citekey:page] tokens
-}): Promise<{ accepted: true, sectionId: string } | { accepted: false, reason: "conflict", currentText: string }>
+p_insert(id: string, {
+  anchor: string,   // insert AFTER the first match; "" → prepend at top
+  text:  string,    // may contain [@citekey:page] tokens
+}): Promise<{ ok: true, id: string, bodyMd: string } | { ok: false, error: string }>
 ```
 
 **Behavior**
-- Same optimistic-concurrency discipline as `p_write`, but the check is on the
-  **line count / boundary** rather than matching existing text. Concretely: the
-  server verifies the section still has at least `line - 1` lines; if the user
-  deleted lines above, the insert is rejected and `currentText` returned.
-- `line` beyond current length → appends at end (not an error).
+- `anchor: ""` (empty) → **prepend** `text` to the top of the body.
+- Non-empty `anchor` → find its first occurrence; insert `text` right after
+  it. If `anchor` is absent → `ok:false` (`"anchor not found"`); the agent
+  re-reads and retries (or uses a different anchor / `p_write`).
+- Emits a live `edit` event on success.
 
-*Impl: ⬜ — P5.*
+*Impl: ✅ — `documents.body_md`; first-occurrence anchor.*
 
 ---
 
@@ -291,11 +313,11 @@ gui_doc_open(id: string, page?: number): Promise<{ opened: true }>
 
 ### `gui_p_open`
 
-> Open / focus the manuscript (optionally at a section).
+> Open / focus the manuscript editor on a document.
 
 ```ts
-gui_p_open(sectionId?: string): Promise<{ opened: true }>
-```
+gui_p_open(documentId: string): Promise<{ opened: true }>
+``````
 
 *Impl: ⬜ — P3a editor + P5 IPC.*
 
@@ -339,7 +361,7 @@ gui_action(
 **Behavior**
 - `warn` — yellow (e.g. "Couldn't find a source for this claim; proceeding
   uncited").
-- `celebrate` — green (e.g. "Drafted section 3 — 3 citations added").
+- `celebrate` — green (e.g. "Drafted the methods section — 3 citations added").
 - `info` — neutral (e.g. "Embedding query…").
 - Never blocks; the agent continues immediately.
 
@@ -355,10 +377,10 @@ gui_action(
   before commit; the agent may also call `gui_options` proactively.
 
 ### Conflict handling (optimistic, no locking)
-If the user edits a section while the agent is thinking, the agent's
-`p_write`/`p_insert` to that section is **rejected** (`accepted:false`) and
-the current text is returned. The agent re-reads and retries, or escalates via
-`gui_options`. **No read-only locking, no blocking** (DESIGN §10).
+If the user edits the body while the agent is thinking, the agent's
+`p_write`/`p_insert` won't find its `oldtext`/`anchor` → the call returns
+`ok:false` with an error. The agent re-reads (`p_read`) and retries, or
+escalates via `gui_options`. **No read-only locking, no blocking** (DESIGN §10).
 
 ### Cost control
 Every run has a **step budget**; tokens are tracked per message
@@ -374,30 +396,39 @@ tokens never dangle.
 
 ---
 
-## 7. Open questions (resolve in P5)
+## 7. Decisions resolved in P5
 
-1. **`corpus_list({vector})` chunk→reference rollup.** Vectors live on chunks;
-   references own many chunks. When the agent asks `corpus_list({vector:"x"})`,
-   do we (a) return each reference once, ranked by its **best** chunk score, or
-   (b) return references repeated per top chunk? *Lean: (a) — one row per
-   reference, best-chunk score, de-dup by `referenceId`.*
+These were open in the spec; the P5 implementation settled them as follows.
 
-2. **`corpus_list({page})` semantics.** Result pagination (offset by 20) vs
-   "references touching source page N"? *Lean: pagination — `page` is the
-   result page; per-source-page filtering belongs on `doc_read`.*
+1. **`corpus_list({query})` chunk→reference rollup.** Vectors live on chunks;
+   references own many chunks. **Resolved: one row per reference, de-duped by
+   reference id**, ranked by best-chunk order (the KNN hits drive ordering;
+   each reference appears once). Non-query (`author`/`title`) calls filter
+   `listReferences()` directly.
 
-3. **Free-text ask.** `gui_options` covers multiple-choice. Some questions
-   ("what's your advisor's name?") don't have canned options. Add a sibling
-   `gui_ask(text)` for open questions, or force everything into options?
-   *Lean: deferred — revisit when the first P5 use case actually needs it.*
+2. **`corpus_list` result paging.** Dropped — a hard `limit` (≤20) is enough
+   for an agent turn. No offset/page param.
 
-4. **`p_write` normalization.** What counts as "equal" for the `oldtext`
-   check — byte-exact, whitespace-normalized, or fuzzy? *Lean: trailing-
-   whitespace-normalized (trim each line, collapse internal runs).*
+3. **Free-text ask.** Not added. `gui_options` covers multiple-choice; open
+   questions are just asked in the assistant's streamed text and the user
+   replies normally. Revisit if a use case needs a dedicated `gui_ask`.
 
-5. **`p_insert` conflict granularity.** The line-count check is coarse; a user
-   could rewrite line 5 without changing count and the insert still "succeeds."
-   Acceptable for v1, or tighten? *Lean: accept for v1; revisit if it bites.*
+4. **`p_write` equality.** **Byte-exact substring match** (`String.indexOf`).
+   The model is told to `p_read` and copy verbatim. No whitespace
+   normalization in v1 (keeps the check predictable; revisit if it bites).
+
+5. **`p_insert` conflict granularity.** **Anchor-based**, not line-based: the
+   agent names an `anchor` string and text is inserted after its first
+   occurrence. Empty anchor prepends at top. No line counting at all — the
+   line-count drift problem is gone by construction.
+
+6. **`gui_options` model.** **No pause, no callback.** Options render as
+   quick-reply chips after the turn; clicking one sends its `prompt` as a new
+   user message. The stream does not block waiting for a choice.
+
+7. **Modes.** **`accept_all` only** in v1. `confirm_edits` (stage writes for
+   human approval) is deferred — the live-reload editor + stale banner cover
+   the immediate UX.
 
 6. **Streaming.** `p_write`/`p_insert` return when committed; but the agent
    should also **stream** partial text so the user sees live typing. Is that a
@@ -410,14 +441,16 @@ tokens never dangle.
 
 | Tool | Backend (sidecar) | Status |
 |---|---|---|
-| `corpus_list` | `search.ts` (KNN) + new reference-rollup query over `references`/`chunks` | 🟡 |
+| `corpus_list` | `search.ts` (KNN) + reference-rollup query over `references`/`chunks` | ✅ |
 | `corpus_write` | `db.ts:upsertReference` (+ routes in `index.ts`) | ✅ |
-| `doc_read` | `chunks` table + new `readSourceSlice()` helper | 🟡 |
-| `p_read` / `p_write` / `p_insert` | `sections` table (P4 populates); write+conflict in P5 | ⬜ |
-| `gui_doc_open` | Tauri IPC (P3c viewer) | ⬜ |
-| `gui_p_open` | Tauri IPC (P3a editor) | ⬜ |
-| `gui_options` / `gui_action` | Tauri IPC + frontend toasts | ⬜ |
+| `doc_read` | `chunks` table + `readSourceSlice()` helper | ✅ |
+| `p_read` / `p_write` / `p_insert` / `p_create` | `documents.body_md`; content-addressed (oldtext/anchor) | ✅ |
+| `gui_doc_open` / `gui_p_open` | SSE `gui` event → frontend opens tab | ✅ |
+| `gui_options` / `gui_action` | SSE `gui` event → frontend chips / toasts | ✅ |
 
-**P4 prerequisite**: the `documents` + `sections` tables exist but are
-unpopulated. The P4 wizard creates a document + its section outline; without
-that, the `p_*` tools have nothing to operate on.
+**Implementation**: the agent loop lives in `sidecar/src/agent/loop.ts`
+(`runAgentLoop`, iterate-until-text, step-capped); tool dispatch in
+`sidecar/src/agent/tools.ts` (`TOOL_SPECS` + `dispatchTool`); the SSE relay
+fans `delta`/`tool_call`/`tool_result`/`edit`/`gui`/`done` events from
+`POST /chat` (`sidecar/src/index.ts`). A manuscript is one `body_md` blob —
+no `sections` table (removed; headers are markdown lines).

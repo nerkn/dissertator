@@ -19,6 +19,9 @@ interface Props {
   initialized: boolean;
   tabs: Tab[];
   activeTabId: string | null;
+  /** P5: per-document revision counters. Bumping a doc's revision remounts
+   *  its editor with fresh server content (the agent just edited it). */
+  docRevisions?: Record<string, number>;
   onActivate: (sourceId: string) => void;
   onClose: (sourceId: string) => void;
   /** Used only for type-checking the open pipeline (the handler lives in App).
@@ -33,6 +36,7 @@ export function CenterPane({
   initialized,
   tabs,
   activeTabId,
+  docRevisions,
   onActivate,
   onClose,
   onNewDocument,
@@ -123,7 +127,11 @@ export function CenterPane({
           <TextViewer key={active.sourceId} sourceId={active.sourceId} />
         )}
         {active.kind === "doc" && (
-          <ManuscriptEditor key={active.sourceId} documentId={active.sourceId} />
+          <ManuscriptEditor
+            key={active.sourceId}
+            documentId={active.sourceId}
+            revision={docRevisions?.[active.sourceId] ?? 0}
+          />
         )}
       </div>
     </section>

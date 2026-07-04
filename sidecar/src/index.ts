@@ -38,7 +38,12 @@ import { getPrompts } from "./prompts.ts";
 import { searchCorpus } from "./search";
 import { crossrefByDoi, crossrefSearch } from "./cite/crossref.ts";
 import { exportBibtex, parseBibtex } from "./cite/bibtex.ts";
-import { streamChat, type ChatTurn } from "./chat/index.ts";
+import {
+  runAgentLoop,
+  type AgentStreamEvent,
+} from "./agent/loop.ts";
+import type { ToolContext } from "./agent/tools.ts";
+import type { LoopMessage } from "./chat/openai.ts";
 import {
   start,
   scanAll,
@@ -640,6 +645,13 @@ app.post("/chat", async (c) => {
   const apiKey = auth.startsWith("Bearer ") ? auth.slice(7) : undefined;
   if (!apiKey) return c.json({ error: "chat api key required" }, 400);
 
+  // P5: the document the user is currently editing (default p_* target) + the
+  // embedding key (separate secret slot) for corpus_list vector search. Both
+  // are optional; corpus_list degrades to metadata-only without the embed key.
+  const activeDocId = (body.activeDocumentId ?? "").trim() || undefined;
+  const embedKeyRaw = c.req.header("X-Embedding-Key") ?? "";
+  const embeddingApiKey = embedKeyRaw.trim() || undefined;
+
   const settings = getSettings();
   const config = resolveChatConfig(settings);
 
@@ -652,25 +664,44 @@ app.post("/chat", async (c) => {
       openFiles,
     });
 
-    // Build the system message: role + optional open-files context.
+    // Build the system message: role + tool guidance + active-doc + context.
     const systemParts: string[] = [
-      "You are Dissertator, a research writing assistant. Answer grounded in the provided source context. If the context is insufficient, say so. Cite sources as [@citekey] when relevant.",
+      "You are Dissertator, a research writing assistant. You help the user read sources and write their manuscript.",
+      "",
+      "You have tools — use them proactively:",
+      "- corpus_list({query}) semantic-searches the embedded corpus; ({author,title}) filters the reference index. Returns short metadata; call doc_read for full text.",
+      "- doc_read({id, page?}) reads a source's extracted text.",
+      "- p_read({id?}) reads the manuscript body (id defaults to the active document).",
+      "- p_create({title, text?}) creates a new manuscript.",
+      "- p_write({id?, oldtext, text}) REPLACES the first occurrence of `oldtext` (must exist verbatim) with `text`.",
+      "- p_insert({id?, anchor, text}) INSERTs `text` right after the first occurrence of `anchor` (empty anchor = top of the body).",
+      "- gui_doc_open / gui_p_open open things for the user; gui_options offers quick-reply choices (does NOT pause); gui_action narrates milestones.",
+      "",
+      "Manuscript edits are CONTENT-ADDRESSED: pass the exact `oldtext`/`anchor` you got from p_read. If p_write/p_insert fails because the text wasn't found, p_read again — the user may have edited meanwhile.",
+      "Cite sources inline as [@citekey] or [@citekey:42] (page). Prefer grounded claims; say plainly when the sources are insufficient.",
     ];
+    if (activeDocId) {
+      const d = getDocument(activeDocId);
+      systemParts.push(
+        `The user is currently editing the manuscript "${d?.title ?? "(unknown)"}" (id: ${activeDocId}). p_* tools without an explicit \`id\` act on it.`
+      );
+    }
     const ctx = buildOpenFilesContext(openFiles);
     if (ctx) {
       systemParts.push(
-        `\nThe user has the following source files open. Use this as grounding context:\n\n${ctx}`
+        `\nThe user has the following source files open as grounding context:\n\n${ctx}`
       );
     }
-    const messages: ChatTurn[] = [
+    const messages: LoopMessage[] = [
       { role: "system", content: systemParts.join("\n") },
       // Replay THIS chat's recent turns for conversational continuity (omit
-      // system rows; we synthesize our own above).
+      // system rows; we synthesize our own above). Only text content is
+      // replayed — the tool-call trace lives in the current run only.
       ...listChatMessages(chatId, 20)
         .filter((m) => m.role !== "system" && m.id !== userMsg.id)
         .slice(-12)
         .map(
-          (m): ChatTurn => ({
+          (m): LoopMessage => ({
             role: m.role === "assistant" ? "assistant" : "user",
             content: m.content ?? "",
           })
@@ -678,41 +709,95 @@ app.post("/chat", async (c) => {
       { role: "user", content: message },
     ];
 
-    let assistantText = "";
-    let usage = { prompt: 0, completion: 0 };
-    let aborted = false;
     const ac = new AbortController();
+    let aborted = false;
     stream.onAbort(() => {
       aborted = true;
       ac.abort();
     });
 
+    // P5: single SSE fan-in. Every beat (deltas, tool calls/results, live
+    // edits, gui side-effects) flows through here as a named event.
+    const onEvent = async (e: AgentStreamEvent): Promise<void> => {
+      switch (e.type) {
+        case "delta":
+          await stream.writeSSE({ event: "delta", data: e.text });
+          break;
+        case "tool_call":
+          await stream.writeSSE({
+            event: "tool_call",
+            data: JSON.stringify({
+              id: e.id,
+              name: e.name,
+              args: e.args,
+            }),
+          });
+          break;
+        case "tool_result":
+          await stream.writeSSE({
+            event: "tool_result",
+            data: JSON.stringify({
+              id: e.id,
+              name: e.name,
+              ok: e.ok,
+              summary: e.summary,
+              ...(e.error ? { error: e.error } : {}),
+            }),
+          });
+          break;
+        case "edit":
+          await stream.writeSSE({
+            event: "edit",
+            data: JSON.stringify({
+              documentId: e.documentId,
+              title: e.title,
+              bodyMd: e.bodyMd,
+            }),
+          });
+          break;
+        case "gui":
+          await stream.writeSSE({
+            event: "gui",
+            data: JSON.stringify(e.gui),
+          });
+          break;
+      }
+    };
+    const toolContext: ToolContext = {
+      embeddingApiKey,
+      activeDocumentId: activeDocId,
+      emitGui: (gui) => {
+        void onEvent({ type: "gui", gui });
+      },
+    };
+
+    let content = "";
+    let usage = { prompt: 0, completion: 0 };
+    let toolCalls = 0;
+    let capped = false;
     try {
-      await streamChat({
+      const res = await runAgentLoop({
         apiKey,
         config,
         messages,
+        toolContext,
         signal: ac.signal,
-        onDelta: async (delta) => {
-          assistantText += delta;
-          await stream.writeSSE({ event: "delta", data: delta });
-        },
-        onUsage: (p, comp) => {
-          usage = { prompt: p, completion: comp };
-        },
-        onAbort: () => {
-          aborted = true;
-        },
+        onEvent,
       });
+      content = res.content;
+      usage = res.usage;
+      toolCalls = res.toolCalls;
+      capped = res.capped;
+      aborted = aborted || res.aborted;
     } catch (e) {
       const errMsg = (e as Error)?.message ?? String(e);
       // Surface the error but still persist whatever streamed before the
       // failure, so the transcript isn't lost.
-      const partial = assistantText
+      const partial = content
         ? insertChatMessage({
             chatId,
             role: "assistant",
-            content: assistantText,
+            content,
             openFiles,
             costTokens: usage,
           })
@@ -732,7 +817,7 @@ app.post("/chat", async (c) => {
     const assistantMsg = insertChatMessage({
       chatId,
       role: "assistant",
-      content: assistantText || "",
+      content: content || "",
       openFiles,
       costTokens: usage,
     });
@@ -745,6 +830,8 @@ app.post("/chat", async (c) => {
         assistantMessageId: assistantMsg.id,
         aborted,
         usage,
+        toolCalls,
+        capped,
       }),
     });
   });

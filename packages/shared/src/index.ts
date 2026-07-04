@@ -342,7 +342,35 @@ export interface ChatRequest {
   message: string;
   /** Source-file ids to inject as context (their concatenated chunks). */
   openFiles?: string[];
+  /**
+   * The document the user is currently editing (transient UI state, not a
+   * binding — chats stay document-unbound). P5: the agent uses this as the
+   * default target for `p_read`/`p_write`/`p_insert` when the tool's `id` is
+   * omitted, and mentions it in the system prompt so the model knows which
+   * manuscript it is co-authoring.
+   */
+  activeDocumentId?: string;
 }
+
+/**
+ * One option offered to the user mid-run via `gui_options`. Clicking it sends
+ * {@link prompt} as the user's next message; {@link short} is the chip label.
+ */
+export interface GuiOption {
+  short: string;
+  prompt: string;
+}
+
+/**
+ * A `gui_*` tool side-effect relayed to the frontend over the chat SSE stream
+ * (event name `gui`). The frontend opens a viewer, shows option chips, or
+ * surfaces a non-blocking narration beat. These never pause the run.
+ */
+export type GuiEvent =
+  | { kind: "doc_open"; sourceId: string }
+  | { kind: "p_open"; documentId: string }
+  | { kind: "options"; options: GuiOption[] }
+  | { kind: "action"; action: "warn" | "celebrate" | "info"; text: string };
 
 /**
  * A predefined prompt loaded from the project's `Dissertator/prompts.md`.

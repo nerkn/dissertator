@@ -35,7 +35,15 @@ import {
   Files,
   Lightbulb,
 } from "@phosphor-icons/react";
-import type { Chat, ChatMessage, Prompt, SourceFile } from "@dissertator/shared";
+import type {
+  Chat,
+  ChatMessage,
+  Document,
+  GuiEvent,
+  GuiOption,
+  Prompt,
+  SourceFile,
+} from "@dissertator/shared";
 import { api, streamChat } from "../lib/api";
 
 interface Props {
@@ -43,6 +51,16 @@ interface Props {
   configured: boolean;
   apiKey: string;
   sources: SourceFile[];
+  /** Document the user is editing (default p_* target; sent each turn). */
+  activeDocumentId?: string;
+  /** Embedding key for the agent's corpus_* vector tools. */
+  embeddingApiKey?: string;
+  /** The agent wrote/changed a document — App refreshes its list + live-reloads. */
+  onDocumentEdited?: (doc: Document) => void;
+  /** The agent asked the UI to open a source viewer (gui_doc_open). */
+  onOpenSource?: (sourceId: string) => void;
+  /** The agent asked the UI to open a document editor (gui_p_open). */
+  onOpenDocument?: (documentId: string) => void;
 }
 
 /**
@@ -61,8 +79,18 @@ const NEW_DOCUMENT_PROMPT_FALLBACK =
   "I just created a new, empty document. Help me plan its structure. Ask me what kind of manuscript this is (journal article, thesis chapter, literature review, conference paper), my topic, and any structure I already have in mind. Then propose a clear heading outline we can refine before writing.";
 
 export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
-  { health, configured, apiKey, sources },
-  ref
+  {
+    health,
+    configured,
+    apiKey,
+    sources,
+    activeDocumentId,
+    embeddingApiKey,
+    onDocumentEdited,
+    onOpenSource,
+    onOpenDocument,
+  },
+  ref,
 ) {
   // --- chats + active chat -------------------------------------------------
   const [chats, setChats] = useState<Chat[]>([]);
@@ -145,57 +173,140 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   const [streaming, setStreaming] = useState(false);
   const [liveAssistant, setLiveAssistant] = useState("");
   const [error, setError] = useState<string | null>(null);
+  // P5 narration beats for the in-flight assistant turn (tool_call+result pairs).
+  const [toolBeats, setToolBeats] = useState<ToolBeat[]>([]);
+  // Quick-reply chips the agent offered via gui_options (cleared on next send).
+  const [pendingOptions, setPendingOptions] = useState<GuiOption[] | null>(null);
+  // Ephemeral non-blocking beats the agent surfaced via gui_action.
+  const [toasts, setToasts] = useState<ChatToast[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Autoscroll to bottom as the transcript or the live reply grows.
+  const pushToast = useCallback((kind: ChatToast["kind"], text: string) => {
+    const id = `t-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    setToasts((prev) => [...prev, { id, kind, text }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 5000);
+  }, []);
+
+  // Autoscroll to bottom as the transcript, the live reply, or its tool
+  // narration grows.
   useEffect(() => {
     scrollRef.current?.scrollTo({
       top: scrollRef.current.scrollHeight,
       behavior: "smooth",
     });
-  }, [messages, liveAssistant]);
+  }, [messages, liveAssistant, toolBeats, pendingOptions]);
 
-  const send = useCallback(async () => {
-    const text = input.trim();
-    if (!text || !activeChatId || streaming) return;
-    setError(null);
-    setInput("");
+  const send = useCallback(
+    async (overrideText?: string) => {
+      const text = (overrideText ?? input).trim();
+      if (!text || !activeChatId || streaming) return;
+      setError(null);
+      setInput("");
+      // Stale quick-reply chips disappear the moment the user says anything else.
+      setPendingOptions(null);
+      setToolBeats([]);
 
-    // Optimistic user bubble (no id); replaced wholesale on reload.
-    const optimistic: ChatMessage = {
-      id: `pending-${Date.now()}`,
-      chatId: activeChatId,
-      role: "user",
-      content: text,
-      openFiles: activeChat?.contextSources ?? [],
-      costTokens: null,
-      createdAt: Date.now(),
-    };
-    setMessages((prev) => [...prev, optimistic]);
+      // Optimistic user bubble (no id); replaced wholesale on reload.
+      const optimistic: ChatMessage = {
+        id: `pending-${Date.now()}`,
+        chatId: activeChatId,
+        role: "user",
+        content: text,
+        openFiles: activeChat?.contextSources ?? [],
+        costTokens: null,
+        createdAt: Date.now(),
+      };
+      setMessages((prev) => [...prev, optimistic]);
 
-    const ac = new AbortController();
-    abortRef.current = ac;
-    setStreaming(true);
-    setLiveAssistant("");
+      const ac = new AbortController();
+      abortRef.current = ac;
+      setStreaming(true);
+      setLiveAssistant("");
 
-    const result = await streamChat(activeChatId, text, apiKey, {
-      openFiles: activeChat?.contextSources ?? [],
-      onDelta: (d) => setLiveAssistant((prev) => prev + d),
-      signal: ac.signal,
-    });
+      const result = await streamChat(activeChatId, text, apiKey, {
+        openFiles: activeChat?.contextSources ?? [],
+        activeDocumentId,
+        embeddingApiKey,
+        onDelta: (d) => setLiveAssistant((prev) => prev + d),
+        onToolCall: (e) =>
+          setToolBeats((prev) => [
+            ...prev,
+            { id: e.id, name: e.name, args: e.args },
+          ]),
+        onToolResult: (e) =>
+          setToolBeats((prev) =>
+            prev.map((b) =>
+              b.id === e.id
+                ? { ...b, ok: e.ok, summary: e.summary, error: e.error }
+                : b,
+            ),
+          ),
+        onEdit: (e) => {
+          onDocumentEdited?.({
+            id: e.documentId,
+            title: e.title,
+            bodyMd: e.bodyMd,
+            // The edit payload carries only id/title/bodyMd; the doc-type
+            // fields are not part of the live event. App keeps its existing
+            // record for those and only the body/title change in practice.
+            docType: null,
+            thesis: null,
+            researchQuestions: [],
+            focusPrompt: null,
+            createdAt: Date.now(),
+          });
+        },
+        onGui: (g: GuiEvent) => {
+          switch (g.kind) {
+            case "doc_open":
+              onOpenSource?.(g.sourceId);
+              break;
+            case "p_open":
+              onOpenDocument?.(g.documentId);
+              break;
+            case "options":
+              setPendingOptions(g.options);
+              break;
+            case "action":
+              pushToast(g.action, g.text);
+              break;
+          }
+        },
+        signal: ac.signal,
+      });
 
-    setStreaming(false);
-    setLiveAssistant("");
-    abortRef.current = null;
+      setStreaming(false);
+      setLiveAssistant("");
+      setToolBeats([]);
+      abortRef.current = null;
 
-    if (result.error && !result.aborted) {
-      setError(result.error);
-    }
-    // Reload canonical state (server persisted both turns, even on abort).
-    await loadMessages(activeChatId);
-  }, [input, activeChatId, streaming, activeChat, apiKey, loadMessages]);
+      if (result.error && !result.aborted) {
+        setError(result.error);
+      } else if (result.capped) {
+        pushToast("warn", "Agent hit its step cap — it may not have finished.");
+      }
+      // Reload canonical state (server persisted both turns, even on abort).
+      await loadMessages(activeChatId);
+    },
+    [
+      input,
+      activeChatId,
+      streaming,
+      activeChat,
+      apiKey,
+      loadMessages,
+      activeDocumentId,
+      embeddingApiKey,
+      onDocumentEdited,
+      onOpenSource,
+      onOpenDocument,
+      pushToast,
+    ],
+  );
 
   const stop = useCallback(() => {
     abortRef.current?.abort();
@@ -478,20 +589,47 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
               <MessageBubble key={m.id} msg={m} />
             ))}
             {streaming && (
-              <MessageBubble
-                msg={{
-                  id: "live",
-                  chatId: activeChatId ?? "",
-                  role: "assistant",
-                  content: liveAssistant || "…",
-                  openFiles: [],
-                  costTokens: null,
-                  createdAt: Date.now(),
-                }}
-                live
+              <LiveAssistantBubble
+                text={liveAssistant}
+                beats={toolBeats}
               />
             )}
           </div>
+
+          {/* Quick-reply chips the agent offered via gui_options. Persist
+              after the turn until the user sends anything else (stale then). */}
+          {pendingOptions && pendingOptions.length > 0 && !streaming && (
+            <div className="option-chips">
+              {pendingOptions.map((o, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  className="option-chip"
+                  title={o.prompt}
+                  onClick={() => void send(o.prompt)}
+                >
+                  {o.short}
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Ephemeral agent beats (gui_action): warn / celebrate / info. */}
+          {toasts.length > 0 && (
+            <div className="chat-toasts">
+              {toasts.map((t) => (
+                <div
+                  key={t.id}
+                  className={`chat-toast ${t.kind}`}
+                  onClick={() =>
+                    setToasts((prev) => prev.filter((x) => x.id !== t.id))
+                  }
+                >
+                  {t.text}
+                </div>
+              ))}
+            </div>
+          )}
 
           {/* Prompts — quick-fire buttons from prompts.md. */}
           {prompts.length > 0 && (
@@ -567,6 +705,93 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     </aside>
   );
 });
+
+/** One narration beat: a tool_call awaiting/with its tool_result. */
+interface ToolBeat {
+  id: string;
+  name: string;
+  args: unknown;
+  ok?: boolean;
+  summary?: string;
+  error?: string;
+}
+
+/** Ephemeral gui_action surface. */
+interface ChatToast {
+  id: string;
+  kind: "warn" | "celebrate" | "info";
+  text: string;
+}
+
+/** Human label for a tool call: `p_write` → “editing manuscript”, etc. */
+function toolVerb(name: string): string {
+  switch (name) {
+    case "corpus_list":
+      return "searching corpus";
+    case "corpus_write":
+      return "noting to corpus";
+    case "doc_read":
+      return "reading source";
+    case "p_read":
+      return "reading manuscript";
+    case "p_create":
+      return "creating document";
+    case "p_write":
+      return "editing manuscript";
+    case "p_insert":
+      return "inserting text";
+    case "gui_doc_open":
+    case "gui_p_open":
+      return "opening";
+    case "gui_options":
+      return "asking";
+    case "gui_action":
+      return "noting";
+    default:
+      return name;
+  }
+}
+
+/** The in-flight assistant bubble: tool narration beats above the streamed text. */
+function LiveAssistantBubble({
+  text,
+  beats,
+}: {
+  text: string;
+  beats: ToolBeat[];
+}) {
+  return (
+    <div className="msg msg-assistant live">
+      <div className="msg-role">Agent</div>
+      {beats.length > 0 && (
+        <div className="tool-beats">
+          {beats.map((b) => (
+            <div
+              key={b.id}
+              className={`tool-beat${
+                b.ok === undefined
+                  ? ""
+                  : b.ok
+                    ? " ok"
+                    : " err"
+              }`}
+            >
+              <span className="tool-beat-verb">{toolVerb(b.name)}</span>
+              {b.ok === false && b.error ? (
+                <span className="tool-beat-detail">— {b.error}</span>
+              ) : b.summary ? (
+                <span className="tool-beat-detail">— {b.summary}</span>
+              ) : (
+                <span className="tool-beat-detail muted">…</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      <div className="msg-body">{text || "…"}</div>
+    </div>
+  );
+}
 
 /** One transcript row. `live` flags the in-flight assistant stream. */
 function MessageBubble({

@@ -4,6 +4,7 @@ import type {
   DocType,
   Document,
   EmbeddingStatus,
+  GuiEvent,
   HealthResponse,
   InitProjectResponse,
   ProjectStatus,
@@ -256,21 +257,35 @@ export const api = {
   listPrompts: () => req<Prompt[]>("/prompts"),
 };
 
-/** Stream a chat completion from `POST /chat`.
+/** Stream a chat completion from `POST /chat` (P5 agent loop).
  *
  *  `chatId` is REQUIRED (the turn is scoped to that chat). The chat API key
- *  travels as a Bearer header (same discipline as /embed). Deltas arrive as
- *  SSE `delta` events (text fragments); the stream ends with a `done` event
- *  (ids + usage) or an `error` event (message + partial assistant id).
- *  `onDelta` is called per fragment; `signal` aborts the stream. Returns the
- *  parsed `done`/`error` payload. */
+ *  travels as a Bearer header; the EMBEDDING key (for the agent's corpus_*
+ *  vector tools) travels as `X-Embedding-Key`. The stream is an agent loop,
+ *  not a single round-trip: alongside `delta` (text) you may receive
+ *  `tool_call` / `tool_result` (narration), `edit` (the agent wrote a
+ *  document — pass to the editor for a live reload), and `gui` (open a
+ *  viewer, offer option chips, show a non-blocking beat). The stream ends
+ *  with `done` (ids + usage + toolCalls + capped) or `error`.
+ *
+ *  `onDelta` is called per text fragment; the granular callbacks fire for
+ *  the other event types. `signal` aborts the run. Returns the parsed
+ *  `done`/`error` payload. */
 export async function streamChat(
   chatId: string,
   message: string,
   apiKey: string,
   opts: {
     openFiles?: string[];
+    /** Document the user is editing (default target for p_read/p_write/p_insert). */
+    activeDocumentId?: string;
+    /** Embedding key for the agent's corpus_* vector tools (`X-Embedding-Key`). */
+    embeddingApiKey?: string;
     onDelta?: (text: string) => void;
+    onToolCall?: (e: ToolCallEvent) => void;
+    onToolResult?: (e: ToolResultEvent) => void;
+    onEdit?: (e: EditEvent) => void;
+    onGui?: (e: GuiEvent) => void;
     signal?: AbortSignal;
   },
 ): Promise<{
@@ -278,17 +293,22 @@ export async function streamChat(
   assistantMessageId?: string;
   aborted?: boolean;
   error?: string;
+  toolCalls?: number;
+  capped?: boolean;
 }> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${apiKey}`,
+  };
+  if (opts.embeddingApiKey) headers["X-Embedding-Key"] = opts.embeddingApiKey;
   const res = await fetch(`${BASE}/chat`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
+    headers,
     body: JSON.stringify({
       chatId,
       message,
       openFiles: opts.openFiles ?? [],
+      ...(opts.activeDocumentId ? { activeDocumentId: opts.activeDocumentId } : {}),
     }),
     signal: opts.signal,
   });
@@ -324,6 +344,34 @@ export async function streamChat(
             /* not JSON — use raw payload */
           }
           opts.onDelta?.(text);
+        } else if (currentEvent === "tool_call") {
+          try {
+            const e = JSON.parse(payload) as ToolCallEvent;
+            opts.onToolCall?.(e);
+          } catch {
+            /* ignore malformed */
+          }
+        } else if (currentEvent === "tool_result") {
+          try {
+            const e = JSON.parse(payload) as ToolResultEvent;
+            opts.onToolResult?.(e);
+          } catch {
+            /* ignore malformed */
+          }
+        } else if (currentEvent === "edit") {
+          try {
+            const e = JSON.parse(payload) as EditEvent;
+            opts.onEdit?.(e);
+          } catch {
+            /* ignore malformed */
+          }
+        } else if (currentEvent === "gui") {
+          try {
+            const e = JSON.parse(payload) as GuiEvent;
+            opts.onGui?.(e);
+          } catch {
+            /* ignore malformed */
+          }
         } else if (currentEvent === "done" || currentEvent === "error") {
           try {
             result = JSON.parse(payload);
@@ -345,5 +393,30 @@ export async function streamChat(
 
 /** Base URL the SSE EventSource connects to (matches `BASE` above). */
 export const SIDECAR_BASE = BASE;
+
+// P5 agent-loop SSE event payloads (see sidecar agent/loop.ts + index.ts).
+
+/** `tool_call` event: the model invoked a tool. */
+export interface ToolCallEvent {
+  id: string;
+  name: string;
+  args: unknown;
+}
+
+/** `tool_result` event: the tool's outcome (paired with a `tool_call` by id). */
+export interface ToolResultEvent {
+  id: string;
+  name: string;
+  ok: boolean;
+  summary: string;
+  error?: string;
+}
+
+/** `edit` event: the agent mutated a document; live-reload the editor. */
+export interface EditEvent {
+  documentId: string;
+  title: string;
+  bodyMd: string;
+}
 
 export type { SourceFile, SourcesResponse };
