@@ -1,0 +1,22 @@
+# deps
+node_modules/
+
+# builds
+dist/
+src-tauri/target/
+src-tauri/gen/
+sidecar/dist/
+
+# logs
+*.log
+
+# tesseract language data (fetched at runtime by tesseract.js)
+*.traineddata
+
+# os
+.DS_Store
+Thumbs.db
+
+# editor
+.vscode/
+.idea/

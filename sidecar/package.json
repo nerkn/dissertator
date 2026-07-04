@@ -1,0 +1,22 @@
+{
+  "name": "sidecar",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "start": "bun run src/index.ts",
+    "build": "bun build src/index.ts --compile --outfile dist/dissertator-sidecar"
+  },
+  "dependencies": {
+    "@dissertator/shared": "workspace:*",
+    "hono": "^4.6.12",
+    "mammoth": "^1.12.0",
+    "tesseract.js": "^7.0.0",
+    "unpdf": "^1.6.2",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "bun-types": "^1.3.14"
+  }
+}

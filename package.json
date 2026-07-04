@@ -1,0 +1,37 @@
+{
+  "name": "dissertator",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A cross-platform writing + research tool. Open a folder, build a grounded corpus, write dissertations and papers with an LLM agent.",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k -n sidecar,app -c magenta,cyan \"bun --filter sidecar dev\" \"tauri dev\"",
+    "dev:web": "vite",
+    "dev:sidecar": "bun --filter sidecar dev",
+    "build": "tsc && vite build",
+    "tauri": "tauri",
+    "tauri:build": "tauri build",
+    "sidecar:build": "bun --filter sidecar build"
+  },
+  "workspaces": [
+    "packages/*",
+    "sidecar"
+  ],
+  "dependencies": {
+    "@dissertator/shared": "workspace:*",
+    "@phosphor-icons/react": "^2.1.7",
+    "@tauri-apps/api": "^2.1.1",
+    "@tauri-apps/plugin-dialog": "^2.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.11"
+  }
+}
