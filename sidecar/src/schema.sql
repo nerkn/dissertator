@@ -1,6 +1,9 @@
--- Dissertator schema — P0.
--- Note: the `embeddings` virtual table (sqlite-vec) is added in P2, when the
--- extension is loaded and the embedding model is locked.
+-- Dissertator schema — P0 (extended in P2: chunks.embedding_status).
+-- Note: the `embeddings` virtual table (sqlite-vec `vec0`) is created LAZILY
+-- in `db.lockDimensions(N)` on the first successful embed — sqlite-vec
+-- requires the vector dimension at CREATE time, which is unknown until the
+-- embedding model actually returns a vector. Before that, embeddings are
+-- not writable (and that's fine: search_corpus simply returns nothing).
 
 CREATE TABLE IF NOT EXISTS meta (
   key   TEXT PRIMARY KEY,
@@ -41,9 +44,11 @@ CREATE TABLE IF NOT EXISTS chunks (
   physical_page  INTEGER,
   printed_page   TEXT,
   text           TEXT NOT NULL,
-  token_count    INTEGER
+  token_count    INTEGER,
+  embedding_status TEXT NOT NULL DEFAULT 'pending'  -- pending|embedding|done|failed
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(source_file_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_embed ON chunks(embedding_status);
 
 -- `references` is a SQL-ish keyword; always quote it in queries.
 CREATE TABLE IF NOT EXISTS "references" (

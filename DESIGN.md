@@ -319,17 +319,36 @@ A second wizard run on the same corpus produces a *different* focused document
 
 ## 10. Agent & Tools
 
-The agent is a tool-using LLM loop running in the sidecar. Tools:
+The agent is a tool-using LLM loop running in the sidecar. Tools use a
+**`{domain}_{verb}`** naming convention with four fixed domains so the LLM
+never confuses what it's operating on:
+
+- `corpus_` — the **index** (references: title/author/year + vectors). Built
+  on the `references` + `chunks` tables. Source files are linked as bundles.
+- `doc_` — **source bundles** (research PDFs/DOCX/etc.): read-only files.
+- `p_` — the **paper / manuscript** (the thesis being written): read-write
+  sections, addressed by section + lines/page.
+- `gui_` — **user-facing side-effects** (opens a viewer, asks the human,
+  narrates a beat). Distinguished from silent data ops.
 
 | Tool | Purpose |
 |---|---|
-| `search_corpus(query)` | vector search → chunks with `[doc, page]` |
-| `open_doc(id, page)` | read a source's page |
-| `read_section(section_id)` | read a document section |
-| `list_outline(document_id)` | see the document's structure |
-| `insert_text(section_id, text, citations[])` | add prose with tokens |
-| `replace_section(section_id, text, citations[])` | rewrite a section |
-| `ask_user(question)` | escalate a decision |
+| `corpus_list({text?, author?, title?, vector?, page?})` | query the index → ≤20 hits (ids + short info only; call `doc_read` for depth) |
+| `corpus_write(id, {title?, author?, year?, doi?})` | update reference metadata |
+| `doc_read(id, page \| lines)` | read a source bundle's content (silent) |
+| `p_read(id, lines \| page)` | read a manuscript section |
+| `p_write(id, lines \| page, oldtext, text)` | replace manuscript text — `oldtext` makes optimistic-concurrency check explicit |
+| `p_insert(id, lines \| page, text)` | insert manuscript text |
+| `gui_doc_open(id)` | open a source for the user (pdf.js viewer) |
+| `gui_p_open(id)` | open the manuscript for the user |
+| `gui_options({short, prompt}[])` | ask the user to pick from structured choices |
+| `gui_action(warn \| celebrate \| info, text)` | non-blocking narration beat (no stop) |
+
+**Why the split.** A source bundle is **read-only** (you don't edit a PDF);
+the manuscript is **read-write**. Keeping them in separate verb namespaces
+(`doc_` vs `p_`) prevents the LLM from calling `p_write` on a source and
+getting a confusing runtime rejection. The `gui_` prefix cleanly separates
+user-visible side-effects from silent data operations.
 
 **Modes:**
 - `accept_all` (default) — agent writes directly.
@@ -362,6 +381,9 @@ commit; the agent is informed and may `ask_user`. No read-only locking.
 | 13 | Global chat, open-files injected | one thread, always context-aware |
 | 14 | No binary OCR bundling | detect tesseract; else `pending_vision` → user-driven vision API |
 | 15 | Agent: accept_all default, confirm_edits opt-in, optimistic writes | user leads; no blocking |
+| 16 | **Tool naming = `{domain}_{verb}`** with 4 fixed domains (`corpus_`, `doc_`, `p_`, `gui_`) | LLM never confuses read-only sources vs writable manuscript vs user-facing side-effects; small doc footprint |
+| 17 | **Corpus = index; source = bundle** | `references`+`chunks` IS the index (`corpus_list`/`corpus_write`); `source_files` are linked read-only bundles (`doc_read`). Maps the agent mental model onto the existing schema with zero extra tables. |
+| 18 | `p_write` takes explicit `oldtext` | optimistic concurrency is part of the signature — conflict rejection is concrete, not magic |
 
 ### Open questions
 - API key storage: plain in `settings` vs OS keychain? *(lean: keychain via Tauri plugin)*
@@ -385,7 +407,9 @@ commit; the agent is informed and may `ask_user`. No read-only locking.
   global chat with open-files injection, citeproc-js bibliography.
 - **P4 — Wizard + Documents.** LLM-led wizard (thesis/RQs/outline/focus),
   document + section tables, outline sub-tree, BibTeX import/export.
-- **P5 — Agent authoring.** Tools, streamed agent loop, accept_all vs
-  confirm_edits, `ask_user`, optimistic writes, step budget.
+- **P5 — Agent authoring.** `{domain}_{verb}` tool set (`corpus_*`,
+  `doc_*`, `p_*`, `gui_*`), streamed agent loop, accept_all vs
+  confirm_edits, `gui_options`, optimistic writes via `p_write(oldtext)`,
+  step budget.
 - **P6 — Polish.** Re-index/embedding-switch, cost tracking, `.docx` export,
   cross-OS `bun build --compile` packaging, autosave/history.

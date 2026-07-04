@@ -20,15 +20,19 @@ import type {
   SourceFile,
   TextStatus,
 } from "@dissertator/shared";
+import { EMBEDDING_DEFAULTS } from "@dissertator/shared";
 
 import { detectKind, extract } from "../extract/index.ts";
 import type { ExtractResult } from "../extract/index.ts";
 import { runOcr } from "../ocr/index.ts";
 import type { OcrEngine, OcrOptions } from "../ocr/index.ts";
+import { embedBatch, type EmbedEngine } from "../embed/index.ts";
 import {
   getCurrentProject,
   getSettings,
+  lockDimensions,
   mapSourceFile,
+  type SourceFileRow,
 } from "../db.ts";
 
 import { createQueue } from "./queue.ts";
@@ -115,9 +119,14 @@ function insertChunks(
 ): void {
   const tx = db.transaction((items: ChunkOutput[]) => {
     db.prepare("DELETE FROM chunks WHERE source_file_id = ?").run(sourceFileId);
+    // `embedding_status` is explicit (NOT just the column default) so a
+    // re-chunk after OCR / re-extract always resets to `pending` — even if a
+    // future schema change alters the default. Vectors for the old chunk ids
+    // (now deleted) are orphaned in vec0; search_corpus (P2 Track 2) joins on
+    // chunk_id and simply ignores them.
     const stmt = db.prepare(
-      "INSERT INTO chunks (id, source_file_id, ord, physical_page, printed_page, text, token_count) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO chunks (id, source_file_id, ord, physical_page, printed_page, text, token_count, embedding_status) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, 'pending')"
     );
     items.forEach((c, i) =>
       stmt.run(
@@ -137,14 +146,6 @@ function insertChunks(
 // ---------------------------------------------------------------------------
 // Per-file orchestrator
 // ---------------------------------------------------------------------------
-
-interface SourceFileRow {
-  id: string;
-  rel_path: string;
-  content_hash: string | null;
-  page_count: number | null;
-  mime_type: string | null;
-}
 
 /**
  * Ingest a single relative path end-to-end. Never throws to the caller —
@@ -445,7 +446,7 @@ export function listSources(): SourceFile[] {
   if (!project) return [];
   const rows = project.db
     .query("SELECT * FROM source_files ORDER BY added_at ASC, filename ASC")
-    .all() as unknown[];
+    .all() as SourceFileRow[];
   return rows.map((r) => mapSourceFile(r));
 }
 
@@ -457,7 +458,7 @@ export function listAttention(): SourceFile[] {
     .prepare(
       "SELECT * FROM source_files WHERE text_status IN ('needs_ocr', 'pending_vision', 'failed') ORDER BY added_at ASC"
     )
-    .all() as unknown[];
+    .all() as SourceFileRow[];
   return rows.map((r) => mapSourceFile(r));
 }
 
@@ -485,4 +486,124 @@ export function getSourceCounts(): SourceCounts {
     else counts.extracting += r.c; // new | extracting | ocr_tesseract | pending_vision
   }
   return counts;
+}
+
+// ---------------------------------------------------------------------------
+// Embedding (P2 Track 1)
+// ---------------------------------------------------------------------------
+
+/** Soft cap so a single `/embed` click never runs away on a huge corpus. */
+const EMBED_MAX_CHUNKS_PER_RUN = 500;
+
+/**
+ * Inputs per provider POST. OpenAI accepts up to 2048; Google's
+ * `batchEmbedContents` accepts up to 100. 64 is a safe cross-provider cap.
+ */
+const EMBED_BATCH_SIZE = 64;
+
+/** Result of an `embedPending` run — chunks moved to `done` vs `failed`. */
+export interface EmbedPendingResult {
+  embedded: number;
+  failed: number;
+}
+
+/**
+ * Embed every `pending` chunk (up to a soft cap of 500/call) and store its
+ * vector in the sqlite-vec `embeddings` table. The embedding provider is
+ * DECOUPLED from the chat provider — config is read from `settings.embedding`
+ * (its own block), and the API key flows in ONLY via `opts.apiKey` (sourced
+ * by the HTTP layer from the keychain at call time; never stored or logged).
+ *
+ * On the first successful batch `lockDimensions` creates the vec0 table with
+ * the concrete dimensionality and stamps the lock; a later batch returning a
+ * different dimensionality throws a mismatch error (no auto-reembed). Per-batch
+ * adapter failures are caught: the affected chunks flip to `failed` (logged),
+ * and the run continues with the next batch — the process never crashes. A
+ * dimension-mismatch error aborts the run immediately (every subsequent
+ * batch would fail identically).
+ */
+export async function embedPending(
+  opts: { apiKey?: string } = {}
+): Promise<EmbedPendingResult> {
+  const project = getCurrentProject();
+  if (!project) throw new Error("no project initialized");
+  if (!project.vecExtensionOk) {
+    throw new Error(
+      "sqlite-vec extension not loaded; embeddings disabled on this platform"
+    );
+  }
+  const { db } = project;
+
+  // Resolve the decoupled embedding config + adapter engine.
+  const cfg = getSettings().embedding;
+  const defaults = EMBEDDING_DEFAULTS[cfg.provider] ?? EMBEDDING_DEFAULTS.openai;
+  const engine: EmbedEngine = defaults.adapter;
+  const apiUrl = cfg.apiUrl || defaults.apiUrl;
+  const model = cfg.model || defaults.defaultModel;
+
+  // Pull the backlog (bounded). `text != ''` skips degenerate chunks.
+  const pending = db
+    .prepare(
+      "SELECT id, text FROM chunks " +
+        "WHERE embedding_status = 'pending' AND text != '' " +
+        "ORDER BY id LIMIT ?"
+    )
+    .all(EMBED_MAX_CHUNKS_PER_RUN) as { id: string; text: string }[];
+
+  if (pending.length === 0) return { embedded: 0, failed: 0 };
+
+  const markEmbedding = db.prepare(
+    "UPDATE chunks SET embedding_status = 'embedding' WHERE id = ?"
+  );
+  const markDone = db.prepare(
+    "UPDATE chunks SET embedding_status = 'done' WHERE id = ?"
+  );
+  const markFailed = db.prepare(
+    "UPDATE chunks SET embedding_status = 'failed' WHERE id = ?"
+  );
+
+  let embedded = 0;
+  let failed = 0;
+
+  for (let i = 0; i < pending.length; i += EMBED_BATCH_SIZE) {
+    const slice = pending.slice(i, i + EMBED_BATCH_SIZE);
+    // Mark in-flight up front so a crash mid-batch leaves a recoverable state.
+    for (const c of slice) markEmbedding.run(c.id);
+
+    try {
+      const result = await embedBatch(
+        slice.map((c) => c.text),
+        engine,
+        { apiKey: opts.apiKey, apiUrl, model }
+      );
+      if (result.vectors.length !== slice.length) {
+        throw new Error(
+          `vector count mismatch: sent ${slice.length}, got ${result.vectors.length}`
+        );
+      }
+      // First successful batch locks the dimensionality (creates vec0 table).
+      lockDimensions(result.dimensions, model);
+
+      const ins = db.prepare(
+        "INSERT INTO embeddings(chunk_id, embedding) VALUES (?, ?)"
+      );
+      for (let j = 0; j < slice.length; j++) {
+        ins.run(slice[j].id, new Float32Array(result.vectors[j]));
+        markDone.run(slice[j].id);
+        embedded++;
+      }
+    } catch (e) {
+      const msg = (e as Error)?.message ?? String(e);
+      await appendLog(`[embed] batch failed: ${msg}`);
+      for (const c of slice) markFailed.run(c.id);
+      failed += slice.length;
+      // A dimension mismatch is a permanent lock conflict — stop now; every
+      // remaining batch would fail identically. Other errors (auth, network)
+      // are also typically permanent within one run, but we keep going so a
+      // single transient blip doesn't poison the whole corpus.
+      if (/dimension mismatch/.test(msg)) break;
+    }
+  }
+
+  return { embedded, failed };
 }

@@ -28,7 +28,17 @@ export function SettingsDialog({ settings, apiKey, onClose, onSave }: Props) {
 
   const save = () =>
     onSave(
-      { provider, apiUrl, model, ocrStrategy },
+      {
+        provider,
+        apiUrl,
+        model,
+        ocrStrategy,
+        embedding: settings.embedding,
+        // Preserved verbatim — the email input field is a P3 job. Without
+        // this passthrough, saving settings would drop the value to its
+        // default (no UI to re-enter it yet).
+        contactEmail: settings.contactEmail,
+      },
       key.trim(),
     );
 
