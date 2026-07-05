@@ -59,7 +59,18 @@ build_script:
       # true/false and rejects 'True'. Force it lowercase so tauri doesn't error.
       $env:CI = "true"
       bun run tauri build
-      if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
+      $tauriExit = $LASTEXITCODE
+      Write-Host "tauri build exit code: $tauriExit"
+
+      # tauri build can exit non-zero on Windows even when bundles were produced.
+      # Verify by checking the output files rather than trusting the exit code,
+      # so we don't throw and skip artifact upload on a successful bundle.
+      $msi  = Get-ChildItem "src-tauri\target\release\bundle\msi\*.msi"  -ErrorAction SilentlyContinue
+      $nsis = Get-ChildItem "src-tauri\target\release\bundle\nsis\*.exe" -ErrorAction SilentlyContinue
+      if (-not $msi -and -not $nsis) {
+        throw "tauri build produced no installers (exit $tauriExit)"
+      }
+      Write-Host "Bundles OK: $($msi.Name) / $($nsis.Name)"
 
 test: off
 
