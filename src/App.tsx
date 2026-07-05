@@ -7,7 +7,7 @@ import {
   PencilSimpleLine,
   ChatCircleDots,
 } from "@phosphor-icons/react";
-import { api, SIDECAR_BASE } from "./lib/api";
+import { api, resolveSidecarBase, resetSidecarBase, sidecarBase } from "./lib/api";
 import { ipc } from "./ipc";
 import type {
   Document,
@@ -135,6 +135,9 @@ export default function App() {
     const poll = async () => {
       while (!stopped) {
         try {
+          // Discover the sidecar's actual port (it may have shifted if the
+          // preferred port was busy) before probing /health.
+          await resolveSidecarBase();
           await api.health();
           if (stopped) break;
           setHealth("up");
@@ -148,6 +151,9 @@ export default function App() {
           return;
         } catch {
           if (!stopped) setHealth("down");
+          // Sidecar may have moved ports (restart / crash); drop the cached
+          // base so the next loop re-scans and rediscovers it.
+          resetSidecarBase();
           await new Promise((r) => setTimeout(r, 1500));
         }
       }
@@ -193,7 +199,7 @@ export default function App() {
     // effects in dev).
     if (esRef.current) return;
 
-    const es = new EventSource(`${SIDECAR_BASE}/events`);
+    const es = new EventSource(`${sidecarBase()}/events`);
     esRef.current = es;
 
     const scheduleRefresh = () => {

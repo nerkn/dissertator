@@ -8,4 +8,6 @@ export const ipc = {
     invoke<void>("set_secret", { user, value }),
   deleteSecret: (user: string) =>
     invoke<void>("delete_secret", { user }),
+  /** The port Tauri's sidecar bound; `null` if unavailable (or under web). */
+  sidecarPort: () => invoke<number | null>("sidecar_port"),
 };

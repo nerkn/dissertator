@@ -6,7 +6,8 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { join } from "node:path";
-import { SIDECAR_PORT, type ChatRequest, type DocType, type Document, type Reference, type Settings, resolveChatConfig } from "@dissertator/shared";
+import { createServer } from "node:net";
+import { SIDECAR_PORT, SIDECAR_PORT_RANGE, type ChatRequest, type DocType, type Document, type Reference, type Settings, resolveChatConfig } from "@dissertator/shared";
 import {
   getCurrentProject,
   getProjectStatus,
@@ -911,10 +912,41 @@ app.get("/events", (c) => {
   });
 });
 
-export default {
-  port: SIDECAR_PORT,
+/**
+ * Find the first free port starting at `SIDECAR_PORT`, probing up to
+ * `SIDECAR_PORT_RANGE` consecutive ports. A busy preferred port (e.g. a
+ * crashed previous instance or another app) must not block startup, so the
+ * sidecar falls through to the next free one and the frontend discovers it
+ * by scanning the same range.
+ */
+async function findFreePort(start: number, range: number): Promise<number> {
+  for (let port = start; port < start + range; port++) {
+    const free = await new Promise<boolean>((resolve) => {
+      const probe = createServer();
+      probe.once("error", () => resolve(false));
+      probe.once("listening", () => probe.close(() => resolve(true)));
+      probe.listen(port, "127.0.0.1");
+    });
+    if (free) return port;
+  }
+  throw new Error(
+    `[sidecar] no free port found in range ${start}..${start + range - 1}`,
+  );
+}
+
+const port = await findFreePort(SIDECAR_PORT, SIDECAR_PORT_RANGE);
+
+Bun.serve({
+  port,
   hostname: "127.0.0.1",
   fetch: app.fetch,
-};
+});
 
-console.log(`[sidecar] listening on http://127.0.0.1:${SIDECAR_PORT}`);
+console.log(
+  `[sidecar] listening on http://127.0.0.1:${port}` +
+    (port === SIDECAR_PORT ? "" : ` (preferred ${SIDECAR_PORT} was busy)`),
+);
+// Machine-readable handshake for the Tauri parent process: it parses this
+// line from stdout to learn which port we bound (we pick a free one), then
+// hands the port to the frontend over IPC. One JSON object per line, first.
+process.stdout.write(`${JSON.stringify({ sidecar: "ready", port })}\n`);

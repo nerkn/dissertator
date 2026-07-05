@@ -5,7 +5,7 @@
   "description": "A cross-platform writing + research tool. Open a folder, build a grounded corpus, write dissertations and papers with an LLM agent.",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k -n sidecar,app -c magenta,cyan \"bun --filter sidecar dev\" \"tauri dev\"",
+    "dev": "tauri dev",
     "dev:web": "vite",
     "dev:sidecar": "bun --filter sidecar dev",
     "build": "tsc && vite build",
