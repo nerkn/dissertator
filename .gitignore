@@ -24,3 +24,5 @@ denemeFolder/
 # editor
 .vscode/
 .idea/
+src-tauri/icons/android/
+src-tauri/icons/ios/
