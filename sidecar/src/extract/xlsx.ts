@@ -4,7 +4,7 @@
 // prefixed by a `## Sheet: <name>` header. The whole workbook is returned as a
 // single "page" (physicalPage=1, pageCount=1).
 
-import XLSX from "xlsx";
+import * as XLSX from "xlsx";
 import type { ExtractResult } from "./index";
 
 const MIME_TYPE =

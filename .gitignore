@@ -5,6 +5,7 @@ node_modules/
 dist/
 src-tauri/target/
 src-tauri/gen/
+src-tauri/binaries/
 sidecar/dist/
 
 # logs
@@ -16,6 +17,9 @@ sidecar/dist/
 # os
 .DS_Store
 Thumbs.db
+
+# local test data
+denemeFolder/
 
 # editor
 .vscode/
