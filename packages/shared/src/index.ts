@@ -13,6 +13,45 @@ export const SIDECAR_PORT_RANGE = 12;
 
 export type Provider = "openai" | "claude" | "zai" | "openrouter" | "custom";
 
+/**
+ * A named, user-editable provider entry in the `providers` table. The user
+ * builds a LIST of these (multiple OpenAI accounts, a work Claude, etc.);
+ * the Functions tab assigns one chat-kind provider to `chat` and one
+ * embedding-kind provider to `vectorizer`.
+ *
+ * `type` is the backend flavor: a {@link Provider} for `kind==="chat"`, an
+ * {@link EmbeddingProvider} for `kind==="embedding"`. Both are string unions
+ * (and overlap on openai/zai/custom), so the column is free-text at the DB
+ * layer; the UI picks PROVIDER_DEFAULTS vs EMBEDDING_DEFAULTS by `kind`.
+ *
+ * `keyUser` is the OS keychain slot for this provider's API key. Seeded
+ * defaults reuse the LEGACY slots (`openai_api_key`, …) so existing keys
+ * survive the upgrade with no keychain migration; providers the user adds
+ * get a fresh per-id slot via {@link providerKeyUser}.
+ */
+export type ProviderKind = "chat" | "embedding";
+
+export interface ProviderConfig {
+  id: string;
+  /** User-given label, e.g. "Work OpenAI". Shown in the Functions dropdowns. */
+  name: string;
+  kind: ProviderKind;
+  /** Backend flavor. `Provider` for chat, `EmbeddingProvider` for embedding. */
+  type: Provider | EmbeddingProvider;
+  apiUrl: string;
+  model: string;
+  /** OS keychain slot for this provider's API key. */
+  keyUser: string;
+  /** True for the default chat provider (the one new chats / vision use). */
+  isDefault: boolean;
+  createdAt: string;
+}
+
+/** Fresh per-provider keychain slot for a user-added provider. */
+export function providerKeyUser(id: string): string {
+  return `dissertator:provider:${id}`;
+}
+
 export interface ProviderDefaults {
   label: string;
   apiUrl: string;
@@ -184,6 +223,18 @@ export interface Settings extends ChatConfig {
    * this is a public contact address, not a secret. Defaults to `""`.
    */
   contactEmail: string;
+  /**
+   * The chat-kind provider row assigned to the `chat` function (Functions
+   * tab). When set, `provider`/`apiUrl`/`model` above are RESOLVED from that
+   * row by `getSettings` (read-only on the wire). Absent on legacy DBs until
+   * the providers-table migration runs.
+   */
+  chatProviderId?: string;
+  /**
+   * The embedding-kind provider row assigned to the `vectorizer` function.
+   * When set, `embedding.{provider,apiUrl,model}` are RESOLVED from it.
+   */
+  embeddingProviderId?: string;
 }
 
 export interface HealthResponse {
@@ -389,6 +440,49 @@ export interface Prompt {
   category?: string;
   label: string;
   prompt: string;
+}
+
+/**
+ * Serialize a `Prompt[]` back into the `prompts.md` markdown shape that
+ * {@link parsePrompts} (sidecar) reads: a `## Category` heading whenever the
+ * category changes, then one `- **Label**: prompt` bullet per prompt. The
+ * inverse of the sidecar parser — used by the Settings → Prompts tab to turn
+ * the structured editor's rows back into the file. Empty rows are dropped so
+ * a half-typed Add row never writes junk. Pure + exported for tests.
+ */
+export function serializePrompts(prompts: Prompt[]): string {
+  const lines: string[] = ["# Prompts", ""];
+  let lastCat: string | undefined;
+  let emitted = false;
+  for (const p of prompts) {
+    const label = p.label.trim();
+    const text = p.prompt.trim();
+    // Skip a row that has neither label nor text (a half-typed Add row).
+    if (!label && !text) continue;
+    const cat = p.category?.trim() || undefined;
+    if (cat !== lastCat) {
+      if (emitted) lines.push("");
+      lines.push(`## ${cat ?? "Prompts"}`);
+      lastCat = cat;
+      emitted = true;
+    }
+    lines.push(`- **${label || "Untitled"}**: ${text}`);
+  }
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n") + "\n";
+}
+
+/**
+ * Focused settings patch (P6). Only scalar prefs + the function-selection
+ * pointers + the embedding dimension lock are writable; provider/apiUrl/
+ * model/embedding.* are derived from provider rows. PUT /settings accepts
+ * this shape (unknown keys ignored).
+ */
+export interface SettingsPatch {
+  ocrStrategy?: OcrStrategy;
+  contactEmail?: string;
+  chatProviderId?: string;
+  embeddingProviderId?: string;
+  embeddingDimensions?: number;
 }
 
 /**

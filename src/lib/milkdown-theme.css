@@ -145,7 +145,7 @@
   background: transparent;
   color: var(--text);
 }
-.manuscript-editor .milkdown.ProseMirror {
+.manuscript-editor .milkdown .ProseMirror {
   outline: none;
   min-height: 50vh;
   font-family: Georgia, "Times New Roman", serif;
@@ -154,11 +154,22 @@
   color: var(--text);
   caret-color: var(--yellow);
 }
-.manuscript-editor .milkdown.ProseMirror:focus {
+.manuscript-editor .milkdown .ProseMirror:focus {
   outline: none;
 }
-.manuscript-editor .editor-page .milkdown.ProseMirror > *:first-child {
+.manuscript-editor .editor-page .milkdown .ProseMirror > *:first-child {
   margin-top: 0;
+}
+/* The milkdown wrapper must stretch so the ProseMirror fills the whole
+   "page" and clicks anywhere inside the page land on the editable surface
+   (otherwise the area below a short document is dead space). */
+.manuscript-editor .editor-page > .milkdown {
+  min-height: 100%;
+  display: flex;
+}
+.manuscript-editor .editor-page > .milkdown .ProseMirror {
+  flex: 1;
+  min-height: 100%;
 }
 .manuscript-editor .milkdown h1 {
   font-size: 1.9em;
@@ -226,7 +237,7 @@
   border-radius: 6px;
 }
 /* text selection on the dark surface */
-.manuscript-editor .milkdown.ProseMirror ::selection {
+.manuscript-editor .milkdown .ProseMirror ::selection {
   background: rgba(234, 179, 8, 0.3);
 }
 

@@ -9,9 +9,12 @@ import type {
   InitProjectResponse,
   ProjectStatus,
   Prompt,
+  ProviderConfig,
+  ProviderKind,
   Reference,
   SearchResponse,
   Settings,
+  SettingsPatch,
   SourceFile,
   SourcesResponse,
 } from "@dissertator/shared";
@@ -148,10 +151,61 @@ export const api = {
     }),
   projectStatus: () => req<ProjectStatus>("/project/status"),
   getSettings: () => req<Settings>("/settings"),
-  saveSettings: (s: Settings) =>
+  saveSettings: (patch: SettingsPatch) =>
     req<Settings>("/settings", {
       method: "PUT",
-      body: JSON.stringify(s),
+      body: JSON.stringify(patch),
+    }),
+
+  // --- Providers (P6) ------------------------------------------------------
+  // Named, user-editable provider rows. The frontend builds the list; the
+  // Functions tab assigns chat-kind → chat, embedding-kind → vectorizer.
+  // Keys live in the OS keychain under each row's keyUser (frontend-managed).
+
+  listProviders: () => req<ProviderConfig[]>("/providers"),
+  createProvider: (input: {
+    name: string;
+    kind: ProviderKind;
+    type: ProviderConfig["type"];
+    apiUrl?: string;
+    model?: string;
+    isDefault?: boolean;
+  }) =>
+    req<ProviderConfig>("/providers", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+  updateProvider: (
+    id: string,
+    patch: {
+      name?: string;
+      kind?: ProviderKind;
+      type?: ProviderConfig["type"];
+      apiUrl?: string;
+      model?: string;
+      isDefault?: boolean;
+    },
+  ) =>
+    req<ProviderConfig>(`/providers/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
+  deleteProvider: (id: string) =>
+    req<{ ok: true }>(`/providers/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+
+  // --- Working-docs persistence (UI tabs) ----------------------------------
+
+  getUiTabs: () =>
+    req<{ tabs: Array<{ sourceId: string; kind: string; title: string }>; activeTabId: string | null }>("/ui/tabs"),
+  saveUiTabs: (
+    tabs: Array<{ sourceId: string; kind: string; title: string }>,
+    activeTabId: string | null,
+  ) =>
+    req<{ ok: true }>("/ui/tabs", {
+      method: "PUT",
+      body: JSON.stringify({ tabs, activeTabId }),
     }),
 
   // --- Ingest surface (Track G+H) -------------------------------------------
@@ -355,6 +409,16 @@ export const api = {
 
   /** Parsed quick-fire prompts from `Dissertator/prompts.md` ([] if absent). */
   listPrompts: () => req<Prompt[]>("/prompts"),
+
+  /** Raw `prompts.md` markdown ("" if absent) — seeds the Prompts-tab editor. */
+  getPromptsMarkdown: () => req<string>("/prompts/raw"),
+
+  /** Overwrite `prompts.md`; returns the re-parsed Prompt[] quick-pick list. */
+  savePromptsMarkdown: (markdown: string) =>
+    req<Prompt[]>("/prompts", {
+      method: "PUT",
+      body: JSON.stringify({ markdown }),
+    }),
 };
 
 /** Stream a chat completion from `POST /chat` (P5 agent loop).
@@ -386,6 +450,9 @@ export async function streamChat(
     onToolResult?: (e: ToolResultEvent) => void;
     onEdit?: (e: EditEvent) => void;
     onGui?: (e: GuiEvent) => void;
+    /** Dev: the exact payload sent to the LLM each agent step (config +
+     *  messages + tool list). Surfaced so a dev panel can show "what we sent". */
+    onDebug?: (e: DebugEvent) => void;
     signal?: AbortSignal;
   },
 ): Promise<{
@@ -472,6 +539,13 @@ export async function streamChat(
           } catch {
             /* ignore malformed */
           }
+        } else if (currentEvent === "debug") {
+          try {
+            const e = JSON.parse(payload) as DebugEvent;
+            opts.onDebug?.(e);
+          } catch {
+            /* ignore malformed */
+          }
         } else if (currentEvent === "done" || currentEvent === "error") {
           try {
             result = JSON.parse(payload);
@@ -516,6 +590,17 @@ export interface EditEvent {
   documentId: string;
   title: string;
   bodyMd: string;
+}
+
+/** `debug` event (dev): the exact payload sent to the LLM for one agent step.
+ *  `messages` mirrors the OpenAI shape (role/content; assistant turns may
+ *  carry `tool_calls`; `tool`-role results carry `tool_call_id`). */
+export interface DebugEvent {
+  step: number;
+  config: { provider: string; apiUrl: string; model: string };
+  toolChoice?: string;
+  tools: string[];
+  messages: Array<Record<string, unknown>>;
 }
 
 export type { SourceFile, SourcesResponse };

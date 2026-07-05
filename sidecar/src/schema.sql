@@ -15,6 +15,24 @@ CREATE TABLE IF NOT EXISTS settings (
   value TEXT NOT NULL
 );
 
+-- Named, user-editable providers (P6). The user builds a LIST of these;
+-- the Functions tab assigns one chat-kind row to `chat` and one
+-- embedding-kind row to `vectorizer` (via settings keys chat_provider_id /
+-- embedding_provider_id). The API key is NOT stored here — it lives in the
+-- OS keychain under `key_user` (legacy slots for seeded defaults, per-id
+-- slots for user-added rows).
+CREATE TABLE IF NOT EXISTS providers (
+  id         TEXT PRIMARY KEY,
+  name       TEXT NOT NULL,
+  kind       TEXT NOT NULL,        -- 'chat' | 'embedding'
+  type       TEXT NOT NULL,        -- backend flavor (Provider | EmbeddingProvider)
+  api_url    TEXT NOT NULL DEFAULT '',
+  model      TEXT NOT NULL DEFAULT '',
+  key_user   TEXT NOT NULL,        -- OS keychain slot for this provider's key
+  is_default INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS source_files (
   id            TEXT PRIMARY KEY,
   rel_path      TEXT NOT NULL,

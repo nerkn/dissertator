@@ -11,6 +11,7 @@
 
 import { expect, test } from "bun:test";
 import { parsePrompts } from "./prompts.ts";
+import { serializePrompts, type Prompt } from "@dissertator/shared";
 
 test("headings set the category for following bullets", () => {
   const md = `
@@ -123,4 +124,42 @@ test("a category persists across multiple bullets until the next heading", () =>
 test("bullets before any heading have no category", () => {
   const out = parsePrompts("- orphan");
   expect(out).toEqual([{ category: undefined, label: "orphan", prompt: "orphan" }]);
+});
+
+// --- serializePrompts round-trip (P6 Prompts-tab structured editor) -------
+// The Settings → Prompts tab edits a parsed Prompt[] and serializes back to
+// prompts.md. These pin parse → serialize → parse stability so saving from
+// the structured editor never corrupts or reorders the user's prompts.
+
+test("serializePrompts writes a ## heading per category change + **Label**: text bullets", () => {
+  const md = serializePrompts([
+    { category: "Drafting", label: "Intro", prompt: "Write the intro" },
+    { category: "Drafting", label: "Methods", prompt: "Outline methods" },
+    { category: "Revising", label: "Tighten", prompt: "Tighten prose" },
+  ]);
+  expect(md).toContain("## Drafting");
+  expect(md).toContain("## Revising");
+  expect(md).toContain("- **Intro**: Write the intro");
+});
+
+test("parse(serialize(prompts)) is stable (idempotent round-trip)", () => {
+  const prompts: Prompt[] = [
+    { category: "A", label: "a1", prompt: "do a1" },
+    { category: "A", label: "a2", prompt: "do a2" },
+    { category: "B", label: "b1", prompt: "do b1" },
+  ];
+  const once = parsePrompts(serializePrompts(prompts));
+  const twice = parsePrompts(serializePrompts(once));
+  expect(twice).toEqual(once);
+  expect(once.map(({ category, label, prompt }) => ({ category, label, prompt }))).toEqual(prompts);
+});
+
+test("serializePrompts skips empty rows and defaults a missing label", () => {
+  const md = serializePrompts([
+    { category: "", label: "", prompt: "" },
+    { category: "X", label: "", prompt: "only prompt text" },
+  ]);
+  expect(parsePrompts(md)).toEqual([
+    { category: "X", label: "Untitled", prompt: "only prompt text" },
+  ]);
 });

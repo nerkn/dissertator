@@ -34,6 +34,9 @@ import {
   X,
   Files,
   Lightbulb,
+  CaretDown,
+  Bug,
+  Gear,
 } from "@phosphor-icons/react";
 import type {
   Chat,
@@ -45,6 +48,7 @@ import type {
   SourceFile,
 } from "@dissertator/shared";
 import { api, streamChat } from "../lib/api";
+import type { DebugEvent } from "../lib/api";
 
 interface Props {
   health: "checking" | "up" | "down";
@@ -61,6 +65,8 @@ interface Props {
   onOpenSource?: (sourceId: string) => void;
   /** The agent asked the UI to open a document editor (gui_p_open). */
   onOpenDocument?: (documentId: string) => void;
+  /** Open the Settings dialog (used by the not-configured nudge). */
+  onOpenSettings?: () => void;
 }
 
 /**
@@ -89,6 +95,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     onDocumentEdited,
     onOpenSource,
     onOpenDocument,
+    onOpenSettings,
   },
   ref,
 ) {
@@ -179,6 +186,10 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   const [pendingOptions, setPendingOptions] = useState<GuiOption[] | null>(null);
   // Ephemeral non-blocking beats the agent surfaced via gui_action.
   const [toasts, setToasts] = useState<ChatToast[]>([]);
+  // Dev: the LLM payloads captured this turn (one per agent step). Rendered in
+  // a collapsible panel only in dev builds (`import.meta.env.DEV`).
+  const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
+  const [debugOpen, setDebugOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -209,6 +220,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       // Stale quick-reply chips disappear the moment the user says anything else.
       setPendingOptions(null);
       setToolBeats([]);
+      setDebugEvents([]);
 
       // Optimistic user bubble (no id); replaced wholesale on reload.
       const optimistic: ChatMessage = {
@@ -276,6 +288,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
               break;
           }
         },
+        onDebug: (e) => setDebugEvents((prev) => [...prev, e]),
         signal: ac.signal,
       });
 
@@ -402,6 +415,9 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
 
   // --- context picker ------------------------------------------------------
   const [pickerOpen, setPickerOpen] = useState(false);
+  // Prompts section: collapsed by default so the composer stays the focus.
+  // Each click of the header toggles; selecting a prompt keeps it open.
+  const [promptsOpen, setPromptsOpen] = useState(false);
 
   const toggleSource = useCallback(
     async (sourceId: string) => {
@@ -448,7 +464,24 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     return (
       <aside className="panel chat">
         <div className="panel-title">💬 Chat</div>
-        <div className="warn">Open ⚙ Settings to configure a provider and API key.</div>
+        <div className="warn">
+          No chat provider with an API key yet.
+          <div className="muted small" style={{ marginTop: 4 }}>
+            Open <strong>⚙ Settings → Functions</strong> and assign a chat
+            provider that has a key.
+          </div>
+          {onOpenSettings && (
+            <button
+              type="button"
+              className="btn small primary"
+              style={{ marginTop: 8 }}
+              onClick={onOpenSettings}
+            >
+              <Gear size={14} weight="bold" />
+              Open Settings
+            </button>
+          )}
+        </div>
       </aside>
     );
   }
@@ -596,6 +629,17 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             )}
           </div>
 
+          {/* Dev debug: the exact LLM payload per agent step. Shown only in
+              dev builds so it never clutters a real writing session. */}
+          {import.meta.env.DEV && debugEvents.length > 0 && (
+            <DevDebugPanel
+              events={debugEvents}
+              open={debugOpen}
+              onToggle={() => setDebugOpen((v) => !v)}
+              streaming={streaming}
+            />
+          )}
+
           {/* Quick-reply chips the agent offered via gui_options. Persist
               after the turn until the user sends anything else (stale then). */}
           {pendingOptions && pendingOptions.length > 0 && !streaming && (
@@ -631,26 +675,47 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             </div>
           )}
 
-          {/* Prompts — quick-fire buttons from prompts.md. */}
+          {/* Prompts — quick-fire buttons from prompts.md. Collapsible
+              (collapsed by default) so they don't crowd the composer. */}
           {prompts.length > 0 && (
             <div className="chat-prompts">
-              <div className="chat-prompts-label muted small">
-                <Lightbulb size={12} weight="bold" /> Prompts
-              </div>
-              <div className="chat-prompts-row">
-                {prompts.map((p, i) => (
-                  <button
-                    key={i}
-                    type="button"
-                    className="prompt-btn"
-                    title={p.prompt}
-                    onClick={() => setInput(p.prompt)}
-                  >
-                    {p.category ? `${p.category}: ` : ""}
-                    {p.label}
-                  </button>
-                ))}
-              </div>
+              <button
+                type="button"
+                className={`chat-prompts-toggle${promptsOpen ? " open" : ""}`}
+                onClick={() => setPromptsOpen((v) => !v)}
+                aria-expanded={promptsOpen}
+                title={promptsOpen ? "Hide prompts" : "Show prompts"}
+              >
+                <Lightbulb size={12} weight="bold" />
+                Prompts
+                <span className="chat-prompts-count">
+                  {prompts.length}
+                </span>
+                <CaretDown
+                  size={12}
+                  weight="bold"
+                  className="chat-prompts-caret"
+                />
+              </button>
+              {promptsOpen && (
+                <div className="chat-prompts-row">
+                  {prompts.map((p, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      className="prompt-btn"
+                      title={p.prompt}
+                      onClick={() => {
+                        setInput(p.prompt);
+                        inputRef.current?.focus();
+                      }}
+                    >
+                      {p.category ? `${p.category}: ` : ""}
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -808,6 +873,66 @@ function MessageBubble({
       <div className="msg-body">
         {msg.content || (live ? "…" : "")}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Dev-only panel: shows exactly what was sent to the LLM each agent step
+ * (model config, advertised tools, and the full message array). Collapsed by
+ * default; the header carries a live step counter. Rendered only when
+ * `import.meta.env.DEV` so production builds stay clean.
+ */
+function DevDebugPanel({
+  events,
+  open,
+  onToggle,
+  streaming,
+}: {
+  events: DebugEvent[];
+  open: boolean;
+  onToggle: () => void;
+  streaming: boolean;
+}) {
+  const last = events[events.length - 1];
+  return (
+    <div className={`dev-debug${open ? " open" : ""}`}>
+      <button
+        type="button"
+        className="dev-debug-head"
+        onClick={onToggle}
+        aria-expanded={open}
+      >
+        <Bug size={12} weight="bold" />
+        <span>LLM debug</span>
+        <span className="dev-debug-steps">
+          {events.length} step{events.length === 1 ? "" : "s"}
+          {streaming ? "…" : ""}
+        </span>
+        {last && (
+          <span className="dev-debug-model" title={last.config.apiUrl}>
+            {last.config.model}
+          </span>
+        )}
+        <CaretDown size={12} weight="bold" className="dev-debug-caret" />
+      </button>
+      {open && (
+        <div className="dev-debug-body">
+          {events.map((e) => (
+            <details key={e.step} className="dev-debug-step">
+              <summary>
+                step {e.step} · {e.config.model} · {e.tools.length} tools ·{" "}
+                {e.messages.length} msgs
+                <span className="muted">
+                  {" "}
+                  [{e.messages.map((m) => String(m.role)).join(" →")}]
+                </span>
+              </summary>
+              <pre className="dev-debug-pre">{JSON.stringify(e, null, 2)}</pre>
+            </details>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

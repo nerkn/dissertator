@@ -12,13 +12,10 @@ import { ipc } from "./ipc";
 import type {
   Document,
   ProjectStatus,
+  ProviderConfig,
   Settings,
   SourceFile,
   SourcesResponse,
-} from "@dissertator/shared";
-import {
-  EMBEDDING_DEFAULTS,
-  PROVIDER_DEFAULTS,
 } from "@dissertator/shared";
 import { LibraryPanel } from "./components/LibraryPanel";
 import { CenterPane } from "./components/CenterPane";
@@ -34,7 +31,6 @@ export default function App() {
   const [health, setHealth] = useState<Health>("checking");
   const [project, setProject] = useState<ProjectStatus | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
-  const [apiKey, setApiKey] = useState<string>("");
   const [sources, setSources] = useState<SourcesResponse | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -52,9 +48,14 @@ export default function App() {
   // P5: per-document revision counters. Bumped whenever the agent edits a
   // document so its editor live-reloads the new body. Keyed by document id.
   const [docRevisions, setDocRevisions] = useState<Record<string, number>>({});
-  // Embedding key (separate from the chat key; travels as X-Embedding-Key so
-  // the agent's corpus_* vector tools can query the index).
-  const [embeddingApiKey, setEmbeddingApiKey] = useState<string>("");
+  // P6: named provider rows (chat + embedding). The Functions tab assigns
+  // one chat-kind row to `chat` and one embedding-kind row to `vectorizer`.
+  const [providers, setProviders] = useState<ProviderConfig[]>([]);
+  // P6: in-memory API-key store, keyed by a provider's `keyUser` slot. Loaded
+  // from the OS keychain on startup / when providers change; the Settings
+  // dialog writes here as the user edits key fields. apiKey / embeddingApiKey
+  // below are DERIVED from this + the selected provider ids.
+  const [keys, setKeys] = useState<Record<string, string>>({});
 
   const openSource = useCallback((src: SourceFile) => {
     setTabs((prev) => {
@@ -101,6 +102,73 @@ export default function App() {
     [tabs],
   );
 
+  // --- Working-docs persistence (P6) --------------------------------------
+  // Restore the user's open tabs + active tab when a project opens, then
+  // persist any change (debounced) so reopening lands on the same working
+  // set. Tabs whose source/document no longer exists are dropped.
+  const uiTabsRestored = useRef(false);
+  useEffect(() => {
+    if (!project?.initialized || uiTabsRestored.current) return;
+    uiTabsRestored.current = true;
+    let stopped = false;
+    (async () => {
+      try {
+        // Validate against a FRESH fetch so we don't race the reactive
+        // sources/documents loads (which may land in either order).
+        const [saved, srcs, docs] = await Promise.all([
+          api.getUiTabs(),
+          api.getSources(),
+          api.listDocuments(),
+        ]);
+        if (stopped) return;
+        const validIds = new Set<string>([
+          ...srcs.items.map((s) => s.id),
+          ...docs.map((d) => d.id),
+        ]);
+        const restored = saved.tabs.filter((t) =>
+          validIds.has(t.sourceId),
+        ) as Tab[];
+        if (restored.length > 0) {
+          setTabs(restored);
+          const activeValid =
+            saved.activeTabId &&
+            restored.some((t) => t.sourceId === saved.activeTabId)
+              ? saved.activeTabId
+              : restored[restored.length - 1].sourceId;
+          setActiveTabId(activeValid);
+        }
+      } catch {
+        /* sidecar mid-restart; allow a retry on next render */
+        uiTabsRestored.current = false;
+      }
+    })();
+    return () => {
+      stopped = true;
+    };
+  }, [project?.initialized, project?.projectPath]);
+
+  // Debounced save of the working set. Skips until after the initial restore
+  // so we never overwrite saved tabs with the empty pre-restore state.
+  useEffect(() => {
+    if (!project?.initialized) return;
+    if (!uiTabsRestored.current) return;
+    const id = setTimeout(() => {
+      void api
+        .saveUiTabs(
+          tabs.map((t) => ({
+            sourceId: t.sourceId,
+            kind: t.kind,
+            title: t.title,
+          })),
+          activeTabId,
+        )
+        .catch(() => {
+          /* sidecar mid-restart */
+        });
+    }, 500);
+    return () => clearTimeout(id);
+  }, [project?.initialized, tabs, activeTabId]);
+
   const refreshStatus = useCallback(async () => {
     try {
       const status = await api.projectStatus();
@@ -130,6 +198,16 @@ export default function App() {
 
   // Poll the sidecar until it's up (it may start after the frontend in dev),
   // then load project status + any stored API key.
+  //
+  // LAST-OPENED PROJECT: the sidecar's `current` project is in-memory and
+  // resets on every restart, so a fresh launch always reports
+  // `initialized:false` even for a project the user opened yesterday. We
+  // remember the last opened path in localStorage and re-init it once the
+  // sidecar is up (see the auto-init effect below), so the app reopens to
+  // the user's project automatically. The guard in `initProject` (db.ts)
+  // rejects a stored data-dir path, so a bad stored value self-heals: the
+  // re-init throws, we clear the entry, and the user is prompted to pick.
+  const autoInitTried = useRef(false);
   useEffect(() => {
     let stopped = false;
     const poll = async () => {
@@ -142,12 +220,6 @@ export default function App() {
           if (stopped) break;
           setHealth("up");
           await refreshStatus();
-          try {
-            const k = await ipc.getSecret(PROVIDER_DEFAULTS.openai.keyUser);
-            if (!stopped) setApiKey(k ?? "");
-          } catch {
-            /* keychain unavailable (e.g. no daemon on linux) */
-          }
           return;
         } catch {
           if (!stopped) setHealth("down");
@@ -170,6 +242,36 @@ export default function App() {
     if (project?.initialized) refreshSources();
   }, [project?.initialized, project?.projectPath, refreshSources]);
 
+  // LAST-OPENED PROJECT — auto-reopen once the sidecar is up and we know no
+  // project is active yet. Runs at most once per app launch (`autoInitTried`)
+  // so it doesn't fight the user if they manually open a different folder.
+  // On failure (path gone, or it's a data dir — now rejected by initProject)
+  // we clear the stored entry so the next launch starts clean instead of
+  // looping on a bad path.
+  const LAST_PROJECT_KEY = "dissertator.lastProjectPath";
+  useEffect(() => {
+    if (autoInitTried.current) return;
+    if (health !== "up") return;
+    if (project?.initialized) {
+      autoInitTried.current = true;
+      return;
+    }
+    autoInitTried.current = true;
+    const path = localStorage.getItem(LAST_PROJECT_KEY);
+    if (!path) return;
+    (async () => {
+      try {
+        await api.initProject(path);
+        await refreshStatus();
+      } catch (e) {
+        // Stored path is bad (deleted, or a data dir). Drop it so we don't
+        // retry forever; surface the message via the normal error banner.
+        localStorage.removeItem(LAST_PROJECT_KEY);
+        setError((e as Error)?.message ?? String(e));
+      }
+    })();
+  }, [health, project?.initialized, refreshStatus]);
+
   // Refresh the document list (same triggers as sources).
   const refreshDocuments = useCallback(async () => {
     if (!project?.initialized) return;
@@ -182,6 +284,70 @@ export default function App() {
   useEffect(() => {
     if (project?.initialized) refreshDocuments();
   }, [project?.initialized, project?.projectPath, refreshDocuments]);
+
+  // P6: load provider rows + their API keys whenever a project is open. Keys
+  // are read from the OS keychain by each provider's `keyUser` slot (legacy
+  // slots for seeded defaults, per-id slots for user-added rows). A missing
+  // keychain (e.g. no daemon on linux) degrades to empty strings — the
+  // in-memory map is the source of truth for the running session.
+  const refreshProviders = useCallback(async () => {
+    if (!project?.initialized) return;
+    try {
+      setProviders(await api.listProviders());
+    } catch {
+      /* sidecar mid-restart */
+    }
+  }, [project?.initialized]);
+  useEffect(() => {
+    if (project?.initialized) refreshProviders();
+  }, [project?.initialized, project?.projectPath, refreshProviders]);
+
+  useEffect(() => {
+    if (providers.length === 0) return;
+    let stopped = false;
+    (async () => {
+      const fetched: Record<string, string> = {};
+      await Promise.all(
+        providers.map(async (p) => {
+          try {
+            const k = await ipc.getSecret(p.keyUser);
+            fetched[p.keyUser] = k ?? "";
+          } catch {
+            fetched[p.keyUser] = "";
+          }
+        }),
+      );
+      if (stopped) return;
+      // Merge, don't replace: the in-memory map is the source of truth for
+      // the running session. The OS keychain may be unavailable (no unlocked
+      // gnome-keyring/kwallet on Linux, or running under dev:web with no
+      // Tauri runtime), in which case the optimistic value the user just
+      // typed is the ONLY copy — a blind re-read would wipe it and the chat
+      // panel would flip back to "no provider". Keep any non-empty in-memory
+      // value; fill in the rest from the keychain.
+      setKeys((prev) => {
+        const merged = { ...fetched };
+        for (const [k, v] of Object.entries(prev)) {
+          if (v) merged[k] = v;
+        }
+        return merged;
+      });
+    })();
+    return () => {
+      stopped = true;
+    };
+  }, [providers]);
+
+  // Derived: the chat + embedding keys for the currently-selected function
+  // providers. These feed the ChatPanel / LibraryPanel / agent loop unchanged.
+  const apiKey = useMemo(() => {
+    const cp = providers.find((p) => p.id === settings?.chatProviderId);
+    return cp ? keys[cp.keyUser] ?? "" : "";
+  }, [providers, settings?.chatProviderId, keys]);
+  const embeddingApiKey = useMemo(() => {
+    const ep = providers.find((p) => p.id === settings?.embeddingProviderId);
+    return ep ? keys[ep.keyUser] ?? "" : "";
+  }, [providers, settings?.embeddingProviderId, keys]);
 
   // --- SSE: live updates as files ingest -----------------------------------
   // Open a single EventSource once the sidecar is up and a project is open.
@@ -233,6 +399,8 @@ export default function App() {
       if (!dir || Array.isArray(dir)) return;
       setBusy(true);
       await api.initProject(dir as string);
+      // Remember the last opened project so the next launch reopens it.
+      localStorage.setItem("dissertator.lastProjectPath", dir as string);
       await refreshStatus();
       await refreshSources();
     } catch (e) {
@@ -278,34 +446,41 @@ export default function App() {
     }
   };
 
-  const onSaveSettings = async (s: Settings, key: string) => {
-    await api.saveSettings(s);
-    setSettings(s);
-    const keyUser = PROVIDER_DEFAULTS[s.provider].keyUser;
-    if (key) await ipc.setSecret(keyUser, key);
-    else await ipc.deleteSecret(keyUser);
-    setApiKey(key);
-    setShowSettings(false);
-  };
+  // P6: Settings dialog callbacks. The dialog persists provider rows +
+  // function selections + prompts itself via the api; these keep App's
+  // derived state in sync so apiKey/embeddingApiKey recompute and the
+  // Library / Chat panels see the new selections immediately.
+  const handleProvidersChange = useCallback(async () => {
+    try {
+      setProviders(await api.listProviders());
+    } catch {
+      /* sidecar mid-restart */
+    }
+  }, []);
 
-  // Fetch the EMBEDDING key (separate keychain slot from the chat key) once
-  // settings are known, so the agent's corpus_* vector tools can authenticate.
-  useEffect(() => {
-    if (!settings) return;
-    let stopped = false;
-    const slot = EMBEDDING_DEFAULTS[settings.embedding.provider].keyUser;
-    (async () => {
+  const handleSettingsChange = useCallback(async () => {
+    try {
+      setSettings(await api.getSettings());
+    } catch {
+      /* sidecar mid-restart */
+    }
+  }, []);
+
+  // A key field changed in the dialog. Persist to the keychain (best-effort;
+  // a missing daemon must not break the session) and update the in-memory
+  // keys map so apiKey/embeddingApiKey recompute live.
+  const handleKeyChange = useCallback(
+    async (keyUser: string, value: string) => {
+      setKeys((prev) => ({ ...prev, [keyUser]: value }));
       try {
-        const k = await ipc.getSecret(slot);
-        if (!stopped) setEmbeddingApiKey(k ?? "");
-      } catch {
-        /* keychain unavailable */
+        if (value) await ipc.setSecret(keyUser, value);
+        else await ipc.deleteSecret(keyUser);
+      } catch (e) {
+        console.warn("[settings] key not persisted:", e);
       }
-    })();
-    return () => {
-      stopped = true;
-    };
-  }, [settings]);
+    },
+    [],
+  );
 
   // P5 callbacks: the agent edited a document, or asked the UI to open a
   // viewer/editor. Document edits bump the per-doc revision so its editor
@@ -407,9 +582,11 @@ export default function App() {
           provider={settings?.provider}
           ocrStrategy={settings?.ocrStrategy}
           apiKey={apiKey}
+          embeddingApiKey={embeddingApiKey}
           onOpen={openSource}
           onNewDocument={handleNewDocument}
           onOpenDocument={openDocument}
+          onOpenSettings={() => setShowSettings(true)}
         />
         <CenterPane
           initialized={initialized}
@@ -432,6 +609,7 @@ export default function App() {
           onDocumentEdited={handleDocumentEdited}
           onOpenSource={handleOpenSourceById}
           onOpenDocument={handleOpenDocumentById}
+          onOpenSettings={() => setShowSettings(true)}
         />
       </main>
 
@@ -449,9 +627,12 @@ export default function App() {
       {showSettings && settings && (
         <SettingsDialog
           settings={settings}
-          apiKey={apiKey}
+          providers={providers}
+          keys={keys}
+          onProvidersChange={handleProvidersChange}
+          onSettingsChange={handleSettingsChange}
+          onKeyChange={handleKeyChange}
           onClose={() => setShowSettings(false)}
-          onSave={onSaveSettings}
         />
       )}
     </div>

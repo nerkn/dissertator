@@ -12,17 +12,24 @@ import { getLoadablePath } from "sqlite-vec";
 import {
   EMBEDDING_DEFAULTS,
   PROVIDER_DEFAULTS,
+  providerKeyUser,
   type Author,
   type Chat,
   type ChatMessage,
   type DocType,
   type Document,
   type EmbeddingConfig,
+  type EmbeddingProvider,
   type EmbeddingStatus,
   type InitProjectResponse,
+  type OcrStrategy,
   type ProjectStatus,
+  type Provider,
+  type ProviderConfig,
+  type ProviderKind,
   type Reference,
   type Settings,
+  type SettingsPatch,
   type SourceFile,
   type TextStatus,
 } from "@dissertator/shared";
@@ -239,16 +246,354 @@ function migrate(db: Database): void {
       `[db] migrate: backfilled ${orphanCount.c} chat_messages to "General" chat`
     );
   }
-  // Idempotent schema-version bump (P0 → '2', P2 → '3').
+  // Idempotent schema-version bump (P0 → '2', P2 → '3', P6 → '4').
   db.prepare(
-    "INSERT INTO meta(key, value) VALUES ('schema_version', '3') " +
+    "INSERT INTO meta(key, value) VALUES ('schema_version', '4') " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).run();
+
+  // -----------------------------------------------------------------------
+  // P6: providers table. Seed two rows from the LEGACY single-provider
+  // settings so nothing is lost, and reuse the legacy keychain slots
+  // (`openai_api_key`, `openai_embedding_key`, …) as the rows' `key_user` —
+  // that way existing keys keep working with ZERO keychain migration. Rows
+  // the user adds later get a fresh per-id slot via `providerKeyUser`.
+  // Deterministic ids ('default-chat' / 'default-embedding') make this
+  // idempotent and keep the chat_provider_id / embedding_provider_id
+  // settings stable across re-runs.
+  // -----------------------------------------------------------------------
+  seedProviders(db);
+}
+
+// ===========================================================================
+// P6: providers subsystem.
+// ===========================================================================
+
+interface ProviderRow {
+  id: string;
+  name: string;
+  kind: string;
+  type: string;
+  api_url: string;
+  model: string;
+  key_user: string;
+  is_default: number;
+  created_at: string;
+}
+
+function mapProvider(r: ProviderRow): ProviderConfig {
+  return {
+    id: r.id,
+    name: r.name,
+    kind: r.kind as ProviderKind,
+    type: r.type as ProviderConfig["type"],
+    apiUrl: r.api_url,
+    model: r.model,
+    keyUser: r.key_user,
+    isDefault: !!r.is_default,
+    createdAt: r.created_at,
+  };
+}
+
+/**
+ * Seed the providers table on first migration. Reads the LEGACY single-
+ * provider settings (provider/apiUrl/model + embedding_*) and creates two
+ * rows whose `key_user` reuses the legacy keychain slots, so existing keys
+ * survive the upgrade with no keychain migration. Idempotent: a no-op once
+ * the table has rows AND the two *_provider_id settings are set.
+ */
+function seedProviders(db: Database): void {
+  const countRow = db.prepare("SELECT COUNT(*) AS c FROM providers").get() as {
+    c: number;
+  };
+  const existing = countRow.c;
+
+  // Read whatever legacy settings exist (may be the seeded defaults).
+  const rows = db
+    .prepare("SELECT key, value FROM settings")
+    .all() as { key: string; value: string }[];
+  const obj: Record<string, string> = {};
+  for (const r of rows) obj[r.key] = r.value;
+
+  if (existing === 0) {
+    const now = new Date().toISOString();
+    // Chat default — reuses the legacy chat keychain slot verbatim.
+    const chatType = (obj.provider as Provider) ?? "openai";
+    const chatDef = PROVIDER_DEFAULTS[chatType] ?? PROVIDER_DEFAULTS.openai;
+    db.prepare(
+      "INSERT INTO providers(id, name, kind, type, api_url, model, key_user, is_default, created_at) " +
+        "VALUES (?, ?, 'chat', ?, ?, ?, ?, 1, ?)"
+    ).run(
+      "default-chat",
+      chatDef.label,
+      chatType,
+      obj.apiUrl ?? chatDef.apiUrl,
+      obj.model ?? chatDef.defaultModel,
+      chatDef.keyUser,
+      now,
+    );
+    // Embedding default — reuses the legacy embedding keychain slot.
+    const embType =
+      (obj.embedding_provider as EmbeddingProvider) ?? "openai";
+    const embDef = EMBEDDING_DEFAULTS[embType] ?? EMBEDDING_DEFAULTS.openai;
+    db.prepare(
+      "INSERT INTO providers(id, name, kind, type, api_url, model, key_user, is_default, created_at) " +
+        "VALUES (?, ?, 'embedding', ?, ?, ?, ?, 0, ?)"
+    ).run(
+      "default-embedding",
+      embDef.label,
+      embType,
+      obj.embedding_api_url ?? embDef.apiUrl,
+      obj.embedding_model ?? embDef.defaultModel,
+      embDef.keyUser,
+      now,
+    );
+    console.log("[db] seedProviders: created default-chat + default-embedding");
+  }
+
+  // Point the function-selection settings at the seeded rows (idempotent).
+  // Only set if absent, so a user who already picked providers isn't reset.
+  const upsertIfAbsent = db.prepare(
+    "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING"
+  );
+  upsertIfAbsent.run("chat_provider_id", "default-chat");
+  upsertIfAbsent.run("embedding_provider_id", "default-embedding");
+}
+
+/** List all provider rows (chat + embedding), oldest first. */
+export function listProviders(): ProviderConfig[] {
+  if (!current) return [];
+  const rows = current.db
+    .prepare("SELECT * FROM providers ORDER BY created_at ASC")
+    .all() as ProviderRow[];
+  return rows.map(mapProvider);
+}
+
+/** One provider row, or null. */
+export function getProvider(id: string): ProviderConfig | null {
+  if (!current) return null;
+  const row = current.db
+    .prepare("SELECT * FROM providers WHERE id = ?")
+    .get(id) as ProviderRow | null;
+  return row ? mapProvider(row) : null;
+}
+
+export interface ProviderInput {
+  name: string;
+  kind: ProviderKind;
+  type: ProviderConfig["type"];
+  apiUrl?: string;
+  model?: string;
+  /**
+   * Keychain slot. Omit to get a fresh per-id slot via `providerKeyUser`
+   * (the right choice for user-added providers). Seeded defaults pass the
+   * legacy slot explicitly.
+   */
+  keyUser?: string;
+  isDefault?: boolean;
+}
+
+/** Create a provider row. Generates a uuid id + per-id keychain slot. */
+export function createProvider(input: ProviderInput): ProviderConfig {
+  if (!current) throw new Error("no project initialized");
+  const id = randomUUID();
+  const def =
+    input.kind === "chat"
+      ? (PROVIDER_DEFAULTS[input.type as Provider] ?? PROVIDER_DEFAULTS.openai)
+      : (EMBEDDING_DEFAULTS[input.type as EmbeddingProvider] ??
+        EMBEDDING_DEFAULTS.openai);
+  const row: ProviderRow = {
+    id,
+    name: input.name.trim() || def.label,
+    kind: input.kind,
+    type: input.type,
+    api_url: input.apiUrl ?? def.apiUrl,
+    model: input.model ?? def.defaultModel,
+    key_user: input.keyUser ?? providerKeyUser(id),
+    is_default: 0,
+    created_at: new Date().toISOString(),
+  };
+  current.db
+    .prepare(
+      "INSERT INTO providers(id, name, kind, type, api_url, model, key_user, is_default, created_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .run(
+      row.id,
+      row.name,
+      row.kind,
+      row.type,
+      row.api_url,
+      row.model,
+      row.key_user,
+      row.is_default,
+      row.created_at,
+    );
+  const created = mapProvider(row);
+  // Setting isDefault for a chat provider rewrites the chat_provider_id
+  // pointer (the single source of truth for "default chat provider").
+  if (input.isDefault && input.kind === "chat") {
+    setChatProviderId(id);
+  }
+  return created;
+}
+
+/** Patch a provider row (only provided fields change). */
+export function updateProvider(
+  id: string,
+  patch: Partial<Omit<ProviderInput, "keyUser">>,
+): ProviderConfig | null {
+  if (!current) return null;
+  const existing = getProvider(id);
+  if (!existing) return null;
+  const next: ProviderRow = {
+    id: existing.id,
+    name: patch.name ?? existing.name,
+    kind: patch.kind ?? existing.kind,
+    type: patch.type ?? existing.type,
+    api_url: patch.apiUrl ?? existing.apiUrl,
+    model: patch.model ?? existing.model,
+    key_user: existing.keyUser, // never change slot post-create (key would orphan)
+    is_default: existing.isDefault ? 1 : 0,
+    created_at: existing.createdAt,
+  };
+  current.db
+    .prepare(
+      "UPDATE providers SET name=?, kind=?, type=?, api_url=?, model=?, is_default=? WHERE id=?",
+    )
+    .run(
+      next.name,
+      next.kind,
+      next.type,
+      next.api_url,
+      next.model,
+      next.is_default,
+      id,
+    );
+  if (patch.isDefault && existing.kind === "chat") setChatProviderId(id);
+  return mapProvider(next);
+}
+
+/** Delete a provider row. Refuses the last chat/embedding provider of a kind. */
+export function deleteProvider(id: string): { ok: boolean; error?: string } {
+  if (!current) return { ok: false, error: "no project initialized" };
+  const existing = getProvider(id);
+  if (!existing) return { ok: false, error: "not found" };
+  const kindCount = current.db
+    .prepare("SELECT COUNT(*) AS c FROM providers WHERE kind = ?")
+    .get(existing.kind) as { c: number };
+  if (kindCount.c <= 1) {
+    return {
+      ok: false,
+      error: `cannot delete the last ${existing.kind} provider`,
+    };
+  }
+  current.db.prepare("DELETE FROM providers WHERE id = ?").run(id);
+  // If we deleted the selected chat/embedding provider, fall back to the
+  // first remaining of that kind so getSettings never dangles.
+  const fallback = current.db
+    .prepare(
+      "SELECT id FROM providers WHERE kind = ? ORDER BY created_at ASC LIMIT 1",
+    )
+    .get(existing.kind) as { id: string } | null;
+  if (fallback) {
+    if (existing.kind === "chat") setChatProviderId(fallback.id);
+    else setEmbeddingProviderId(fallback.id);
+  }
+  return { ok: true };
+}
+
+/** Set the chat function's provider (the "default" chat provider). */
+export function setChatProviderId(id: string): void {
+  if (!current) return;
+  current.db
+    .prepare(
+      "INSERT INTO settings(key, value) VALUES ('chat_provider_id', ?) " +
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .run(id);
+}
+
+/** Set the vectorizer function's provider. */
+export function setEmbeddingProviderId(id: string): void {
+  if (!current) return;
+  current.db
+    .prepare(
+      "INSERT INTO settings(key, value) VALUES ('embedding_provider_id', ?) " +
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .run(id);
+}
+
+// ===========================================================================
+// Working-docs persistence (UI tabs).
+// ===========================================================================
+
+export interface UiTab {
+  sourceId: string;
+  kind: string;
+  title: string;
+}
+
+export function getUiTabs(): { tabs: UiTab[]; activeTabId: string | null } {
+  if (!current) return { tabs: [], activeTabId: null };
+  const tabsRaw = current.db
+    .prepare("SELECT value FROM settings WHERE key = 'ui_open_tabs'")
+    .get() as { value?: string } | null;
+  const activeRaw = current.db
+    .prepare("SELECT value FROM settings WHERE key = 'ui_active_tab'")
+    .get() as { value?: string } | null;
+  let tabs: UiTab[] = [];
+  if (tabsRaw?.value) {
+    try {
+      const parsed = JSON.parse(tabsRaw.value);
+      if (Array.isArray(parsed)) {
+        tabs = parsed.filter(
+          (t): t is UiTab =>
+            t &&
+            typeof t.sourceId === "string" &&
+            typeof t.kind === "string" &&
+            typeof t.title === "string",
+        );
+      }
+    } catch {
+      /* corrupt — treat as empty */
+    }
+  }
+  const activeTabId = activeRaw?.value ?? null;
+  return { tabs, activeTabId };
+}
+
+export function setUiTabs(tabs: UiTab[], activeTabId: string | null): void {
+  if (!current) return;
+  const upsert = current.db.prepare(
+    "INSERT INTO settings(key, value) VALUES (?, ?) " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+  );
+  upsert.run("ui_open_tabs", JSON.stringify(tabs));
+  upsert.run("ui_active_tab", activeTabId ?? "");
 }
 
 export async function initProject(
   projectPath: string
 ): Promise<InitProjectResponse> {
+  // Prevent self-digest: refuse to open a path that is ITSELF a Dissertator
+  // data dir. A project root (e.g. ~/research) never has a top-level
+  // `project.toml` + `dissertator.db`; only a data dir does. If the user
+  // picks `<root>/Dissertator` instead of `<root>`, the watcher would index
+  // the app's own files (project.toml, dissertator.db, cache/*.txt) as
+  // research sources — the exact bug that produced 321 garbage chunks and
+  // broke search (the self-ingested DB is never embedded). Reject early with
+  // an actionable message so the UI can tell the user to pick the parent.
+  const rootToml = join(projectPath, "project.toml");
+  const rootDb = join(projectPath, "dissertator.db");
+  if ((await exists(rootToml)) && (await exists(rootDb))) {
+    throw new Error(
+      "That folder is a Dissertator data directory, not a project root. " +
+        "Open its parent folder (the one that contains your source PDFs)."
+    );
+  }
+
   const dissertatorDir = join(projectPath, DISS_DIR_NAME);
   await mkdir(join(dissertatorDir, "cache"), { recursive: true });
   await mkdir(join(dissertatorDir, "documents"), { recursive: true });
@@ -396,6 +741,9 @@ function defaultEmbedding(): EmbeddingConfig {
  * Build the decoupled `EmbeddingConfig` block from the settings key/value
  * rows. Falls back to defaults for any missing key. `embedding_dimensions`
  * is 0 until `lockDimensions` stamps it on the first successful embed.
+ *
+ * NOTE (P6): the primary path now resolves from the providers table inside
+ * `getSettings`; this helper is retained only as the legacy fallback there.
  */
 function embeddingFromSettings(
   obj: Record<string, string>
@@ -428,47 +776,77 @@ export function getSettings(): Settings {
     .all() as { key: string; value: string }[];
   const obj: Record<string, string> = {};
   for (const r of rows) obj[r.key] = r.value;
+
+  // --- Resolve chat function from its provider row (P6) -----------------
+  // provider/apiUrl/model are now DERIVED from the chat-kind provider row
+  // pointed at by chat_provider_id. Falls back to legacy settings keys, then
+  // openai defaults, only if the row is missing (shouldn't happen post-
+  // migrate). This keeps every existing consumer (resolveChatConfig, the
+  // /chat endpoint, OCR vision) working unchanged.
+  const chatProviderId = obj.chat_provider_id || "default-chat";
+  const chatProv = getProvider(chatProviderId);
+  const provider = (chatProv?.type as Settings["provider"]) ??
+    (obj.provider as Settings["provider"]) ??
+    "openai";
+  const chatDef = PROVIDER_DEFAULTS[provider] ?? PROVIDER_DEFAULTS.openai;
+  const apiUrl = chatProv?.apiUrl || obj.apiUrl || chatDef.apiUrl;
+  const model = chatProv?.model || obj.model || chatDef.defaultModel;
+
+  // --- Resolve vectorizer function from its provider row ----------------
+  const embeddingProviderId = obj.embedding_provider_id || "default-embedding";
+  const embProv = getProvider(embeddingProviderId);
+  const embProvider = (embProv?.type as EmbeddingConfig["provider"]) ??
+    (obj.embedding_provider as EmbeddingConfig["provider"]) ??
+    "openai";
+  const embDef = EMBEDDING_DEFAULTS[embProvider] ?? EMBEDDING_DEFAULTS.openai;
+  const dimensionsRaw = obj.embedding_dimensions;
+  const dimensions = dimensionsRaw ? parseInt(dimensionsRaw, 10) : 0;
+  const embedding: EmbeddingConfig = {
+    provider: embProvider,
+    apiUrl: embProv?.apiUrl || obj.embedding_api_url || embDef.apiUrl,
+    model: embProv?.model || obj.embedding_model || embDef.defaultModel,
+    dimensions: Number.isFinite(dimensions) && dimensions > 0 ? dimensions : 0,
+  };
+
   return {
-    provider: (obj.provider as Settings["provider"]) ?? "openai",
-    apiUrl: obj.apiUrl ?? "",
-    model: obj.model ?? "",
+    provider,
+    apiUrl,
+    model,
     ocrStrategy: (obj.ocrStrategy as Settings["ocrStrategy"]) ?? "tesseract",
-    embedding: embeddingFromSettings(obj),
+    embedding,
     contactEmail: obj.contactEmail ?? "",
-    // Optional P3 chat override (decision #1). Empty → fall back to the main
-    // provider/apiUrl/model block in `resolveChatConfig`.
-    chatProvider: (obj.chat_provider as Settings["chatProvider"]) || undefined,
-    chatApiUrl: obj.chat_api_url || undefined,
-    chatModel: obj.chat_model || undefined,
+    chatProviderId,
+    embeddingProviderId,
   };
 }
 
-export function saveSettings(s: Settings): Settings {
+/** {@link saveSettings} accepts this focused patch (re-exported from shared). */
+export type { SettingsPatch };
+
+export function saveSettings(patch: SettingsPatch): Settings {
   if (!current) throw new Error("no project initialized");
   const upsert = current.db.prepare(
     "INSERT INTO settings(key, value) VALUES (?, ?) " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   );
-  upsert.run("provider", s.provider);
-  upsert.run("apiUrl", s.apiUrl);
-  upsert.run("model", s.model);
-  upsert.run("ocrStrategy", s.ocrStrategy);
-  // Crossref polite-pool contact email (P2 Track 3). Not a keychain slot —
-  // a public contact address stored in the project DB.
-  upsert.run("contactEmail", s.contactEmail ?? "");
-  // Embedding block is DECOUPLED from chat — its own keys. `dimensions` is
-  // round-tripped here too, but it is normally stamped by `lockDimensions`
-  // (0 = not yet locked). Saving 0 does NOT unlock an existing vec0 table
-  // (that lives in meta); it only reflects the configured/expected value.
-  upsert.run("embedding_provider", s.embedding.provider);
-  upsert.run("embedding_api_url", s.embedding.apiUrl);
-  upsert.run("embedding_model", s.embedding.model);
-  upsert.run("embedding_dimensions", String(s.embedding.dimensions ?? 0));
-  // Optional P3 chat override. NULL/empty stored as "" so the round-trip is
-  // uniform; `getSettings` coerces "" → undefined.
-  upsert.run("chat_provider", s.chatProvider ?? "");
-  upsert.run("chat_api_url", s.chatApiUrl ?? "");
-  upsert.run("chat_model", s.chatModel ?? "");
+  if (patch.ocrStrategy !== undefined) upsert.run("ocrStrategy", patch.ocrStrategy);
+  // Crossref polite-pool contact email. Not a keychain slot — a public
+  // contact address stored in the project DB.
+  if (patch.contactEmail !== undefined) {
+    upsert.run("contactEmail", patch.contactEmail);
+  }
+  // Function selections → pointers into the providers table.
+  if (patch.chatProviderId !== undefined) setChatProviderId(patch.chatProviderId);
+  if (patch.embeddingProviderId !== undefined) {
+    setEmbeddingProviderId(patch.embeddingProviderId);
+  }
+  // Embedding dimension lock. Normally stamped by `lockDimensions` on the
+  // first successful embed; surfaced here so the UI can reset it when the
+  // user switches embedding provider (forces a fresh lock). Saving 0 does
+  // NOT drop an existing vec0 table (that lives in meta).
+  if (patch.embeddingDimensions !== undefined) {
+    upsert.run("embedding_dimensions", String(patch.embeddingDimensions));
+  }
   return getSettings();
 }
 

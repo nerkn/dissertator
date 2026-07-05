@@ -7,7 +7,7 @@ import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { join } from "node:path";
 import { createServer } from "node:net";
-import { SIDECAR_PORT, SIDECAR_PORT_RANGE, type ChatRequest, type DocType, type Document, type Reference, type Settings, resolveChatConfig } from "@dissertator/shared";
+import { SIDECAR_PORT, SIDECAR_PORT_RANGE, type ChatRequest, type DocType, type Document, type ProviderConfig, type ProviderKind, type Reference, type Settings, resolveChatConfig } from "@dissertator/shared";
 import {
   getCurrentProject,
   getProjectStatus,
@@ -15,9 +15,11 @@ import {
   getEmbeddingStatus,
   getReferenceById,
   getReferenceByCitekey,
+  getUiTabs,
   initProject,
   listReferences,
   saveSettings,
+  setUiTabs,
   upsertReference,
   createChat,
   deleteChat,
@@ -34,8 +36,13 @@ import {
   getDocument,
   updateDocument,
   deleteDocument,
+  listProviders,
+  getProvider,
+  createProvider,
+  updateProvider,
+  deleteProvider,
 } from "./db";
-import { getPrompts } from "./prompts.ts";
+import { getPrompts, readPromptsMarkdown, savePrompts } from "./prompts.ts";
 import { searchCorpus } from "./search";
 import { crossrefByDoi, crossrefSearch } from "./cite/crossref.ts";
 import { exportBibtex, parseBibtex } from "./cite/bibtex.ts";
@@ -43,8 +50,10 @@ import {
   runAgentLoop,
   type AgentStreamEvent,
 } from "./agent/loop.ts";
+import { TOOL_SPECS } from "./agent/tools.ts";
+import { streamOpenAIChat } from "./chat/openai.ts";
 import type { ToolContext } from "./agent/tools.ts";
-import type { LoopMessage } from "./chat/openai.ts";
+import type { LoopMessage, ToolSpec } from "./chat/openai.ts";
 import {
   start,
   scanAll,
@@ -99,40 +108,115 @@ app.get("/settings", (c) => {
 
 app.put("/settings", async (c) => {
   if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
-  const body = await c.req.json<Partial<Settings>>().catch(
-    () => ({}) as Partial<Settings>
+  // P6: settings is now a FOCUSED patch — only scalar prefs + the function-
+  // selection pointers (chat_provider_id / embedding_provider_id) + the
+  // embedding dimension lock. Provider/apiUrl/model/embedding.* are derived
+  // from provider rows, so they are NOT accepted here; manage rows via
+  // /providers. Unknown keys are ignored for forward-compat.
+  const body = await c.req.json<Record<string, unknown>>().catch(
+    () => ({}) as Record<string, unknown>
   );
-  const current = getSettings();
-  // The embedding block is DECOUPLED from chat settings and is usually edited
-  // on its own screen — so if the body omits it, preserve the existing block
-  // (and its locked `dimensions`). A body that DOES include `embedding`
-  // overrides field-by-field.
-  const embedding = body.embedding
-    ? {
-        provider: body.embedding.provider ?? current.embedding.provider,
-        apiUrl: body.embedding.apiUrl ?? current.embedding.apiUrl,
-        model: body.embedding.model ?? current.embedding.model,
-        dimensions: body.embedding.dimensions ?? current.embedding.dimensions,
-      }
-    : current.embedding;
-  const merged: Settings = {
-    provider: body.provider ?? current.provider,
-    apiUrl: body.apiUrl ?? current.apiUrl,
-    model: body.model ?? current.model,
-    ocrStrategy: body.ocrStrategy ?? current.ocrStrategy,
-    embedding,
-    contactEmail: body.contactEmail ?? current.contactEmail,
-    // Optional P3 chat override. A PUT that includes ANY chat_* field treats
-    // the whole block as provided (fields it omits clear to undefined); a
-    // PUT that omits all three preserves the existing override untouched.
-    chatProvider:
-      "chatProvider" in body ? body.chatProvider : current.chatProvider,
-    chatApiUrl:
-      "chatApiUrl" in body ? body.chatApiUrl : current.chatApiUrl,
-    chatModel:
-      "chatModel" in body ? body.chatModel : current.chatModel,
-  };
-  return c.json(saveSettings(merged));
+  const patch: Parameters<typeof saveSettings>[0] = {};
+  if (typeof body.ocrStrategy === "string") patch.ocrStrategy = body.ocrStrategy as Settings["ocrStrategy"];
+  if (typeof body.contactEmail === "string") patch.contactEmail = body.contactEmail;
+  if (typeof body.chatProviderId === "string") patch.chatProviderId = body.chatProviderId;
+  if (typeof body.embeddingProviderId === "string") patch.embeddingProviderId = body.embeddingProviderId;
+  if (typeof body.embeddingDimensions === "number") patch.embeddingDimensions = body.embeddingDimensions;
+  return c.json(saveSettings(patch));
+});
+
+// ---------------------------------------------------------------------------
+// Providers (P6): named, user-editable provider rows. The frontend builds a
+// list of these (multiple OpenAI accounts, a work Claude, an embedding
+// backend, …); the Functions tab assigns one chat-kind row to `chat` and one
+// embedding-kind row to `vectorizer` via PUT /settings. The API key is NEVER
+// in the row — it lives in the OS keychain under the row's `keyUser` slot,
+// managed by the frontend.
+// ---------------------------------------------------------------------------
+
+app.get("/providers", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  return c.json(listProviders());
+});
+
+app.post("/providers", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const body = await c.req.json<{
+    name?: string;
+    kind?: ProviderKind;
+    type?: ProviderConfig["type"];
+    apiUrl?: string;
+    model?: string;
+    isDefault?: boolean;
+  }>().catch(() => ({}) as Record<string, never>);
+  if (body.kind !== "chat" && body.kind !== "embedding") {
+    return c.json({ error: "kind must be 'chat' or 'embedding'" }, 400);
+  }
+  if (!body.type) return c.json({ error: "type required" }, 400);
+  try {
+    const created = createProvider({
+      name: body.name ?? "",
+      kind: body.kind,
+      type: body.type,
+      apiUrl: body.apiUrl,
+      model: body.model,
+      isDefault: body.isDefault,
+    });
+    return c.json(created, 201);
+  } catch (e) {
+    return c.json({ error: (e as Error)?.message ?? String(e) }, 500);
+  }
+});
+
+app.put("/providers/:id", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = c.req.param("id");
+  const body = await c.req.json<{
+    name?: string;
+    kind?: ProviderKind;
+    type?: ProviderConfig["type"];
+    apiUrl?: string;
+    model?: string;
+    isDefault?: boolean;
+  }>().catch(() => ({}) as Record<string, never>);
+  const updated = updateProvider(id, {
+    name: body.name,
+    kind: body.kind,
+    type: body.type,
+    apiUrl: body.apiUrl,
+    model: body.model,
+    isDefault: body.isDefault,
+  });
+  if (!updated) return c.json({ error: "not found" }, 404);
+  return c.json(updated);
+});
+
+app.delete("/providers/:id", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const res = deleteProvider(c.req.param("id"));
+  if (!res.ok) return c.json({ error: res.error ?? "delete failed" }, 400);
+  return c.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Working-docs persistence (UI tabs). The frontend stores the open-tab list
+// + active tab so reopening a project restores the user's working set.
+// Lives in the project DB (settings table); never sent to the LLM.
+// ---------------------------------------------------------------------------
+
+app.get("/ui/tabs", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  return c.json(getUiTabs());
+});
+
+app.put("/ui/tabs", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const body = await c.req.json<{
+    tabs?: Array<{ sourceId: string; kind: string; title: string }>;
+    activeTabId?: string | null;
+  }>().catch(() => ({}) as Record<string, never>);
+  setUiTabs(body.tabs ?? [], body.activeTabId ?? null);
+  return c.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -591,6 +675,31 @@ app.get("/prompts", async (c) => {
   return c.json(await getPrompts());
 });
 
+// Raw `prompts.md` markdown for the Prompts-tab editor (P6). "" if absent.
+app.get("/prompts/raw", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  return c.json(await readPromptsMarkdown());
+});
+
+// Write the raw `prompts.md` back (P6 Prompts tab). The frontend edits the
+// markdown directly; this replaces the whole file. Re-parses on save so the
+// response is the fresh Prompt[] the quick-pick menu consumes.
+app.put("/prompts", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const body = await c.req
+    .json<{ markdown?: string }>()
+    .catch(() => ({}) as { markdown?: string });
+  if (typeof body.markdown !== "string") {
+    return c.json({ error: "markdown required" }, 400);
+  }
+  try {
+    await savePrompts(body.markdown);
+    return c.json(await getPrompts());
+  } catch (e) {
+    return c.json({ error: (e as Error)?.message ?? String(e) }, 500);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Chat (P3 Track E): streaming `POST /chat` with open-files context.
 //
@@ -764,6 +873,53 @@ app.post("/chat", async (c) => {
           break;
       }
     };
+
+    // Dev debug: surface exactly what's sent to the LLM. We wrap the
+    // streaming adapter so every agent step fires a `debug` SSE event with
+    // the model config, the full message array (roles + content + tool-call
+    // traces), and the tool advertisements. The API key is NOT in the
+    // payload (it travels only as a header).
+    //
+    // Also appended to `Dissertator/logs/agent.log` so a dev can `tail -f`
+    // the exact LLM payloads during local debugging. ON by default; set
+    // DEBUG=0 to disable (e.g. to keep the project folder quiet in prod).
+    let debugStep = 0;
+    const debugToFile = process.env.DEBUG !== "0";
+    const wrapStream = (opts: Parameters<typeof streamOpenAIChat>[0]) => {
+      const step = ++debugStep;
+      const payload = {
+        step,
+        config: {
+          provider: opts.config.provider,
+          apiUrl: opts.config.apiUrl,
+          model: opts.config.model,
+        },
+        toolChoice: opts.toolChoice ?? (opts.tools && opts.tools.length ? "auto" : undefined),
+        tools: (opts.tools ?? []).map((t: ToolSpec) => t.function.name),
+        messages: opts.messages,
+      };
+      // Emit as a first-class SSE event the client can render in a dev panel.
+      stream.writeSSE({ event: "debug", data: JSON.stringify(payload) }).catch(() => {});
+      if (debugToFile) {
+        try {
+          const project = getCurrentProject();
+          if (project) {
+            const logsDir = join(project.dissertatorDir, "logs");
+            const logPath = join(logsDir, "agent.log");
+            const stamp = new Date().toISOString();
+            const line = `${stamp} [agent step ${step}] model=${opts.config.model} tools=${payload.tools.length} msgs=${opts.messages.length}\n` +
+              JSON.stringify(payload, null, 2) + "\n";
+            void import("node:fs/promises").then(async (fs) => {
+              await fs.mkdir(logsDir, { recursive: true });
+              await fs.appendFile(logPath, line, "utf8");
+            }).catch(() => {});
+          }
+        } catch {
+          /* logging must never throw */
+        }
+      }
+      return streamOpenAIChat(opts);
+    };
     const toolContext: ToolContext = {
       embeddingApiKey,
       activeDocumentId: activeDocId,
@@ -784,6 +940,7 @@ app.post("/chat", async (c) => {
         toolContext,
         signal: ac.signal,
         onEvent,
+        streamFn: wrapStream,
       });
       content = res.content;
       usage = res.usage;
@@ -824,6 +981,26 @@ app.post("/chat", async (c) => {
     });
     // Touch the chat's updated_at so it floats to the top of the sidebar.
     updateChat(chatId, {});
+    // Dev debug: append a one-line turn summary to agent.log so a dev can
+    // scan the tail of the log without expanding JSON blobs. (Full per-step
+    // payloads are appended by wrapStream above.)
+    if (debugToFile) {
+      try {
+        const project = getCurrentProject();
+        if (project) {
+          const logPath = join(project.dissertatorDir, "logs", "agent.log");
+          const stamp = new Date().toISOString();
+          const summary =
+            `${stamp} [turn done] steps=${debugStep} tools_used=${toolCalls} ` +
+            `tokens=${usage.prompt}↑/${usage.completion}↓ ` +
+            `capped=${capped} aborted=${aborted}\n` +
+            `  reply: ${JSON.stringify(content.slice(0, 200))}${content.length > 200 ? " …" : ""}\n`;
+          void import("node:fs/promises").then((fs) => fs.appendFile(logPath, summary, "utf8")).catch(() => {});
+        }
+      } catch {
+        /* logging must never throw */
+      }
+    }
     await stream.writeSSE({
       event: "done",
       data: JSON.stringify({

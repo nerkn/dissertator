@@ -266,6 +266,14 @@ function EditorInner({ document, initialMarkdown }: InnerProps) {
     },
     [get],
   );
+  // Ref mirror so the server-markdown effect depends ONLY on `initialMarkdown`
+  // (the real signal the server body changed). Keeping `applyServerMarkdown`
+  // as a dep would re-run the effect whenever the Milkdown `get` identity flips
+  // (every re-render) — mid-typing that either wipes the editor back to the
+  // pre-edit body via `replaceAll` or falsely flashes the "agent edited"
+  // stale banner. Read through the ref instead.
+  const applyServerMarkdownRef = useRef(applyServerMarkdown);
+  applyServerMarkdownRef.current = applyServerMarkdown;
 
   useEffect(() => {
     if (firstServerRun.current) {
@@ -285,8 +293,9 @@ function EditorInner({ document, initialMarkdown }: InnerProps) {
       setStaleExternal(true);
       return;
     }
-    applyServerMarkdown(initialMarkdown, false);
-  }, [initialMarkdown, applyServerMarkdown]);
+    applyServerMarkdownRef.current(initialMarkdown, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialMarkdown]);
 
   return (
     <div className="manuscript-editor">

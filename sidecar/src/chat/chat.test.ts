@@ -13,6 +13,7 @@ import { resolveChatConfig } from "@dissertator/shared";
 import {
   buildOpenFilesContext,
   createChat,
+  createProvider,
   getSettings,
   initProject,
   insertChatMessage,
@@ -35,56 +36,52 @@ afterAll(() => {
   }
 });
 
-test("chat settings round-trip the optional override", () => {
-  const s = saveSettings({
-    ...getSettings(),
-    chatProvider: "claude",
-    chatModel: "claude-3-5-sonnet-latest",
-    // chatApiUrl intentionally omitted → should round-trip as undefined.
+test("selecting a chat provider resolves provider/apiUrl/model", () => {
+  // P6: the chat function points at a provider row; getSettings resolves the
+  // main provider/apiUrl/model block from it (so resolveChatConfig + the
+  // /chat endpoint + OCR vision all see the selected backend unchanged).
+  const zai = createProvider({
+    name: "My Z.ai",
+    kind: "chat",
+    type: "zai",
   });
-  expect(s.chatProvider).toBe("claude");
-  expect(s.chatModel).toBe("claude-3-5-sonnet-latest");
-  expect(s.chatApiUrl).toBeUndefined();
-});
-
-test("chat override clears to undefined when set to empty", () => {
-  saveSettings({
-    ...getSettings(),
-    chatProvider: "claude",
-    chatModel: "claude-3-5-sonnet-latest",
-  });
-  // Clearing: an explicit empty/undefined on all three.
-  saveSettings({
-    ...getSettings(),
-    chatProvider: undefined,
-    chatApiUrl: undefined,
-    chatModel: undefined,
-  });
+  saveSettings({ chatProviderId: zai.id });
   const s = getSettings();
-  expect(s.chatProvider).toBeUndefined();
-  expect(s.chatModel).toBeUndefined();
+  expect(s.provider).toBe("zai");
+  expect(s.apiUrl).toBe("https://api.z.ai/api/paas/v4");
+  expect(s.model).toBe("glm-4.6");
+  expect(s.chatProviderId).toBe(zai.id);
 });
 
 test("resolveChatConfig falls back to main provider when no override", () => {
-  saveSettings({
-    ...getSettings(),
+  // Pure-function check: a Settings with no chatProvider override mirrors
+  // its main provider/apiUrl/model block (the path getSettings now feeds it).
+  const resolved = resolveChatConfig({
     provider: "zai",
     apiUrl: "https://api.z.ai/api/paas/v4",
     model: "glm-4.6",
-    chatProvider: undefined,
+    ocrStrategy: "tesseract",
+    embedding: getSettings().embedding,
+    contactEmail: "",
   });
-  const resolved = resolveChatConfig(getSettings());
   expect(resolved.provider).toBe("zai");
   expect(resolved.model).toBe("glm-4.6");
 });
 
 test("resolveChatConfig fills override gaps from PROVIDER_DEFAULTS", () => {
-  saveSettings({
-    ...getSettings(),
+  // The chatProvider override path is retained for direct callers; getSettings
+  // no longer populates it, but resolveChatConfig must still honor a caller-
+  // supplied override and fill gaps from PROVIDER_DEFAULTS.
+  const resolved = resolveChatConfig({
+    provider: "zai",
+    apiUrl: "https://api.z.ai/api/paas/v4",
+    model: "glm-4.6",
+    ocrStrategy: "tesseract",
+    embedding: getSettings().embedding,
+    contactEmail: "",
     chatProvider: "openai",
     // chatApiUrl + chatModel omitted → defaults filled in.
   });
-  const resolved = resolveChatConfig(getSettings());
   expect(resolved.provider).toBe("openai");
   expect(resolved.apiUrl).toBe("https://api.openai.com/v1");
   expect(resolved.model).toBe("gpt-4o-mini");

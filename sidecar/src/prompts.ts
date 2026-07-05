@@ -14,7 +14,7 @@
 // missing file is NOT an error → returns `[]` (the frontend shows "no prompts
 // — create prompts.md"). The file is never auto-created.
 
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Prompt } from "@dissertator/shared";
 import { getCurrentProject } from "./db.ts";
@@ -91,4 +91,30 @@ export async function getPrompts(): Promise<Prompt[]> {
     return [];
   }
   return parsePrompts(text);
+}
+
+/** Raw markdown of the project's `prompts.md`, or "" if absent (P6 Prompts
+ *  tab seeds the editor from this). */
+export async function readPromptsMarkdown(): Promise<string> {
+  const project = getCurrentProject();
+  if (!project) return "";
+  try {
+    return await readFile(join(project.dissertatorDir, "prompts.md"), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Overwrite `prompts.md` with the given markdown (P6 Prompts tab). Creates
+ * the file if missing. Throws on write failure (the caller maps to a 500).
+ */
+export async function savePrompts(markdown: string): Promise<void> {
+  const project = getCurrentProject();
+  if (!project) throw new Error("no project initialized");
+  await writeFile(
+    join(project.dissertatorDir, "prompts.md"),
+    markdown,
+    "utf8",
+  );
 }

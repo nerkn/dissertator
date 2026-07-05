@@ -203,3 +203,36 @@ test("initProject seeds a default prompts.md that parses + is write-once", async
   const after = readFileSync(promptsPath, "utf8");
   expect(after.trim()).toBe("- **Mine**: custom");
 });
+
+// --- self-digest guard (P9): refuse to open a data dir as the project root ---
+// Reproduces the bug where opening `<root>/Dissertator` instead of `<root>`
+// made the watcher ingest the app's own files (project.toml, dissertator.db,
+// cache/*.txt) as research sources — producing a garbage, never-embedded DB.
+// `initProject` now throws when the picked path itself looks like a data dir
+// (has both `project.toml` and `dissertator.db` at its top level).
+test("initProject rejects a path that is itself a Dissertator data dir", async () => {
+  // Make a fake data dir: a plain folder containing project.toml + dissertator.db.
+  const fakeDataDir = mkdtempSync(join(tmpdir(), "diss-datadir-"));
+  writeFileSync(join(fakeDataDir, "project.toml"), "[project]\nversion = 1\n", "utf8");
+  writeFileSync(join(fakeDataDir, "dissertator.db"), "", "utf8");
+  try {
+    await expect(initProject(fakeDataDir)).rejects.toThrow(
+      /data directory, not a project root/
+    );
+  } finally {
+    rmSync(fakeDataDir, { recursive: true, force: true });
+  }
+});
+
+test("initProject still accepts a normal folder that happens to contain a project.toml only", async () => {
+  // A research folder with a stray project.toml but NO dissertator.db is NOT
+  // a data dir — accept it (no false positives). The marker pair is what
+  // identifies a real data dir.
+  const plainDir = mkdtempSync(join(tmpdir(), "diss-plain-"));
+  writeFileSync(join(plainDir, "project.toml"), "[project]\nversion = 1\n", "utf8");
+  try {
+    await expect(initProject(plainDir)).resolves.toBeDefined();
+  } finally {
+    rmSync(plainDir, { recursive: true, force: true });
+  }
+});
