@@ -1,0 +1,73 @@
+# AppVeyor build config for Dissertator (Windows .msi + .exe).
+# Used while GitHub Actions is unavailable. Public project → free Windows images.
+#
+# Mirrors the linux/macos logic in .github/workflows/release.yml but on a
+# single Windows runner: install Rust + Bun, build the sidecar natively (so
+# sqlite-vec + tesseract native bits are correct), place it at the target-triple
+# path Tauri's externalBin expects, then `tauri build`.
+
+image: Visual Studio 2022
+
+branches:
+  only:
+    - main
+
+environment:
+  matrix:
+    - channel: stable
+
+install:
+  - ps: |
+      # Rust (stable, x86_64-pc-windows-msvc — Tauri's Windows target)
+      if (-not (Test-Path "$env:USERPROFILE\.cargo\bin\rustc.exe")) {
+        Invoke-RestMethod -UseBasicParsing https://win.rustup.rs/x86_64 -OutFile "$env:TEMP\rustup-init.exe"
+        & "$env:TEMP\rustup-init.exe" -y --default-toolchain stable-x86_64-pc-windows-msvc --profile minimal | Out-Null
+      }
+      $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+      rustc -V; cargo -V
+  - ps: |
+      # Bun
+      if (-not (Get-Command bun -ErrorAction SilentlyContinue)) {
+        powershell -c "irm bun.sh/install.ps1 | iex"
+      }
+      $env:PATH = "$env:USERPROFILE\.bun\bin;$env:PATH"
+      bun -V
+
+build_script:
+  - ps: |
+      $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:USERPROFILE\.bun\bin;$env:PATH"
+      cd $env:APPVEYOR_BUILD_FOLDER
+
+      Write-Host "=== bun install ==="
+      bun install --frozen-lockfile
+      if ($LASTEXITCODE -ne 0) { throw "bun install failed" }
+
+      Write-Host "=== build sidecar (native) ==="
+      bun --filter sidecar build
+      if ($LASTEXITCODE -ne 0) { throw "sidecar build failed" }
+
+      Write-Host "=== place sidecar at externalBin target-triple path ==="
+      New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
+      Copy-Item "sidecar\dist\dissertator-sidecar.exe" `
+                "src-tauri\binaries\dissertator-sidecar-x86_64-pc-windows-msvc.exe" -Force
+      if (-not (Test-Path "src-tauri\binaries\dissertator-sidecar-x86_64-pc-windows-msvc.exe")) {
+        throw "sidecar placement failed"
+      }
+
+      Write-Host "=== tauri build ==="
+      bun run tauri build
+      if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
+
+test: off
+
+artifacts:
+  - path: 'src-tauri\target\release\bundle\msi\*.msi'
+    name: Dissertator-msi
+  - path: 'src-tauri\target\release\bundle\nsis\*.exe'
+    name: Dissertator-nsis
+  - path: 'src-tauri\target\release\dissertator.exe'
+    name: Dissertator-raw-exe
+
+# Push installers into the build's "Artifacts" tab; download from the web UI.
+# (No GitHub Release wiring — once Actions is restored this appveyor.yml can be
+# deleted and the GH workflow takes over.)
