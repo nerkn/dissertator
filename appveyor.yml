@@ -55,6 +55,9 @@ build_script:
       }
 
       Write-Host "=== tauri build ==="
+      # AppVeyor sets CI=True (capitalized); tauri's clap parser expects lowercase
+      # true/false and rejects 'True'. Force it lowercase so tauri doesn't error.
+      $env:CI = "true"
       bun run tauri build
       if ($LASTEXITCODE -ne 0) { throw "tauri build failed" }
 
