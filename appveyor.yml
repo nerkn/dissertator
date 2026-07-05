@@ -31,7 +31,7 @@ install:
         powershell -c "irm bun.sh/install.ps1 | iex"
       }
       $env:PATH = "$env:USERPROFILE\.bun\bin;$env:PATH"
-      bun -V
+      bun --version
 
 build_script:
   - ps: |
