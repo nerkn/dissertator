@@ -42,6 +42,7 @@ import type {
   Chat,
   ChatMessage,
   Document,
+  EmbeddingStatus,
   GuiEvent,
   GuiOption,
   Prompt,
@@ -117,6 +118,31 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     for (const s of sources) m.set(s.id, s.filename);
     return m;
   }, [sources]);
+
+  // Corpus size for the header badge: how many sources exist + how many
+  // chunks are embedded (semantic-search readiness). Cheap 5s poll so the
+  // badge stays accurate as the user ingests / embeds while chatting. The
+  // agent's corpus_list tool sees the same data, so this makes the “what the
+  // agent can reach” surface visible to the human too.
+  const [embed, setEmbed] = useState<EmbeddingStatus | null>(null);
+  useEffect(() => {
+    if (health !== "up") return;
+    let stopped = false;
+    const tick = async (): Promise<void> => {
+      try {
+        const e = await api.embedStatus();
+        if (!stopped) setEmbed(e);
+      } catch {
+        /* sidecar mid-restart; next tick retries */
+      }
+    };
+    void tick();
+    const id = setInterval(tick, 5000);
+    return () => {
+      stopped = true;
+      clearInterval(id);
+    };
+  }, [health]);
 
   const refreshChats = useCallback(async () => {
     try {
@@ -486,6 +512,21 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     );
   }
 
+  // One-line corpus summary for the header: source count + embedding
+  // readiness. Mirrors what corpus_list reports so the human and the agent
+  // share the same picture of “what's reachable”.
+  const corpusLine = (() => {
+    const n = sources.length;
+    const parts = [`${n} source${n === 1 ? "" : "s"}`];
+    if (embed) {
+      if (!embed.vecLoaded) parts.push("embeddings off");
+      else if (embed.total > 0)
+        parts.push(`${embed.done}/${embed.total} embedded`);
+      else parts.push("not embedded");
+    }
+    return parts.join(" · ");
+  })();
+
   return (
     <aside className="panel chat">
       <div className="chat-head">
@@ -518,6 +559,9 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             <Trash size={14} weight="bold" />
           </button>
         </div>
+      </div>
+      <div className="chat-corpus muted small" title="What the agent can reach via corpus_list">
+        📚 {corpusLine}
       </div>
 
       {loadingChats ? (

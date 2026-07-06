@@ -51,6 +51,11 @@ body {
   padding: 10px 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
+  /* Frameless window: the topbar IS the drag handle. Prevent text
+     selection while dragging, and keep a hair of right padding clear of
+     the window-control buttons. */
+  user-select: none;
+  -webkit-user-select: none;
 }
 .brand {
   font-weight: 700;
@@ -66,6 +71,34 @@ body {
 }
 .spacer {
   flex: 1;
+}
+.window-controls {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  /* Drag-region gap: keep these buttons out of the draggable area by NOT
+     giving them data-tauri-drag-region (they sit inside the topbar which is
+     draggable, but clicks on them are captured before drag starts). */
+}
+.wc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.wc-btn:hover {
+  background: var(--panel-2, #232831);
+  color: var(--text);
+}
+.wc-close:hover {
+  background: #e02424;
+  color: #fff;
 }
 .health-dot {
   width: 9px;
@@ -389,6 +422,13 @@ code {
 .chat-head-actions {
   display: flex;
   gap: 4px;
+}
+/* One-line corpus summary under the Chat title: source count + embedding
+   readiness. Mirrors what the agent's corpus_list tool reports. */
+.chat-corpus {
+  padding: 2px 2px 8px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
 }
 .chat-head-actions .tb.small {
   display: inline-flex;
@@ -1230,11 +1270,26 @@ code {
 .pdf-canvas-area {
   flex: 1;
   overflow: auto;
-  display: flex;
-  justify-content: center;
+  /* Block layout (NOT flex): a flex container with the default
+     `align-items: stretch` distorts the canvas — it stretches the canvas's
+     CSS height (which resolves to `auto`) to fill this box while the width
+     stays intrinsic, squashing the page's aspect ratio. Block + auto margins
+     also avoid flexbox's quirk of clipping centered overflow on the start
+     side when the canvas is wider than the pane (zoomed in). */
   padding: 16px;
 }
+.pdf-controls-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+}
+.pdf-zoom-reset {
+  min-width: 52px;
+  font-variant-numeric: tabular-nums;
+}
 .pdf-canvas-area canvas {
+  display: block;
+  margin: 0 auto; /* center horizontally; scrolls correctly when wider/taller */
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
   background: #fff;
 }
@@ -1578,4 +1633,364 @@ code {
 .embed-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* ---- citation chips + reference card (manuscript editor) ---- */
+
+/* A `[@citekey:page]` token in the WYSIWYG editor is decorated (ProseMirror
+   inline decoration, never changes the doc) into a clickable chip. Stays
+   editable as text underneath; the click is caught by delegation on the
+   editor surface. */
+.milkdown-doc .cite-chip {
+  background: var(--blue-soft, #1e3a5f);
+  color: #93c5fd;
+  border: 1px solid #3b6ea5;
+  border-radius: 6px;
+  padding: 0 4px;
+  margin: 0 1px;
+  font-size: 0.88em;
+  font-family: var(--mono, ui-monospace, monospace);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+.milkdown-doc .cite-chip:hover {
+  background: #2b5079;
+  border-color: #5b8fc7;
+}
+/* In the read-only source view the tokens are just preformatted text; no
+   chip styling there (they aren't decorated). */
+
+/* Reference card popup (fileless / unknown citations). Fixed overlay + an
+   absolutely positioned card anchored near the clicked chip. */
+.citation-popup-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  /* Transparent: the card itself catches outside-clicks via its own
+     mousedown listener; the overlay is a click-anywhere fallback. */
+}
+.citation-popup {
+  position: absolute;
+  min-width: 260px;
+  max-width: 380px;
+  background: var(--panel, #1f2430);
+  border: 1px solid var(--border, #333a47);
+  border-radius: 10px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  z-index: 71;
+  overflow: hidden;
+}
+.citation-popup-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--blue-soft, #1e3a5f);
+  color: #cfe3ff;
+  font-size: 12px;
+}
+.citation-popup-citekey {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-weight: 600;
+}
+.citation-popup-page {
+  margin-left: 4px;
+  opacity: 0.85;
+}
+.citation-popup-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 4px;
+}
+.citation-popup-close:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+.citation-popup-body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.citation-popup-title {
+  font-weight: 600;
+  line-height: 1.3;
+}
+.citation-popup-authors {
+  font-size: 13px;
+  line-height: 1.35;
+}
+.citation-popup-meta {
+  line-height: 1.4;
+}
+.citation-popup-doi {
+  color: #93c5fd;
+}
+.citation-popup-note {
+  margin-top: 2px;
+}
+.citation-popup-link {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+.citation-popup-select {
+  width: 100%;
+  padding: 5px 6px;
+  background: var(--bg, #15181f);
+  color: var(--text, #e5e7eb);
+  border: 1px solid var(--border, #333a47);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.citation-popup-select:disabled {
+  opacity: 0.6;
+}
+.citation-popup-unknown {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  color: var(--text, #e5e7eb);
+}
+.citation-popup-unknown .muted.small {
+  margin-top: 2px;
+}
+
+/* === References view (bibliography manager, center-pane tab) ============= */
+.group.purple.clickable {
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.group.purple.clickable:hover {
+  background: var(--panel-2, #1c212b);
+}
+.references-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+.references-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+.references-toolbar .search-box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.references-toolbar .search-box input {
+  border: none;
+  background: transparent;
+  color: var(--text);
+  outline: none;
+  width: 260px;
+  font-size: 13px;
+}
+.references-import {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.references-import textarea {
+  width: 100%;
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 12px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  resize: vertical;
+}
+.references-import-actions {
+  display: flex;
+  gap: 8px;
+}
+.references-add {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+}
+.references-add input {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+}
+.references-list {
+  flex: 1;
+  overflow: auto;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.reference-row {
+  display: flex;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.reference-main {
+  flex: 1;
+  min-width: 0;
+}
+.reference-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.reference-head .citekey {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 13px;
+  color: var(--accent, #6ea8fe);
+  background: rgba(110, 168, 254, 0.08);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.reference-title {
+  font-weight: 600;
+  margin-top: 3px;
+}
+.ref-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+.ref-badge.linked {
+  background: rgba(56, 161, 105, 0.15);
+  color: #4ade80;
+}
+.ref-badge.fileless {
+  background: rgba(180, 180, 180, 0.12);
+  color: var(--muted);
+}
+.reference-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+  flex-shrink: 0;
+}
+.ref-link-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.ref-link-select select {
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12px;
+  max-width: 180px;
+}
+.reference-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.reference-edit input,
+.reference-edit-row input {
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+}
+.reference-edit-row {
+  display: flex;
+  gap: 6px;
+}
+.reference-edit-row input:first-child {
+  max-width: 100px;
+}
+
+/* === Export menu (manuscript toolbar) =================================== */
+.export-menu {
+  position: relative;
+}
+.export-menu > summary {
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+}
+.export-menu > summary::-webkit-details-marker { display: none; }
+.export-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 170px;
+  background: var(--panel, #1a1f2b);
+  border: 1px solid var(--border, #333a47);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  padding: 4px;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.export-dropdown button {
+  text-align: left;
+  padding: 7px 10px;
+  border: none;
+  background: transparent;
+  color: var(--text, #e5e7eb);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.export-dropdown button:hover:not(:disabled) {
+  background: var(--panel-2, #232831);
+}
+.export-dropdown button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.export-err {
+  padding: 6px 10px;
+  color: #f87171;
+}
+.export-ok {
+  padding: 6px 10px;
+  color: #4ade80;
+  word-break: break-all;
 }

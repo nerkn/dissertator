@@ -8,6 +8,10 @@
 
 import { extractText } from "unpdf";
 import type { ExtractResult } from "./index";
+import {
+  looksLikeBrokenTurkishPdf,
+  repairTurkishPdfText,
+} from "./turkish";
 
 const MIME_TYPE = "application/pdf";
 
@@ -27,9 +31,16 @@ export async function extractPdf(absPath: string): Promise<ExtractResult> {
         ? []
         : [String(text)];
 
+    // Old Turkish PDFs often embed a broken Type1 font whose glyph-name table
+    // corrupts the 6 Turkish-only letters (ğ Ğ ı İ ş Ş) on extraction. Detect
+    // it once for the whole document, then repair every page so chunks/embeddings
+    // are stored clean. Clean/English/properly-encoded PDFs are untouched.
+    const joinedRaw = pagesText.join("\n\n");
+    const broken = looksLikeBrokenTurkishPdf(joinedRaw);
+
     const pages = pagesText.map((t, i) => ({
       physicalPage: i + 1,
-      text: t ?? "",
+      text: broken ? repairTurkishPdfText(t ?? "") : t ?? "",
     }));
 
     const pageCount = totalPages && totalPages > 0 ? totalPages : pages.length;
@@ -38,7 +49,7 @@ export async function extractPdf(absPath: string): Promise<ExtractResult> {
     const needsOcr = avgCharsPerPage < SCANNED_AVG_CHARS_PER_PAGE;
 
     return {
-      text: pages.map((p) => p.text).join("\n\n"),
+      text: broken ? repairTurkishPdfText(joinedRaw) : joinedRaw,
       pages,
       pageCount,
       needsOcr,

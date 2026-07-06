@@ -14,6 +14,8 @@ import type { SourceFile } from "@dissertator/shared";
 import { PdfViewer } from "./PdfViewer";
 import { TextViewer } from "./TextViewer";
 import { ManuscriptEditor } from "./ManuscriptEditor";
+import { ReferencesView } from "./ReferencesView";
+import type { CitationClickHandler } from "../lib/citationPlugin";
 
 interface Props {
   initialized: boolean;
@@ -22,6 +24,8 @@ interface Props {
   /** P5: per-document revision counters. Bumping a doc's revision remounts
    *  its editor with fresh server content (the agent just edited it). */
   docRevisions?: Record<string, number>;
+  /** Ingested source files — needed by the References manager's link picker. */
+  sources?: SourceFile[];
   onActivate: (sourceId: string) => void;
   onClose: (sourceId: string) => void;
   /** Used only for type-checking the open pipeline (the handler lives in App).
@@ -30,6 +34,8 @@ interface Props {
   /** Create + open a new document. Replaces the disabled "Start Wizard"
    *  placeholder until the P4 wizard lands. */
   onNewDocument?: () => void;
+  /** Citation-chip click handler (manuscript editor → App resolves + opens). */
+  onCitationClick?: CitationClickHandler;
 }
 
 export function CenterPane({
@@ -37,9 +43,12 @@ export function CenterPane({
   tabs,
   activeTabId,
   docRevisions,
+  sources,
   onActivate,
   onClose,
+  onOpen,
   onNewDocument,
+  onCitationClick,
 }: Props) {
   const active = tabs.find((t) => t.sourceId === activeTabId) ?? null;
   const hasTabs = tabs.length > 0;
@@ -116,7 +125,11 @@ export function CenterPane({
             Without it React reuses the instance and only updates `sourceId`,
             so e.g. page 5 of PDF A would carry over to PDF B. */}
         {active.kind === "pdf" && (
-          <PdfViewer key={active.sourceId} sourceId={active.sourceId} />
+          <PdfViewer
+            key={active.sourceId}
+            sourceId={active.sourceId}
+            initialPage={active.initialPage}
+          />
         )}
         {active.kind === "image" && (
           <div className="image-viewer">
@@ -131,6 +144,14 @@ export function CenterPane({
             key={active.sourceId}
             documentId={active.sourceId}
             revision={docRevisions?.[active.sourceId] ?? 0}
+            onCitationClick={onCitationClick}
+          />
+        )}
+        {active.kind === "references" && (
+          <ReferencesView
+            key={active.sourceId}
+            sources={sources ?? []}
+            onOpenSource={onOpen}
           />
         )}
       </div>

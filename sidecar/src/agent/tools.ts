@@ -18,7 +18,7 @@
 // optimistic-concurrency check explicit (oldtext must still be present) without
 // line numbers that drift as the body changes.
 
-import type { GuiEvent, Reference } from "@dissertator/shared";
+import type { GuiEvent, Reference, SourceFile } from "@dissertator/shared";
 import type { ToolSpec } from "../chat/openai.ts";
 import {
   createDocument,
@@ -30,6 +30,7 @@ import {
   updateDocument,
   upsertReference,
 } from "../db.ts";
+import { listSources } from "../ingest/index.ts";
 import { searchCorpus } from "../search.ts";
 
 /** Per-run context handed to every tool. */
@@ -64,17 +65,24 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "corpus_list",
       description:
-        "Search the reference index. With `query`: semantic (vector) search " +
-        "over the embedded corpus. Without `query`: list/filter references by " +
-        "author or title substring. Returns ≤20 hits with short metadata only " +
-        "(id, citekey, title, authors, year, sourceFileId). Use doc_read for " +
-        "a source's full text.",
+        "List/search the CORPUS (your ingested source files). With `query`: " +
+        "semantic (vector) search over embedded chunks — each hit is a source " +
+        "file plus its best-matching `snippet`, `physicalPage`, and `score`. " +
+        "Without `query`: list source files, optionally filtered by `filename` " +
+        "substring. Every hit ALWAYS carries `sourceFileId` + `filename` (+ " +
+        "`kind`, `relPath`) so you can call doc_read(sourceFileId) next; " +
+        "`snippet`/`physicalPage`/`score` appear ONLY on semantic hits. " +
+        "Bibliographic fields (`citekey`, `authors`, `year`) are overlaid ONLY " +
+        "when a reference has been curated for that source — their ABSENCE " +
+        "does NOT mean the source is missing, only that no citation metadata " +
+        "exists yet. Use doc_read(sourceFileId) for a source's full text.",
       parameters: {
         type: "object",
         properties: {
-          query: { type: "string", description: "Semantic search query." },
-          author: { type: "string", description: "Author surname substring." },
-          title: { type: "string", description: "Title substring." },
+          query: { type: "string", description: "Semantic search query (vector)." },
+          filename: { type: "string", description: "Filename substring (no-query listing filter)." },
+          author: { type: "string", description: "Author surname substring (reference-based; no effect when no references exist)." },
+          title: { type: "string", description: "Title substring (reference-based; no effect when no references exist)." },
           limit: {
             type: "integer",
             description: "Max hits (1–20).",
@@ -287,7 +295,7 @@ export const TOOL_SPECS: ToolSpec[] = [
 /** Cap on doc_read text returned to the model (keeps context window sane). */
 const DOC_READ_CAP = 12000;
 
-/** Format a reference as the short metadata shape returned by corpus_list. */
+/** Format a reference as the short metadata shape returned by corpus_write. */
 function refShort(r: Reference): Record<string, unknown> {
   return {
     id: r.id,
@@ -297,6 +305,49 @@ function refShort(r: Reference): Record<string, unknown> {
     year: r.year,
     sourceFileId: r.source_file_id,
   };
+}
+
+/**
+ * A corpus hit: one source file, optionally enriched with the semantic match
+ * (`snippet`/`physicalPage`/`score` — present only on `query` hits) and/or
+ * curated reference metadata (`citekey`/`authors`/`year` — present only when a
+ * `references` row exists for this source_file_id). `sourceFileId` +
+ * `filename` are ALWAYS present so the model can call doc_read next.
+ */
+interface CorpusHit {
+  sourceFileId: string;
+  filename: string;
+  relPath: string;
+  kind: string;
+  /** Semantic-only (present on `query` hits): */
+  score?: number;
+  physicalPage?: number | null;
+  printedPage?: string | null;
+  snippet?: string;
+  /** Reference overlay (present only when a reference row exists): */
+  referenceId?: string;
+  citekey?: string;
+  authors?: string[];
+  year?: number;
+}
+
+/** Build a base CorpusHit from a source file (+ optional reference overlay). */
+function hitFromSource(s: SourceFile, r?: Reference): CorpusHit {
+  const h: CorpusHit = {
+    sourceFileId: s.id,
+    filename: s.filename,
+    relPath: s.relPath,
+    kind: s.kind,
+  };
+  if (r) {
+    h.referenceId = r.id;
+    h.citekey = r.citekey;
+    h.authors = r.authors.map((a) =>
+      [a.given, a.family].filter(Boolean).join(" ")
+    );
+    if (typeof r.year === "number") h.year = r.year;
+  }
+  return h;
 }
 
 /** Slice a page-tagged source text to one physical page (if present). */
@@ -370,48 +421,92 @@ async function corpusList(
 ): Promise<ToolResult> {
   const query = (args.query as string | undefined)?.trim();
   const limit = Math.min(20, Math.max(1, (args.limit as number) || 10));
-  let refs: Reference[];
+
+  // The CORPUS = the source files (chunked + embedded). References are an
+  // OPTIONAL bibliographic overlay: build a source_file_id → Reference map so
+  // we can attach citekey/authors/year when a reference happens to exist, but
+  // NEVER drop a source just because it has no reference row.
+  const allSources = listSources();
+  const refBySrc = new Map<string, Reference>();
+  for (const r of listReferences()) {
+    if (r.source_file_id) refBySrc.set(r.source_file_id, r);
+  }
+
   if (query) {
     // Semantic vector search. searchCorpus returns chunk-level hits keyed by
-    // source_file_id; we resolve those to reference rows for a uniform short
-    // shape (and de-dup by reference).
+    // source_file_id; we de-dup to one hit per source and overlay reference
+    // metadata when available. We over-fetch (limit*4) so de-dup still fills
+    // the requested limit.
     const res = await searchCorpus(query, {
       apiKey: ctx.embeddingApiKey,
-      limit,
+      limit: limit * 4,
     });
-    const bySrc = new Map<string, Reference>();
-    for (const r of listReferences()) {
-      if (r.source_file_id) bySrc.set(r.source_file_id, r);
-    }
+    const srcById = new Map(allSources.map((s) => [s.id, s] as const));
+    const hits: CorpusHit[] = [];
     const seen = new Set<string>();
-    refs = [];
     for (const h of res.hits) {
-      const r = h.sourceId ? bySrc.get(h.sourceId) : undefined;
-      if (!r || seen.has(r.id)) continue;
-      seen.add(r.id);
-      refs.push(r);
-      if (refs.length >= limit) break;
+      if (seen.has(h.sourceId)) continue;
+      const s = srcById.get(h.sourceId);
+      if (!s) continue; // stale chunk whose source_file was deleted
+      seen.add(h.sourceId);
+      const hit = hitFromSource(s, refBySrc.get(h.sourceId));
+      hit.score = Math.round(h.score * 1000) / 1000;
+      hit.physicalPage = h.physicalPage;
+      hit.printedPage = h.printedPage;
+      hit.snippet = h.text;
+      hits.push(hit);
+      if (hits.length >= limit) break;
     }
-  } else {
-    const author = (args.author as string | undefined)?.toLowerCase();
-    const title = (args.title as string | undefined)?.toLowerCase();
-    refs = listReferences().filter((r) => {
+    const plural = (n: number) => (n === 1 ? "" : "s");
+    const note =
+      hits.length === 0
+        ? res.embedded
+          ? `0 semantic hits (corpus has ${allSources.length} source${plural(allSources.length)}; list without query, or doc_read by id)`
+          : `corpus not embedded yet (${allSources.length} source${plural(allSources.length)} present; embed first, or list without query)`
+        : `${hits.length} semantic hit${plural(hits.length)}`;
+    return {
+      ok: true,
+      summary: `🔍 Searched "${query}" → ${note}`,
+      data: {
+        count: hits.length,
+        embedded: res.embedded,
+        dimensions: res.dimensions,
+        corpusTotal: allSources.length,
+        hits,
+      },
+    };
+  }
+
+  // No query → list/filter the corpus (source files). `filename` is the
+  // natural corpus filter; `author`/`title` are reference-based and only
+  // applied when references exist (so an uncurated corpus stays visible).
+  const filename = (args.filename as string | undefined)?.toLowerCase().trim();
+  const author = (args.author as string | undefined)?.toLowerCase().trim();
+  const title = (args.title as string | undefined)?.toLowerCase().trim();
+  const refsAvailable = refBySrc.size > 0;
+  const matched = allSources.filter((s) => {
+    if (filename && !s.filename.toLowerCase().includes(filename)) return false;
+    if (refsAvailable && (author || title)) {
+      const r = refBySrc.get(s.id);
       if (
         author &&
-        !r.authors.some((a) =>
+        !(r?.authors.some((a) =>
           `${a.family ?? ""} ${a.given ?? ""}`.toLowerCase().includes(author)
-        )
+        ))
       )
         return false;
-      if (title && !(r.title ?? "").toLowerCase().includes(title)) return false;
-      return true;
-    });
-    refs = refs.slice(0, limit);
-  }
+      if (title && !((r?.title ?? "").toLowerCase().includes(title))) return false;
+    }
+    return true;
+  });
+  const hits = matched
+    .slice(0, limit)
+    .map((s) => hitFromSource(s, refBySrc.get(s.id)));
+  const plural = (n: number) => (n === 1 ? "" : "s");
   return {
     ok: true,
-    summary: `🔍 ${query ? `Searched "${query}"` : "Listed corpus"} → ${refs.length} hit${refs.length === 1 ? "" : "s"}`,
-    data: { count: refs.length, hits: refs.map(refShort) },
+    summary: `📚 Listed corpus → ${hits.length} source${plural(hits.length)} (of ${allSources.length})`,
+    data: { count: hits.length, corpusTotal: allSources.length, hits },
   };
 }
 

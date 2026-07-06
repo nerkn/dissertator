@@ -254,6 +254,168 @@ app.get("/files/:id", async (c) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Export: render an HTML manuscript to PDF / DOCX / DOC via headless
+// LibreOffice (soffice). Pandoc is NOT assumed; LibreOffice's HTML import +
+// export filters handle all three formats well enough for a first draft. The
+// HTML is produced client-side from the Milkdown document (getHTML), so the
+// authored formatting is preserved. `[@citekey]` tokens pass through as text.
+// ---------------------------------------------------------------------------
+const SOFFICE_FILTERS: Record<
+  string,
+  { filter: string; ext: string; mime: string }
+> = {
+  pdf: { filter: "pdf:writer_pdf_Export", ext: "pdf", mime: "application/pdf" },
+  docx: {
+    filter: "docx:MS Word 2007 XML",
+    ext: "docx",
+    mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  },
+  doc: { filter: "doc:MS Word 97", ext: "doc", mime: "application/msword" },
+};
+
+function escapeHtmlAttr(s: string): string {
+  return s.replace(/[&<>"']/g, (ch) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]!),
+  );
+}
+
+// Detect LibreOffice once. Tries `soffice` then `libreoffice`; cached so we
+// don't pay the --version startup cost on every export.
+let _sofficeBin: string | null | undefined;
+function findSoffice(): string | null {
+  if (_sofficeBin !== undefined) return _sofficeBin;
+  for (const bin of ["soffice", "libreoffice"]) {
+    try {
+      const r = Bun.spawnSync({
+        cmd: [bin, "--version"],
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (r.exitCode === 0) {
+        _sofficeBin = bin;
+        return bin;
+      }
+    } catch {
+      /* binary not present — try the next alias */
+    }
+  }
+  _sofficeBin = null;
+  return null;
+}
+
+app.post("/export", async (c) => {
+  let body: { html?: string; format?: string; title?: string; outPath?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid JSON body" }, 400);
+  }
+  const fmt = SOFFICE_FILTERS[body.format ?? ""];
+  if (!fmt) return c.json({ error: `unsupported format: ${body.format}` }, 400);
+  if (typeof body.html !== "string")
+    return c.json({ error: "missing html" }, 400);
+
+  const rawTitle = (body.title ?? "manuscript").trim();
+  const title =
+    rawTitle.replace(/[^\w\- .()]/g, "_").slice(0, 80) || "manuscript";
+
+  // Wrap the Milkdown HTML fragment in a full document with print-friendly
+  // CSS so the conversion engine applies sensible typography + page margins.
+  const fullDoc = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtmlAttr(
+    title,
+  )}</title><style>
+@page { margin: 2.5cm; }
+body { font-family: "Liberation Serif", Georgia, serif; font-size: 12pt; line-height: 1.5; color: #000; }
+h1 { font-size: 20pt; } h2 { font-size: 16pt; } h3 { font-size: 13pt; }
+code, pre { font-family: "Liberation Mono", monospace; font-size: 10.5pt; }
+blockquote { margin-left: 1.5cm; color: #444; font-style: italic; }
+table { border-collapse: collapse; } th, td { border: 1px solid #888; padding: 4px 8px; }
+img { max-width: 100%; }
+</style></head><body>${body.html}</body></html>`;
+
+  const os = await import("node:os");
+  const npath = await import("node:path");
+  const fs = await import("node:fs/promises");
+  const dir = npath.join(
+    os.tmpdir(),
+    `dissertator-export-${process.pid}-${Math.random().toString(36).slice(2)}`,
+  );
+  await fs.mkdir(dir, { recursive: true });
+  const inPath = npath.join(dir, "input.html");
+  const outPath = npath.join(dir, `input.${fmt.ext}`);
+  await fs.writeFile(inPath, fullDoc, "utf8");
+
+  const cleanup = () =>
+    fs.rm(dir, { recursive: true, force: true }).catch(() => {});
+
+  const bin = findSoffice();
+  if (!bin) {
+    await cleanup();
+    return c.json(
+      { error: "LibreOffice (soffice) not found. Install libreoffice to export." },
+      500,
+    );
+  }
+
+  const r = Bun.spawnSync({
+    cmd: [
+      bin,
+      "--headless",
+      "--norestore",
+      `-env:UserInstallation=file://${dir}/profile`,
+      "--convert-to",
+      fmt.filter,
+      "--outdir",
+      dir,
+      inPath,
+    ],
+    cwd: dir,
+    stdout: "pipe",
+    stderr: "pipe",
+    timeout: 120000,
+  });
+
+  const outFile = Bun.file(outPath);
+  if (!(await outFile.exists())) {
+    const errText = Buffer.isBuffer(r.stderr)
+      ? r.stderr.toString("utf8")
+      : String(r.stderr ?? "");
+    await cleanup();
+    return c.json(
+      { error: `conversion failed: ${errText.slice(0, 500)}` },
+      500,
+    );
+  }
+
+  const buf = await outFile.arrayBuffer();
+  await cleanup();
+
+  // If the client passed an absolute save path (from a Tauri Save dialog),
+  // write the converted bytes there directly and report the path. This is the
+  // reliable path in a Tauri webview — programmatic <a download> of a blob
+  // URL is swallowed by the webview, so the client never gets a file. The
+  // sidecar (a local process) can write anywhere on disk without IPC perms.
+  if (typeof body.outPath === "string" && body.outPath.trim()) {
+    try {
+      await fs.writeFile(body.outPath, new Uint8Array(buf));
+      return c.json({ ok: true, path: body.outPath });
+    } catch (e) {
+      return c.json(
+        { error: `could not write to ${body.outPath}: ${(e as Error).message}` },
+        500,
+      );
+    }
+  }
+
+  return new Response(buf, {
+    headers: {
+      "Content-Type": fmt.mime,
+      "Content-Disposition": `attachment; filename="${title}.${fmt.ext}"`,
+    },
+  });
+});
+
 // Concatenated extracted text (page-tagged) for text/docx/xlsx viewer tabs.
 // Reuses the chunks table (same source as `buildOpenFilesContext`). Returns
 // HTTP 200 with empty `text` when the source exists but has no chunks yet
@@ -932,6 +1094,20 @@ app.post("/chat", async (c) => {
     let usage = { prompt: 0, completion: 0 };
     let toolCalls = 0;
     let capped = false;
+    // Keep the SSE connection alive across model "thinking" gaps and slow
+    // tool/embedding calls. Bun.serve's default idleTimeout (10s) drops an
+    // idle socket, and a reasoning model (e.g. glm-5.2) can spend >10s
+    // emitting nothing before its first token on a synthesis step. That gap
+    // looked exactly like the client giving up: Hono's stream.onAbort fired
+    // → ac.abort() → the in-flight model fetch aborted → empty reply.
+    // An SSE comment (`: ping`) every 3s keeps the socket warm and is
+    // silently ignored by the client's SSE parser (only `event:`/`data:`
+    // lines are dispatched). Mirrors the /events heartbeat on a tighter
+    // cadence (well under the 10s idle limit).
+    const heartbeat = setInterval(() => {
+      if (stream.aborted || stream.closed) return;
+      stream.write(": ping\n\n").catch(() => {});
+    }, 3000);
     try {
       const res = await runAgentLoop({
         apiKey,
@@ -970,6 +1146,8 @@ app.post("/chat", async (c) => {
         }),
       });
       return;
+    } finally {
+      clearInterval(heartbeat);
     }
 
     const assistantMsg = insertChatMessage({
@@ -1113,10 +1291,15 @@ async function findFreePort(start: number, range: number): Promise<number> {
 
 const port = await findFreePort(SIDECAR_PORT, SIDECAR_PORT_RANGE);
 
+// idleTimeout: raise Bun's default (10s) so a momentary gap in SSE writes
+// can't drop a long agent run. The /chat heartbeat (3s) already keeps the
+// socket warm; this is belt-and-suspenders for slow tools / proxies. (Bun
+// caps idleTimeout at 255s.)
 Bun.serve({
   port,
   hostname: "127.0.0.1",
   fetch: app.fetch,
+  idleTimeout: 255,
 });
 
 console.log(

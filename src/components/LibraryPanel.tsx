@@ -47,6 +47,9 @@ interface Props {
   onOpenDocument?: (doc: Document) => void;
   /** Open the Settings dialog (used by the embedding no-key nudge). */
   onOpenSettings?: () => void;
+  /** Open the bibliography manager as a center-pane tab. Fired by the
+   *  📒 References group card. */
+  onOpenReferences?: () => void;
 }
 
 const ATTENTION_STATUSES: SourceFile["textStatus"][] = [
@@ -88,6 +91,7 @@ export function LibraryPanel({
   onNewDocument,
   onOpenDocument,
   onOpenSettings,
+  onOpenReferences,
 }: Props) {
   // All hooks run BEFORE the early return (rules of hooks): the panel mounts
   // even on a not-yet-initialized project, so hook order must stay stable.
@@ -368,7 +372,11 @@ export function LibraryPanel({
         )}
       </div>
 
-      <div className="group purple">
+      <div
+        className="group purple clickable"
+        onClick={onOpenReferences}
+        title={onOpenReferences ? "Open the bibliography manager" : ""}
+      >
         <div className="group-head">📒 References</div>
         <div className="count">{c.references} entries</div>
         <div className="muted small">APA bibliography (citeproc)</div>

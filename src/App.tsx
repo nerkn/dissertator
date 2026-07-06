@@ -13,6 +13,7 @@ import type {
   Document,
   ProjectStatus,
   ProviderConfig,
+  Reference,
   Settings,
   SourceFile,
   SourcesResponse,
@@ -22,8 +23,11 @@ import { CenterPane } from "./components/CenterPane";
 import { ChatPanel } from "./components/ChatPanel";
 import type { ChatPanelHandle } from "./components/ChatPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { CitationPopup } from "./components/CitationPopup";
+import { WindowControls } from "./components/WindowControls";
 import type { Tab } from "./lib/tabs";
-import { kindForSource } from "./lib/tabs";
+import { kindForSource, REFERENCES_TAB_ID } from "./lib/tabs";
+import type { CitationClickHandler } from "./lib/citationPlugin";
 
 type Health = "checking" | "up" | "down";
 
@@ -56,6 +60,13 @@ export default function App() {
   // dialog writes here as the user edits key fields. apiKey / embeddingApiKey
   // below are DERIVED from this + the selected provider ids.
   const [keys, setKeys] = useState<Record<string, string>>({});
+  // Citation card state: set when a manuscript chip is clicked but the
+  // reference has no linked source file (fileless / unknown). Null otherwise.
+  const [citationPopup, setCitationPopup] = useState<{
+    citekey: string;
+    page: number | null;
+    rect: DOMRect;
+  } | null>(null);
 
   const openSource = useCallback((src: SourceFile) => {
     setTabs((prev) => {
@@ -72,6 +83,34 @@ export default function App() {
     setActiveTabId(src.id);
   }, []);
 
+  // Open (or focus) a source tab AND jump its viewer to a page. Used by
+  // citation clicks `[@citekey:page]`: if the tab already exists, its
+  // `initialPage` is bumped so the PdfViewer's nav effect fires; otherwise a
+  // new tab is created seeded with the page. A missing page leaves any
+  // existing initialPage untouched.
+  const openSourceAtPage = useCallback((src: SourceFile, page?: number) => {
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.sourceId === src.id);
+      if (existing) {
+        return prev.map((t) =>
+          t.sourceId === src.id
+            ? { ...t, initialPage: page ?? t.initialPage }
+            : t,
+        );
+      }
+      return [
+        ...prev,
+        {
+          sourceId: src.id,
+          kind: kindForSource(src.kind),
+          title: src.filename,
+          initialPage: page,
+        } as Tab,
+      ];
+    });
+    setActiveTabId(src.id);
+  }, []);
+
   // Open a manuscript document in a new editor tab (one tab per document id).
   const openDocument = useCallback((doc: Document) => {
     setTabs((prev) => {
@@ -82,6 +121,24 @@ export default function App() {
       ];
     });
     setActiveTabId(doc.id);
+  }, []);
+
+  // Open the bibliography manager as a singleton center-pane tab. Idempotent:
+  // clicking the References card again just re-activates the existing tab.
+  const openReferencesView = useCallback(() => {
+    setTabs((prev) =>
+      prev.some((t) => t.sourceId === REFERENCES_TAB_ID)
+        ? prev
+        : [
+            ...prev,
+            {
+              sourceId: REFERENCES_TAB_ID,
+              kind: "references" as const,
+              title: "References",
+            },
+          ],
+    );
+    setActiveTabId(REFERENCES_TAB_ID);
   }, []);
 
   const closeTab = useCallback(
@@ -508,6 +565,40 @@ export default function App() {
     [sources, openSource],
   );
 
+  // Citation chip click (`[@citekey:page]` in the manuscript). Resolves the
+  // citekey → reference; if it links to a source file, open that PDF at the
+  // page; otherwise pop up the reference card (fileless / unknown citation).
+  const handleCitationClick = useCallback<CitationClickHandler>(
+    async (citekey, page, rect) => {
+      let ref: Reference | null = null;
+      try {
+        ref = await api.getReference(citekey);
+      } catch {
+        ref = null;
+      }
+      const srcId = ref?.source_file_id;
+      if (srcId) {
+        const src = sources?.items.find((s) => s.id === srcId);
+        if (src) {
+          openSourceAtPage(src, page ?? undefined);
+          return;
+        }
+      }
+      setCitationPopup({ citekey, page, rect });
+    },
+    [sources, openSourceAtPage],
+  );
+
+  // Open a source by id at a page (used after linking a reference from the
+  // citation card). Falls back to no-page if the id isn't in the loaded list.
+  const openSourceByIdAtPage = useCallback(
+    (sourceId: string, page: number | null) => {
+      const src = sources?.items.find((s) => s.id === sourceId);
+      if (src) openSourceAtPage(src, page ?? undefined);
+    },
+    [sources, openSourceAtPage],
+  );
+
   const handleOpenDocumentById = useCallback(
     (documentId: string) => {
       const doc = documents.find((d) => d.id === documentId);
@@ -545,11 +636,11 @@ export default function App() {
   return (
     <div className="app">
       <header className="topbar">
-        <div className="brand">📚 Dissertator</div>
-        <div className="project-name" title={project?.projectPath ?? ""}>
+        <div className="brand" data-tauri-drag-region>📚 Dissertator</div>
+        <div className="project-name" data-tauri-drag-region title={project?.projectPath ?? ""}>
           {initialized ? project!.projectPath : "no project open"}
         </div>
-        <div className="spacer" />
+        <div className="spacer" data-tauri-drag-region />
         <span className={`health-dot ${health}`} title={`sidecar: ${health}`} />
         <button
           className="btn ghost"
@@ -569,6 +660,7 @@ export default function App() {
           <Gear size={16} weight="bold" />
           Settings
         </button>
+        <WindowControls />
       </header>
 
       <main className="body">
@@ -587,16 +679,19 @@ export default function App() {
           onNewDocument={handleNewDocument}
           onOpenDocument={openDocument}
           onOpenSettings={() => setShowSettings(true)}
+          onOpenReferences={openReferencesView}
         />
         <CenterPane
           initialized={initialized}
           tabs={tabs}
           activeTabId={activeTabId}
           docRevisions={docRevisions}
+          sources={sources?.items ?? []}
           onActivate={setActiveTabId}
           onClose={closeTab}
           onOpen={openSource}
           onNewDocument={handleNewDocument}
+          onCitationClick={handleCitationClick}
         />
         <ChatPanel
           ref={chatPanelRef}
@@ -633,6 +728,16 @@ export default function App() {
           onSettingsChange={handleSettingsChange}
           onKeyChange={handleKeyChange}
           onClose={() => setShowSettings(false)}
+        />
+      )}
+      {citationPopup && (
+        <CitationPopup
+          citekey={citationPopup.citekey}
+          page={citationPopup.page}
+          rect={citationPopup.rect}
+          sources={sources?.items ?? []}
+          onLinkOpen={openSourceByIdAtPage}
+          onClose={() => setCitationPopup(null)}
         />
       )}
     </div>

@@ -17,11 +17,11 @@
 // the body, not separate rows — structural stats (line count, header
 // positions) are computed by parsing the body, never stored.
 //
-// Citation tokens `[@citekey:printedPage]` (DESIGN.md §11 #8) are currently
-// preserved verbatim as editable text. A visual "chip" inline node (resolved
-// to "Smith 2020, p.42") + an insert-citation popup arrive in the next
-// increment — the remark/ProseMirror round-trip is the hard part and is
-// deliberately staged after the core editor works end-to-end.
+// Citation tokens `[@citekey:printedPage]` (DESIGN.md §11 #8) are rendered as
+// clickable "chips" by a ProseMirror decorations plugin (see
+// `citationPlugin`) — the raw token stays editable text so the agent, autosave
+// and pandoc export all see clean markdown. Clicking a chip resolves the
+// citation (open the linked PDF at the page, or pop up the reference card).
 //
 // Source-MD toggle: a read-only peek at the underlying markdown for power
 // users / debugging (the user-facing surface stays WYSIWYG by default).
@@ -54,7 +54,7 @@ import {
   wrapInBlockquoteCommand,
   toggleLinkCommand,
 } from "@milkdown/kit/preset/commonmark";
-import { replaceAll } from "@milkdown/kit/utils";
+import { replaceAll, getHTML } from "@milkdown/kit/utils";
 import {
   TextB,
   TextItalic,
@@ -69,9 +69,14 @@ import {
   ArrowClockwise,
   Code,
   Eye,
+  FileArrowDown,
 } from "@phosphor-icons/react";
 import type { Document } from "@dissertator/shared";
 import { api } from "../lib/api";
+import {
+  citationPlugin,
+  type CitationClickHandler,
+} from "../lib/citationPlugin";
 
 interface Props {
   documentId: string;
@@ -79,6 +84,9 @@ interface Props {
    *  on change and live-swaps the body via `replaceAll` when it has no unsaved
    *  local edits (otherwise it shows a stale banner the user can accept). */
   revision?: number;
+  /** Citation-chip click handler. When omitted, chips still render (styled)
+   *  but are inert. */
+  onCitationClick?: CitationClickHandler;
 }
 
 /** Autosave lifecycle, shown as a small status pip in the toolbar. */
@@ -86,7 +94,7 @@ type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
 
 const AUTOSAVE_DEBOUNCE_MS = 800;
 
-export function ManuscriptEditor({ documentId, revision = 0 }: Props) {
+export function ManuscriptEditor({ documentId, revision = 0, onCitationClick }: Props) {
   const [doc, setDoc] = useState<Document | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
@@ -123,6 +131,7 @@ export function ManuscriptEditor({ documentId, revision = 0 }: Props) {
       <EditorInner
         document={doc}
         initialMarkdown={doc.bodyMd ?? ""}
+        onCitationClick={onCitationClick}
       />
     </MilkdownProvider>
   );
@@ -137,9 +146,10 @@ export function ManuscriptEditor({ documentId, revision = 0 }: Props) {
 interface InnerProps {
   document: Document;
   initialMarkdown: string;
+  onCitationClick?: CitationClickHandler;
 }
 
-function EditorInner({ document, initialMarkdown }: InnerProps) {
+function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps) {
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [showSource, setShowSource] = useState<boolean>(false);
   // P5: the agent edited this doc while we had unsaved local changes. Show a
@@ -245,7 +255,8 @@ function EditorInner({ document, initialMarkdown }: InnerProps) {
       .use(commonmark)
       .use(gfm)
       .use(history)
-      .use(listener),
+      .use(listener)
+      .use(citationPlugin),
     [],
   );
 
@@ -332,17 +343,35 @@ function EditorInner({ document, initialMarkdown }: InnerProps) {
         {showSource ? (
           <pre className="editor-source-view">{sourceMd || "(empty)"}</pre>
         ) : (
-          <EditorPage />
+          <EditorPage onCitationClick={onCitationClick} />
         )}
       </div>
     </div>
   );
 }
 
-/** The centered "page" + the Milkdown editable surface. */
-function EditorPage() {
+/** The centered "page" + the Milkdown editable surface. Handles citation-
+ *  chip clicks via event delegation: ProseMirror decorations tag chip text
+ *  ranges with `data-citekey`/`data-page`, and this onClick walks up from the
+ *  click target to the nearest chip and fires the handler with its rect. */
+function EditorPage({ onCitationClick }: { onCitationClick?: CitationClickHandler }) {
+  const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!onCitationClick) return;
+    const chip = (e.target as HTMLElement).closest<HTMLElement>(
+      ".cite-chip[data-citekey]",
+    );
+    if (!chip) return;
+    const citekey = chip.getAttribute("data-citekey") ?? "";
+    const pageRaw = chip.getAttribute("data-page") ?? "";
+    const n = parseInt(pageRaw, 10);
+    onCitationClick(
+      citekey,
+      Number.isFinite(n) && n > 0 ? n : null,
+      chip.getBoundingClientRect(),
+    );
+  };
   return (
-    <div className="editor-page">
+    <div className="editor-page" onClick={handleClick}>
       <Milkdown />
     </div>
   );
@@ -363,6 +392,8 @@ interface ToolbarProps {
   onToggleSource: () => void;
 }
 
+type ExportFormat = "pdf" | "docx" | "doc";
+
 function Toolbar({
   getEditor,
   title,
@@ -373,6 +404,10 @@ function Toolbar({
   // `useInstance` re-renders the toolbar once the editor is ready; buttons are
   // disabled until then so a fast click can't call .action() on undefined.
   const [loading] = useInstance();
+  const [exporting, setExporting] = useState<ExportFormat | null>(null);
+  const [exportErr, setExportErr] = useState<string | null>(null);
+  const [savedTo, setSavedTo] = useState<string | null>(null);
+  const exportMenuRef = useRef<HTMLDetailsElement | null>(null);
 
   // Run a Milkdown command. Spread into `callCommand` so the key + payload
   // are typed exactly as `callCommand` expects (no manual casts).
@@ -385,6 +420,49 @@ function Toolbar({
   const insertLink = () => {
     const url = window.prompt("Link URL");
     if (url) run(toggleLinkCommand.key, { href: url });
+  };
+
+  // Export the current document (as HTML via Milkdown) to PDF/DOCX/DOC. The
+  // sidecar drives headless LibreOffice for the conversion. In the Tauri
+  // webview we MUST use a Save dialog + write-to-path: a programmatic
+  // <a download> of a blob URL is swallowed by the webview and never lands
+  // anywhere. The browser fallback keeps the blob download.
+  const exportDoc = async (format: ExportFormat) => {
+    if (exportMenuRef.current) exportMenuRef.current.open = false;
+    const ed = getEditor();
+    const html = ed?.action(getHTML());
+    if (!html) return;
+    setExportErr(null);
+    setSavedTo(null);
+    setExporting(format);
+    const safeTitle = (title || "manuscript").replace(/[^\w\- .()]/g, "_");
+    const filename = `${safeTitle}.${format}`;
+    try {
+      const inTauri = "__TAURI_INTERNALS__" in window;
+      if (inTauri) {
+        const { save } = await import("@tauri-apps/plugin-dialog");
+        const outPath = await save({
+          defaultPath: filename,
+          filters: [{ name: format.toUpperCase(), extensions: [format] }],
+        });
+        if (!outPath) return; // user cancelled the save dialog
+        const res = await api.exportDocumentToPath(html, format, outPath, title);
+        setSavedTo(res.path);
+      } else {
+        const blob = await api.exportDocument(html, format, title);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+        setSavedTo("(browser download)");
+      }
+    } catch (e) {
+      setExportErr((e as Error)?.message ?? String(e));
+    } finally {
+      setExporting(null);
+    }
   };
 
   const Btn = ({
@@ -465,6 +543,29 @@ function Toolbar({
       >
         <Eye size={16} weight="bold" />
       </button>
+      <details className="export-menu" ref={exportMenuRef}>
+        <summary className="tb" title="Export document">
+          <FileArrowDown size={16} weight="bold" />
+          Export
+        </summary>
+        <div className="export-dropdown">
+          <button type="button" disabled={exporting !== null} onClick={() => exportDoc("pdf")}>
+            {exporting === "pdf" ? "Exporting…" : "PDF (.pdf)"}
+          </button>
+          <button type="button" disabled={exporting !== null} onClick={() => exportDoc("docx")}>
+            {exporting === "docx" ? "Exporting…" : "Word (.docx)"}
+          </button>
+          <button type="button" disabled={exporting !== null} onClick={() => exportDoc("doc")}>
+            {exporting === "doc" ? "Exporting…" : "Word 97-2003 (.doc)"}
+          </button>
+          {exportErr && <div className="export-err small">{exportErr}</div>}
+          {savedTo && !exportErr && (
+            <div className="export-ok small" title={savedTo}>
+              Saved: {savedTo}
+            </div>
+          )}
+        </div>
+      </details>
     </div>
   );
 }

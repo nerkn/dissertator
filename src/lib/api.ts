@@ -291,6 +291,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(ref),
     }),
+  /** Resolve a reference by id OR citekey. `GET /references/:idOrCitekey`
+   *  accepts either, so a `[@citekey:page]` token resolves directly. Returns
+   *  the full record incl. `source_file_id` (null for fileless refs). */
+  getReference: (idOrCitekey: string) =>
+    req<Reference>(`/references/${encodeURIComponent(idOrCitekey)}`),
   updateReference: (id: string, ref: Partial<Reference>) =>
     req<Reference>(`/references/${id}`, {
       method: "PUT",
@@ -319,6 +324,48 @@ export const api = {
   /** Export all references as a .bib string. */
   exportBibtex: () =>
     fetch(`${base()}/references/export.bibtex`).then((r) => r.text()),
+
+  /** Render a manuscript (as HTML) to PDF / DOCX / DOC via headless
+   *  LibreOffice on the sidecar. Returns the converted file as a Blob.
+   *  (Browser fallback path — Tauri webviews swallow blob-URL downloads, so
+   *  prefer {@link exportDocumentToPath} there.) */
+  exportDocument: (
+    html: string,
+    format: "pdf" | "docx" | "doc",
+    title?: string,
+  ) =>
+    fetch(`${base()}/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ html, format, title }),
+    }).then(async (r) => {
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.error ?? `export failed (${r.status})`);
+      }
+      return r.blob();
+    }),
+
+  /** Same conversion, but write the result to an absolute `outPath` (chosen
+   *  via a Tauri Save dialog). Returns the path written. Reliable in the
+   *  Tauri webview, unlike the blob-download path. */
+  exportDocumentToPath: (
+    html: string,
+    format: "pdf" | "docx" | "doc",
+    outPath: string,
+    title?: string,
+  ) =>
+    fetch(`${base()}/export`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ html, format, title, outPath }),
+    }).then(async (r) => {
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.error ?? `export failed (${r.status})`);
+      }
+      return (await r.json()) as { ok: true; path: string };
+    }),
 
   // --- Documents (P3 editor) -----------------------------------------------
   // The manuscript editor loads a document (with bodyMd) and autosaves the body
@@ -499,10 +546,16 @@ export async function streamChat(
       if (line.startsWith("event:")) {
         currentEvent = line.slice(6).trim();
       } else if (line.startsWith("data:")) {
-        const payload = line.slice(5);
+        // Hono's `writeSSE` emits `data: <value>` — a space AFTER the colon
+        // — and does NOT JSON-encode string data (objects only). So we must
+        // strip both `data:` and the single separating space. Using slice(5)
+        // alone left the leading space, injecting one space per delta —
+        // invisible for chunky final-answer text, but with token-by-token
+        // reasoning (esp. Turkish's tiny BPE tokens) it put spaces INSIDE
+        // every word (e.g. "dos yas ını").
+        const payload = line.replace(/^data:\s?/, "");
         if (currentEvent === "delta") {
-          // `stream.writeSSE` JSON-encodes the data; a single text fragment
-          // becomes a quoted string. Strip the wrapping quotes if present.
+          // If the fragment happens to be a JSON-quoted string, unwrap it.
           let text = payload;
           try {
             const parsed = JSON.parse(payload);
