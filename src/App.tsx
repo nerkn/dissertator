@@ -25,6 +25,7 @@ import type { ChatPanelHandle } from "./components/ChatPanel";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { CitationPopup } from "./components/CitationPopup";
 import { WindowControls } from "./components/WindowControls";
+import { ResizeHandle } from "./components/ResizeHandle";
 import type { Tab } from "./lib/tabs";
 import { kindForSource, REFERENCES_TAB_ID } from "./lib/tabs";
 import type { CitationClickHandler } from "./lib/citationPlugin";
@@ -662,6 +663,7 @@ export default function App() {
         </button>
         <WindowControls />
       </header>
+      <ResizeHandle />
 
       <main className="body">
         <LibraryPanel

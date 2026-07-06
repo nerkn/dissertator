@@ -100,6 +100,35 @@ body {
   background: #e02424;
   color: #fff;
 }
+
+/* SE corner resize grip for the frameless window (decorations:false strips
+   OS resize borders on Windows/macOS). Fixed so it floats over content;
+   only the 16x16 hit area catches the mouse. */
+.resize-handle-se {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  z-index: 9999;
+  cursor: nwse-resize;
+  pointer-events: auto;
+}
+.resize-handle-se::before {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid rgba(128, 128, 128, 0.45);
+  border-bottom: 2px solid rgba(128, 128, 128, 0.45);
+  border-bottom-right-radius: 2px;
+  transition: border-color 0.15s ease;
+}
+.resize-handle-se:hover::before {
+  border-color: rgba(96, 96, 96, 0.95);
+}
 .health-dot {
   width: 9px;
   height: 9px;
