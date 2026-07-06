@@ -16,7 +16,7 @@ import * as pdfjsLib from "pdfjs-dist";
 
 // Zoom levels are discrete steps so +/- buttons behave predictably and the
 // scale factor always snaps to a render-friendly value.
-const MIN_SCALE = 0.5;
+const MIN_SCALE = 0.1;
 const MAX_SCALE = 4;
 const ZOOM_STEP = 0.25;
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
