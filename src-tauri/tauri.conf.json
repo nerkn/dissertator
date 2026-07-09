@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Dissertator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "identifier": "com.dissertator.app",
   "build": {
     "frontendDist": "../dist",
@@ -36,6 +36,8 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "externalBin": ["binaries/dissertator-sidecar"]
+    "externalBin": [
+      "binaries/dissertator-sidecar"
+    ]
   }
 }
