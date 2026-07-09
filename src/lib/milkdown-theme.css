@@ -99,6 +99,56 @@
   color: #fca5a5;
 }
 
+/* ---- status bar ---- */
+.editor-statusbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  background: var(--panel);
+  border-top: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--muted);
+  min-height: 32px;
+}
+.statusbar-left,
+.statusbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.status-indicator {
+  font-size: 12px;
+  font-weight: 700;
+}
+.status-indicator.status-saved {
+  color: var(--green);
+}
+.status-indicator.status-error {
+  color: var(--red);
+}
+.status-indicator.status-dirty {
+  color: var(--yellow);
+  animation: pulse 2s infinite;
+}
+.status-indicator.status-neutral {
+  color: var(--muted);
+}
+.status-text {
+  color: var(--muted);
+}
+.stat-item {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.stat-divider {
+  color: var(--border);
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
 /* ---- writing surface ---- */
 .editor-surface {
   flex: 1;

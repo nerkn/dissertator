@@ -158,6 +158,11 @@ function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps)
   // Live markdown mirror — drives the read-only source view without round-
   // tripping through the editor.
   const [sourceMd, setSourceMd] = useState<string>(initialMarkdown);
+  // Word/character count from the markdown
+  const [docStats, setDocStats] = useState<{ words: number; chars: number }>({ words: 0, chars: 0 });
+  // Undo/redo state (whether they're available)
+  const [canUndo, setCanUndo] = useState<boolean>(false);
+  const [canRedo, setCanRedo] = useState<boolean>(false);
 
   // Latest markdown + pending timer, in refs so the Milkdown factory closure
   // (created once) always reads current values without re-creating the editor.
@@ -200,6 +205,10 @@ function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps)
     (md: string) => {
       latestMd.current = md;
       setSourceMd(md);
+      // Update word/char count
+      const words = md.trim() ? md.trim().split(/\s+/).length : 0;
+      const chars = md.length;
+      setDocStats({ words, chars });
       setSaveState("dirty");
       if (saveTimer.current) clearTimeout(saveTimer.current);
       saveTimer.current = setTimeout(() => {
@@ -259,6 +268,49 @@ function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps)
       .use(citationPlugin),
     [],
   );
+
+  // Track undo/redo state from ProseMirror view
+  useEffect(() => {
+    const ed = get();
+    if (!ed) return;
+    const view = (ed as any).editorView;
+    if (!view) return;
+    
+    // Initial check
+    const updateUndoRedo = () => {
+      const state = view.state;
+      // ProseMirror history plugin stores undo/redo depth
+      let undoDepth = 0;
+      let redoDepth = 0;
+      for (const plugin of state.plugins) {
+        const pluginState = plugin.getState(state);
+        if (pluginState && typeof pluginState === 'object' && 'undo' in pluginState) {
+          undoDepth = (pluginState as any).undo.length;
+          redoDepth = (pluginState as any).redo.length;
+        }
+      }
+      setCanUndo(undoDepth > 0);
+      setCanRedo(redoDepth > 0);
+    };
+    
+    updateUndoRedo();
+    
+    // Listen to transactions to update state
+    const handler = () => {
+      updateUndoRedo();
+    };
+    view.on('transaction', handler);
+    return () => {
+      view.off('transaction', handler);
+    };
+  }, [get]);
+
+  // Initial stats calculation
+  useEffect(() => {
+    const words = initialMarkdown.trim() ? initialMarkdown.trim().split(/\s+/).length : 0;
+    const chars = initialMarkdown.length;
+    setDocStats({ words, chars });
+  }, [initialMarkdown]);
 
   // P5 live reload: when the parent refetches on an agent edit, `initialMarkdown`
   // changes to the new server body. Swap it into the editor IN PLACE (no
@@ -338,6 +390,8 @@ function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps)
         saveState={saveState}
         showSource={showSource}
         onToggleSource={() => setShowSource((v) => !v)}
+        canUndo={canUndo}
+        canRedo={canRedo}
       />
       <div className="editor-surface">
         {showSource ? (
@@ -346,6 +400,7 @@ function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps)
           <EditorPage onCitationClick={onCitationClick} />
         )}
       </div>
+      <StatusBar saveState={saveState} docStats={docStats} />
     </div>
   );
 }
@@ -390,6 +445,8 @@ interface ToolbarProps {
   saveState: SaveState;
   showSource: boolean;
   onToggleSource: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
 }
 
 type ExportFormat = "pdf" | "docx" | "doc";
@@ -400,6 +457,8 @@ function Toolbar({
   saveState,
   showSource,
   onToggleSource,
+  canUndo,
+  canRedo,
 }: ToolbarProps) {
   // `useInstance` re-renders the toolbar once the editor is ready; buttons are
   // disabled until then so a fast click can't call .action() on undefined.
@@ -527,10 +586,10 @@ function Toolbar({
         <LinkSimple size={16} weight="bold" />
       </Btn>
       <Sep />
-      <Btn label="Undo (Ctrl+Z)" onClick={() => run(undoCommand.key)}>
+      <Btn label="Undo (Ctrl+Z)" onClick={() => run(undoCommand.key)} disabled={!canUndo}>
         <ArrowCounterClockwise size={16} weight="bold" />
       </Btn>
-      <Btn label="Redo (Ctrl+Shift+Z)" onClick={() => run(redoCommand.key)}>
+      <Btn label="Redo (Ctrl+Shift+Z)" onClick={() => run(redoCommand.key)} disabled={!canRedo}>
         <ArrowClockwise size={16} weight="bold" />
       </Btn>
       <div className="editor-toolbar-spacer" />
@@ -581,4 +640,39 @@ function SavePip({ state }: { state: SaveState }) {
   const m = map[state];
   if (!m.label) return null;
   return <span className={`save-pip ${m.cls}`}>{m.label}</span>;
+}
+
+// ---------------------------------------------------------------------------
+// StatusBar — Shows document stats and save state at the bottom of the editor
+// ---------------------------------------------------------------------------
+
+interface StatusBarProps {
+  saveState: SaveState;
+  docStats: { words: number; chars: number };
+}
+
+function StatusBar({ saveState, docStats }: StatusBarProps) {
+  const map: Record<SaveState, { label: string; icon: string }> = {
+    idle: { label: "All changes saved", icon: "✓" },
+    dirty: { label: "Unsaved changes", icon: "●" },
+    saving: { label: "Saving…", icon: "⟳" },
+    saved: { label: "Saved", icon: "✓" },
+    error: { label: "Save failed", icon: "✕" },
+  };
+  const m = map[saveState];
+  const statusClass = saveState === "saved" ? "status-saved" : saveState === "error" ? "status-error" : saveState === "dirty" ? "status-dirty" : "status-neutral";
+
+  return (
+    <div className="editor-statusbar">
+      <div className="statusbar-left">
+        <span className={`status-indicator ${statusClass}`}>{m.icon}</span>
+        <span className="status-text">{m.label}</span>
+      </div>
+      <div className="statusbar-right">
+        <span className="stat-item">{docStats.words.toLocaleString()} words</span>
+        <span className="stat-divider">|</span>
+        <span className="stat-item">{docStats.chars.toLocaleString()} characters</span>
+      </div>
+    </div>
+  );
 }
