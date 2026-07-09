@@ -9,6 +9,7 @@
 
 /* ---- editor shell ---- */
 .manuscript-editor {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -147,6 +148,32 @@
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
+}
+
+/* ---- editor toast (asset-import feedback) ---- */
+.editor-toast {
+  position: absolute;
+  top: 56px;
+  right: 16px;
+  z-index: 50;
+  max-width: 360px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--text, #e5e7eb);
+  background: var(--panel, #2a2a2e);
+  border: 1px solid var(--border, #3f3f46);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  animation: toast-in 0.15s ease-out;
+}
+.editor-toast.err {
+  border-color: var(--red, #ef4444);
+  color: #fca5a5;
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 /* ---- writing surface ---- */

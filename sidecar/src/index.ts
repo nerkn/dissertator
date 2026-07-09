@@ -438,6 +438,83 @@ app.post("/ingest", async (c) => {
   }
 });
 
+// Asset import — drop / file-picker / screenshot-paste handler. Copies (or
+// moves) a real file, or writes pasted image bytes (as a data URL), into
+// <projectPath>/images | audio (or the project root for documents). The file
+// watcher then auto-ingests any supported type. Returns the project-relative
+// path so the editor can emit `![](images/x.png)` etc.
+app.post("/assets/import", async (c) => {
+  const project = getCurrentProject();
+  if (!project) return c.json({ error: "no project" }, 400);
+  let body: {
+    sourcePath?: string;
+    dataUrl?: string;
+    filename?: string;
+    dest?: "images" | "audio" | "root";
+    mode?: "copy" | "move";
+  };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "invalid JSON body" }, 400);
+  }
+  const filename = (body.filename ?? "").trim();
+  if (!filename) return c.json({ error: "missing filename" }, 400);
+  if (/[\\/]/.test(filename))
+    return c.json({ error: "filename must not contain a path separator" }, 400);
+  const dest = body.dest ?? "root";
+  const root = project.projectPath;
+  const destDir = dest === "root" ? root : join(root, dest);
+
+  const fs = await import("node:fs/promises");
+  const npath = await import("node:path");
+  await fs.mkdir(destDir, { recursive: true });
+
+  // Collision-safe destination filename (foo.png → foo-1.png …).
+  const ext = npath.extname(filename);
+  const stem = npath.basename(filename, ext);
+  const exists = (p: string) => fs.stat(p).then(() => true).catch(() => false);
+  let outName = filename;
+  let n = 1;
+  while (await exists(npath.join(destDir, outName))) {
+    outName = `${stem}-${n}${ext}`;
+    n++;
+  }
+  const absPath = npath.join(destDir, outName);
+  const relPath = npath
+    .relative(root, absPath)
+    .split(npath.sep)
+    .join("/");
+
+  try {
+    if (body.sourcePath) {
+      if (body.mode === "move") {
+        try {
+          await fs.rename(body.sourcePath, absPath);
+        } catch {
+          // cross-device link: fall back to copy + delete source
+          await fs.copyFile(body.sourcePath, absPath);
+          await fs.rm(body.sourcePath, { force: true });
+        }
+      } else {
+        await fs.copyFile(body.sourcePath, absPath);
+      }
+    } else if (body.dataUrl) {
+      const m = /^data:[^;]+;base64,(.*)$/s.exec(body.dataUrl);
+      if (!m) return c.json({ error: "invalid dataUrl" }, 400);
+      await fs.writeFile(absPath, Buffer.from(m[1], "base64"));
+    } else {
+      return c.json({ error: "need sourcePath or dataUrl" }, 400);
+    }
+  } catch (e) {
+    return c.json({ error: (e as Error)?.message ?? String(e) }, 500);
+  }
+
+  const kind =
+    dest === "images" ? "image" : dest === "audio" ? "audio" : "document";
+  return c.json({ ok: true, relPath, absPath, kind });
+});
+
 app.get("/attention", (c) => {
   if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
   return c.json({ items: listAttention() });

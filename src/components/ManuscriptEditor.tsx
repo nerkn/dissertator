@@ -54,7 +54,7 @@ import {
   wrapInBlockquoteCommand,
   toggleLinkCommand,
 } from "@milkdown/kit/preset/commonmark";
-import { replaceAll, getHTML } from "@milkdown/kit/utils";
+import { replaceAll, getHTML, insert } from "@milkdown/kit/utils";
 import {
   TextB,
   TextItalic,
@@ -70,9 +70,14 @@ import {
   Code,
   Eye,
   FileArrowDown,
+  Paperclip,
 } from "@phosphor-icons/react";
 import type { Document } from "@dissertator/shared";
 import { api } from "../lib/api";
+import {
+  importAssetFromPath,
+  importAssetFromBlob,
+} from "../lib/assetImport";
 import {
   citationPlugin,
   type CitationClickHandler,
@@ -305,6 +310,128 @@ function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps)
     };
   }, [get]);
 
+  // --- Asset import (drag-drop / file-picker / screenshot-paste) ----------
+  // A transient toast surfaced top-right of the editor for import feedback.
+  const [notice, setNotice] = useState<{ msg: string; kind: "ok" | "err" } | null>(null);
+  const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashNotice = useCallback((msg: string, kind: "ok" | "err" = "ok") => {
+    setNotice({ msg, kind });
+    if (noticeTimer.current) clearTimeout(noticeTimer.current);
+    noticeTimer.current = setTimeout(() => setNotice(null), 3500);
+  }, []);
+
+  // Insert a markdown fragment (image/link) at the current cursor.
+  const insertAtCursor = useCallback(
+    (md: string) => {
+      get()?.action(insert(md));
+    },
+    [get],
+  );
+
+  // Import one real file (path from drag-drop or file picker) and insert the
+  // right thing at the cursor: image → ![](images/…), audio → link + note,
+  // document → just add to the library (watcher ingests it).
+  const handleAssetPath = useCallback(
+    async (absPath: string) => {
+      const filename = absPath.split(/[/\\]/).pop() || "file";
+      try {
+        const { relPath, kind } = await importAssetFromPath(absPath, filename);
+        const stem = filename.replace(/\.[^.]+$/, "");
+        if (kind === "image") {
+          insertAtCursor(`\n![${stem}](${relPath})\n`);
+          flashNotice(`Inserted image: ${filename}`);
+        } else if (kind === "audio") {
+          insertAtCursor(`\n[${stem}](${relPath})\n`);
+          flashNotice(`Audio saved: ${filename} (transcription coming soon)`);
+        } else {
+          flashNotice(`Added to library: ${filename}`);
+        }
+      } catch (e) {
+        flashNotice(`✕ ${(e as Error)?.message ?? String(e)}`, "err");
+      }
+    },
+    [insertAtCursor, flashNotice],
+  );
+
+  // Screenshot paste: image bytes have no filename — prompt with a sensible
+  // default (image-<timestamp>.png), save to images/, insert the markdown.
+  const handlePastedImage = useCallback(
+    async (file: File) => {
+      const fromType = (file.type.split("/")[1] || "png").replace("jpeg", "jpg");
+      const ext = /^(png|jpe?g|webp|gif|bmp|svg)$/i.test(fromType) ? fromType : "png";
+      const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      const def = `image-${ts}.${ext}`;
+      const name = window.prompt("Name this image:", def);
+      if (!name) return;
+      try {
+        const { relPath } = await importAssetFromBlob(file, name);
+        const stem = name.replace(/\.[^.]+$/, "");
+        insertAtCursor(`\n![${stem}](${relPath})\n`);
+        flashNotice(`Inserted image: ${name}`);
+      } catch (e) {
+        flashNotice(`✕ ${(e as Error)?.message ?? String(e)}`, "err");
+      }
+    },
+    [insertAtCursor, flashNotice],
+  );
+
+  // Clipboard paste: only intercept actual image content; let plain-text
+  // paste fall through to the editor.
+  const handlePaste = useCallback(
+    (e: React.ClipboardEvent) => {
+      const items = e.clipboardData?.items;
+      if (!items) return;
+      let imgItem: DataTransferItem | null = null;
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.kind === "file" && it.type.startsWith("image/")) {
+          imgItem = it;
+          break;
+        }
+      }
+      if (!imgItem) return; // plain text → default editor behavior
+      e.preventDefault();
+      e.stopPropagation(); // keep ProseMirror from also handling the image
+      const file = imgItem.getAsFile();
+      if (file) void handlePastedImage(file);
+    },
+    [handlePastedImage],
+  );
+
+  // Native Tauri drag-drop: the webview hands us real file paths. The HTML5
+  // `drop` event does NOT expose paths in a webview, so this is the channel.
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) return;
+    let un: (() => void) | undefined;
+    let active = true;
+    (async () => {
+      const { getCurrentWebview } = await import("@tauri-apps/api/webview");
+      if (!active) return;
+      un = await getCurrentWebview().onDragDropEvent((e) => {
+        if (e.payload.type === "drop" && e.payload.paths?.length) {
+          for (const p of e.payload.paths) void handleAssetPath(p);
+        }
+      });
+    })();
+    return () => {
+      active = false;
+      un?.();
+    };
+  }, [handleAssetPath]);
+
+  // File-picker (toolbar 📎 button) — desktop only.
+  const pickFile = useCallback(async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const sel = await open({ multiple: true });
+      if (!sel) return;
+      const paths = Array.isArray(sel) ? sel : [sel];
+      for (const p of paths) await handleAssetPath(p);
+    } catch (e) {
+      flashNotice(`✕ ${(e as Error)?.message ?? String(e)}`, "err");
+    }
+  }, [handleAssetPath, flashNotice]);
+
   // Initial stats calculation
   useEffect(() => {
     const words = initialMarkdown.trim() ? initialMarkdown.trim().split(/\s+/).length : 0;
@@ -390,10 +517,11 @@ function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps)
         saveState={saveState}
         showSource={showSource}
         onToggleSource={() => setShowSource((v) => !v)}
+        onInsertFile={pickFile}
         canUndo={canUndo}
         canRedo={canRedo}
       />
-      <div className="editor-surface">
+      <div className="editor-surface" onPasteCapture={handlePaste}>
         {showSource ? (
           <pre className="editor-source-view">{sourceMd || "(empty)"}</pre>
         ) : (
@@ -401,6 +529,9 @@ function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps)
         )}
       </div>
       <StatusBar saveState={saveState} docStats={docStats} />
+      {notice && (
+        <div className={`editor-toast ${notice.kind}`}>{notice.msg}</div>
+      )}
     </div>
   );
 }
@@ -445,6 +576,7 @@ interface ToolbarProps {
   saveState: SaveState;
   showSource: boolean;
   onToggleSource: () => void;
+  onInsertFile: () => void;
   canUndo: boolean;
   canRedo: boolean;
 }
@@ -457,12 +589,14 @@ function Toolbar({
   saveState,
   showSource,
   onToggleSource,
+  onInsertFile,
   canUndo,
   canRedo,
 }: ToolbarProps) {
   // `useInstance` re-renders the toolbar once the editor is ready; buttons are
   // disabled until then so a fast click can't call .action() on undefined.
   const [loading] = useInstance();
+  const inTauri = "__TAURI_INTERNALS__" in window;
   const [exporting, setExporting] = useState<ExportFormat | null>(null);
   const [exportErr, setExportErr] = useState<string | null>(null);
   const [savedTo, setSavedTo] = useState<string | null>(null);
@@ -585,6 +719,11 @@ function Toolbar({
       <Btn label="Insert link" onClick={insertLink}>
         <LinkSimple size={16} weight="bold" />
       </Btn>
+      {inTauri && (
+        <Btn label="Insert file / image (drag-drop also works)" onClick={onInsertFile}>
+          <Paperclip size={16} weight="bold" />
+        </Btn>
+      )}
       <Sep />
       <Btn label="Undo (Ctrl+Z)" onClick={() => run(undoCommand.key)} disabled={!canUndo}>
         <ArrowCounterClockwise size={16} weight="bold" />

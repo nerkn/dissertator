@@ -367,6 +367,21 @@ export const api = {
       return (await r.json()) as { ok: true; path: string };
     }),
 
+  /** Import a dropped/picked file (sourcePath) or pasted image bytes
+   *  (dataUrl) into the project's images/ audio/ (or root). The sidecar does
+   *  the copy/move/write and returns the project-relative path + kind. */
+  importAsset: (input: {
+    sourcePath?: string;
+    dataUrl?: string;
+    filename: string;
+    dest: "images" | "audio" | "root";
+    mode?: "copy" | "move";
+  }) =>
+    req<{ ok: true; relPath: string; absPath: string; kind: string }>(
+      "/assets/import",
+      { method: "POST", body: JSON.stringify(input) },
+    ),
+
   // --- Documents (P3 editor) -----------------------------------------------
   // The manuscript editor loads a document (with bodyMd) and autosaves the body
   // via PUT /documents/:id { bodyMd }. A document is a single body — markdown
