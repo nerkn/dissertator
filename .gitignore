@@ -26,3 +26,6 @@ denemeFolder/
 .idea/
 src-tauri/icons/android/
 src-tauri/icons/ios/
+
+# Release build artifacts (downloaded by release skill)
+release-artifacts/

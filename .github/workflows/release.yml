@@ -1,5 +1,7 @@
 name: release
 
+# NOTE: GitHub Actions is currently disabled for our account. We reach out to GitHub Support for assistance.
+#
 # Build Dissertator desktop apps (Linux, macOS x64 + arm64, Windows) on git tag,
 # then publish all installers to a GitHub Release.
 #
