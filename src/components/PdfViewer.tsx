@@ -11,7 +11,7 @@
 // RenderingCancelledException that we swallow). On unmount / source change we
 // cancel the render and destroy the document to free memory.
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 
 // Zoom levels are discrete steps so +/- buttons behave predictably and the
@@ -24,6 +24,8 @@ import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 // resolved worker URL as a string, which pdf.js loads in a Web Worker.
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { api } from "../lib/api";
+import type { NoteRect } from "@dissertator/shared";
+import { NotePopup } from "./NotePopup";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -46,6 +48,13 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
   const fitScale = useRef<number>(DEFAULT_SCALE);
   // Tracked so a superseding render (page change / unmount) can cancel it.
   const renderTaskRef = useRef<RenderTask | null>(null);
+  // Page wrapper (canvas + transparent text layer) — relative-positioned so
+  // the text layer can absolutely overlay the canvas at matching size.
+  const pageWrapRef = useRef<HTMLDivElement | null>(null);
+  // The transparent, selectable text layer overlaid on the canvas.
+  const textLayerRef = useRef<HTMLDivElement | null>(null);
+  // The in-flight TextLayer render; cancelled when superseded.
+  const textLayerTaskRef = useRef<{ cancel: () => void } | null>(null);
 
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
   const [page, setPage] = useState<number>(
@@ -58,6 +67,20 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
   const [total, setTotal] = useState<number>(0);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  // A live text selection inside the PDF text layer (drives the "Save note"
+  // pill). Cleared on page/source change. `clientRect` is viewport coords for
+  // anchoring the pill + popup; `pageRect` is the bbox in page-space %.
+  const [sel, setSel] = useState<{
+    text: string;
+    clientRect: DOMRect;
+    pageRect: NoteRect | null;
+  } | null>(null);
+  // When set, the NotePopup save card is open (anchored at the selection).
+  const [popup, setPopup] = useState<{
+    text: string;
+    clientRect: DOMRect;
+    pageRect: NoteRect | null;
+  } | null>(null);
 
   // --- Load the document once per sourceId. --------------------------------
   useEffect(() => {
@@ -69,6 +92,8 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
     setError(null);
     setTotal(0);
     setPdf(null);
+    setSel(null);
+    setPopup(null);
     // Reset zoom + fit state when switching documents so a huge zoom from a
     // prior doc doesn't carry over and so we re-fit the new document's width.
     setScale(DEFAULT_SCALE);
@@ -153,6 +178,33 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
         const task = pdfPage.render({ canvasContext: ctx, viewport });
         renderTaskRef.current = task;
         await task.promise;
+
+        // Build the selectable text layer over the canvas (pdf.js TextLayer).
+        // The container is sized to the viewport and inherits --scale-factor
+        // (set inline on .pdf-page-wrap) so each span's font-size calc scales
+        // with zoom. Cancel any prior instance; clearing innerHTML resets the
+        // container for a fresh render. Best-effort: a failure never blanks
+        // the page — the canvas is already painted above.
+        textLayerTaskRef.current?.cancel();
+        const tl = textLayerRef.current;
+        if (tl) {
+          tl.innerHTML = "";
+          tl.style.width = `${viewport.width}px`;
+          tl.style.height = `${viewport.height}px`;
+          try {
+            const textContent = await pdfPage.getTextContent();
+            if (cancelled) return;
+            const instance = new pdfjsLib.TextLayer({
+              textContentSource: textContent,
+              container: tl,
+              viewport,
+            });
+            textLayerTaskRef.current = instance;
+            await instance.render();
+          } catch (e) {
+            if ((e as Error)?.name === "RenderingCancelledException") return;
+          }
+        }
       } catch (e) {
         // Expected when a newer render supersedes this one or the component
         // unmounts mid-render — swallow it. Everything else is a real error.
@@ -165,6 +217,8 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
 
     return () => {
       cancelled = true;
+      textLayerTaskRef.current?.cancel();
+      textLayerTaskRef.current = null;
     };
   }, [pdf, page, scale]);
 
@@ -181,6 +235,17 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialPage]);
 
+  // Clear any live selection when the page or source changes (the text
+  // layer is rebuilt, so an old selection's anchor node is gone). Also drops
+  // the native DOM selection so it can't linger across pages.
+  useEffect(() => {
+    setSel(null);
+    setPopup(null);
+    if (typeof window !== "undefined")
+      window.getSelection()?.removeAllRanges();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceId, page]);
+
   if (loading) return <div className="pdf-status">Loading PDF…</div>;
   if (error) return <div className="pdf-error">Failed to load PDF: {error}</div>;
 
@@ -194,6 +259,45 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
   const zoomOut = (): void =>
     setScale((s) => Math.max(MIN_SCALE, Math.round((s - ZOOM_STEP) * 100) / 100));
   const zoomReset = (): void => setScale(fitScale.current);
+
+  // Selection within the transparent text layer → show the "Save note" pill.
+  // Only fires for selections anchored INSIDE the text layer (not e.g. the
+  // page input). The bbox is normalized to page-space % so a future highlight
+  // overlay survives zoom.
+  const handleSelectionMouseUp = (): void => {
+    const tl = textLayerRef.current;
+    const canvas = canvasRef.current;
+    if (!tl || !canvas) return;
+    const s = window.getSelection();
+    const text = s?.toString() ?? "";
+    if (!text.trim() || !s || !s.anchorNode || !tl.contains(s.anchorNode)) {
+      setSel(null);
+      return;
+    }
+    const r = s.getRangeAt(0).getBoundingClientRect();
+    if (r.width <= 0 && r.height <= 0) {
+      setSel(null);
+      return;
+    }
+    const cr = canvas.getBoundingClientRect();
+    const pageRect: NoteRect | null =
+      cr.width > 0 && cr.height > 0
+        ? {
+            x: ((r.left - cr.left) / cr.width) * 100,
+            y: ((r.top - cr.top) / cr.height) * 100,
+            w: (r.width / cr.width) * 100,
+            h: (r.height / cr.height) * 100,
+          }
+        : null;
+    setSel({ text, clientRect: r, pageRect });
+  };
+
+  // Pill click → open the save card seeded with the live selection.
+  const openNotePopup = (): void => {
+    if (!sel) return;
+    setPopup(sel);
+    setSel(null);
+  };
 
   return (
     <div className="pdf-viewer">
@@ -255,8 +359,44 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
         </button>
       </div>
       <div className="pdf-canvas-area" ref={areaRef}>
-        <canvas ref={canvasRef} />
+        {/* --scale-factor drives the TextLayer's per-span font-size calc. */}
+        <div
+          className="pdf-page-wrap"
+          ref={pageWrapRef}
+          onMouseUp={handleSelectionMouseUp}
+          style={{ "--scale-factor": scale } as CSSProperties}
+        >
+          <canvas ref={canvasRef} />
+          <div ref={textLayerRef} className="textLayer" />
+        </div>
       </div>
+      {sel && (
+        <button
+          type="button"
+          className="note-save-pill"
+          style={{
+            left: sel.clientRect.left + sel.clientRect.width / 2,
+            top: sel.clientRect.bottom + 8,
+          }}
+          onClick={openNotePopup}
+          title="Save this passage as a note"
+        >
+          ＋ Save note
+        </button>
+      )}
+      {popup && (
+        <NotePopup
+          sourceId={sourceId}
+          page={page}
+          initialExcerpt={popup.text}
+          rect={popup.clientRect}
+          pageRect={popup.pageRect}
+          onClose={() => {
+            setPopup(null);
+            window.getSelection()?.removeAllRanges();
+          }}
+        />
+      )}
     </div>
   );
 }

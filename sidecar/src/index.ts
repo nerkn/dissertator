@@ -7,7 +7,7 @@ import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { join } from "node:path";
 import { createServer } from "node:net";
-import { SIDECAR_PORT, SIDECAR_PORT_RANGE, type ChatRequest, type DocType, type Document, type ProviderConfig, type ProviderKind, type Reference, type Settings, resolveChatConfig } from "@dissertator/shared";
+import { SIDECAR_PORT, SIDECAR_PORT_RANGE, type ChatRequest, type DocType, type Document, type Note, type ProviderConfig, type ProviderKind, type Reference, type Settings, resolveChatConfig } from "@dissertator/shared";
 import {
   getCurrentProject,
   getProjectStatus,
@@ -41,6 +41,14 @@ import {
   createProvider,
   updateProvider,
   deleteProvider,
+  listLists,
+  createList,
+  updateList,
+  deleteList,
+  listNotes,
+  createNote,
+  updateNote,
+  deleteNote,
 } from "./db";
 import { getPrompts, readPromptsMarkdown, savePrompts } from "./prompts.ts";
 import { searchCorpus } from "./search";
@@ -732,6 +740,107 @@ app.delete("/references/:id", (c) => {
   getCurrentProject()!.db.prepare('DELETE FROM "references" WHERE id = ?').run(
     existing.id
   );
+  return c.body(null, 204);
+});
+
+// ===========================================================================
+// Lists & notes (collect-while-reading → cite-while-writing).
+// ===========================================================================
+
+// Lists ----------------------------------------------------------------------
+
+app.get("/lists", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  return c.json(listLists());
+});
+
+app.post("/lists", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const body = await c.req.json().catch(() => ({}));
+  try {
+    return c.json(createList(body), 201);
+  } catch (e) {
+    return c.json({ error: (e as Error)?.message ?? String(e) }, 400);
+  }
+});
+
+app.put("/lists/:id", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = parseInt(c.req.param("id"), 10);
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  const body = await c.req.json().catch(() => ({}));
+  const updated = updateList(id, body);
+  if (!updated) return c.json({ error: "not found" }, 404);
+  return c.json(updated);
+});
+
+app.delete("/lists/:id", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = parseInt(c.req.param("id"), 10);
+  if (!Number.isFinite(id)) return c.json({ error: "bad id" }, 400);
+  try {
+    const ok = deleteList(id);
+    if (!ok) return c.json({ error: "not found" }, 404);
+    return c.body(null, 204);
+  } catch (e) {
+    return c.json({ error: (e as Error)?.message ?? String(e) }, 400);
+  }
+});
+
+// Notes ----------------------------------------------------------------------
+
+app.get("/notes", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const listIdRaw = c.req.query("listId");
+  const sourceId = c.req.query("sourceId") || undefined;
+  const listId = listIdRaw ? parseInt(listIdRaw, 10) : undefined;
+  return c.json(
+    listNotes({
+      listId: listId !== undefined && Number.isFinite(listId) ? listId : undefined,
+      sourceId,
+    }),
+  );
+});
+
+app.post("/notes", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const body = await c.req
+    .json<Partial<Note>>()
+    .catch(() => ({}) as Partial<Note>);
+  try {
+    const note = createNote({
+      sourceId: body.sourceId ?? "",
+      page: Number(body.page) || 1,
+      excerpt: body.excerpt ?? null,
+      body: body.body ?? null,
+      listId: Number(body.listId) || 1,
+      rect: body.rect ?? null,
+    });
+    return c.json(note, 201);
+  } catch (e) {
+    return c.json({ error: (e as Error)?.message ?? String(e) }, 400);
+  }
+});
+
+app.put("/notes/:id", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = c.req.param("id");
+  const body = await c.req
+    .json<Partial<Note>>()
+    .catch(() => ({}) as Partial<Note>);
+  const updated = updateNote(id, {
+    excerpt: body.excerpt,
+    body: body.body,
+    listId: body.listId !== undefined ? Number(body.listId) : undefined,
+    rect: body.rect,
+  });
+  if (!updated) return c.json({ error: "not found" }, 404);
+  return c.json(updated);
+});
+
+app.delete("/notes/:id", (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  deleteNote(c.req.param("id"));
   return c.body(null, 204);
 });
 

@@ -13,6 +13,7 @@ import {
   EMBEDDING_DEFAULTS,
   PROVIDER_DEFAULTS,
   providerKeyUser,
+  LIST_SEEDS,
   type Author,
   type Chat,
   type ChatMessage,
@@ -22,6 +23,9 @@ import {
   type EmbeddingProvider,
   type EmbeddingStatus,
   type InitProjectResponse,
+  type List,
+  type Note,
+  type NoteRect,
   type OcrStrategy,
   type ProjectStatus,
   type Provider,
@@ -263,6 +267,11 @@ function migrate(db: Database): void {
   // settings stable across re-runs.
   // -----------------------------------------------------------------------
   seedProviders(db);
+
+  // Lists & notes (collect-while-reading). Seeds the 4 built-in lists
+  // (system=1) idempotently — `INSERT OR IGNORE` by id so a deliberately
+  // emptied row is NOT recreated, but the defaults exist on first run.
+  seedLists(db);
 }
 
 // ===========================================================================
@@ -358,6 +367,250 @@ function seedProviders(db: Database): void {
   );
   upsertIfAbsent.run("chat_provider_id", "default-chat");
   upsertIfAbsent.run("embedding_provider_id", "default-embedding");
+}
+
+// ===========================================================================
+// Lists & notes subsystem (collect-while-reading → cite-while-writing).
+// ===========================================================================
+
+/** Snake_case shape of a `lists` row. `system` is 0/1 (mapped to bool). */
+interface ListRow {
+  id: number;
+  label: string;
+  icon: string;
+  color: string;
+  ord: number;
+  system: number;
+}
+
+function mapList(r: ListRow): List {
+  return {
+    id: r.id,
+    label: r.label,
+    icon: r.icon,
+    color: r.color,
+    ord: r.ord,
+    system: !!r.system,
+  };
+}
+
+/** Snake_case shape of a `notes` row, enriched with the joined `citekey`. */
+interface NoteRow {
+  id: string;
+  source_file_id: string;
+  page: number;
+  excerpt: string | null;
+  body: string | null;
+  list_id: number;
+  rect: string | null;
+  created_at: number;
+  citekey: string | null;
+}
+
+/** SQL + JSON mapping shared by every notes read path. */
+function mapNote(r: NoteRow): Note {
+  let rect: NoteRect | null = null;
+  if (r.rect) {
+    try {
+      const p = JSON.parse(r.rect) as unknown;
+      if (
+        p &&
+        typeof p === "object" &&
+        typeof (p as NoteRect).x === "number"
+      ) {
+        rect = p as NoteRect;
+      }
+    } catch {
+      rect = null;
+    }
+  }
+  return {
+    id: r.id,
+    sourceId: r.source_file_id,
+    page: r.page,
+    excerpt: r.excerpt,
+    body: r.body,
+    listId: r.list_id,
+    rect,
+    createdAt: r.created_at,
+    citekey: r.citekey ?? null,
+  };
+}
+
+/** Notes SELECT with the source → reference citekey join baked in. */
+const NOTES_WITH_CITE =
+  "SELECT n.*, r.citekey AS citekey FROM notes n " +
+  "LEFT JOIN source_files sf ON sf.id = n.source_file_id " +
+  'LEFT JOIN "references" r ON r.id = sf.reference_id ';
+
+/** Seed the 4 built-in lists (system=1). Idempotent by id. */
+function seedLists(db: Database): void {
+  const ins = db.prepare(
+    "INSERT OR IGNORE INTO lists(id, label, icon, color, ord, system) VALUES (?,?,?,?,?,1)"
+  );
+  for (const s of LIST_SEEDS) ins.run(s.id, s.label, s.icon, s.color, s.ord);
+}
+
+/** All lists, ordered by display order then id. */
+export function listLists(): List[] {
+  if (!current) return [];
+  return (current.db
+    .prepare("SELECT * FROM lists ORDER BY ord ASC, id ASC")
+    .all() as ListRow[]).map(mapList);
+}
+
+/** Create a user list (system=0). `ord` is appended after the current max. */
+export function createList(input: {
+  label: string;
+  icon?: string;
+  color?: string;
+}): List {
+  if (!current) throw new Error("no project initialized");
+  const label = input.label?.trim();
+  if (!label) throw new Error("list label is required");
+  const maxOrd = (
+    current.db.prepare("SELECT COALESCE(MAX(ord), 0) AS m FROM lists").get() as {
+      m: number;
+    }
+  ).m;
+  const res = current.db
+    .prepare(
+      "INSERT INTO lists(label, icon, color, ord, system) VALUES (?,?,?,?,0)"
+    )
+    .run(label, input.icon ?? "BookmarkSimple", input.color ?? "#4a90e2", maxOrd + 1);
+  return mapList(
+    current.db.prepare("SELECT * FROM lists WHERE id = ?").get(
+      Number(res.lastInsertRowid),
+    ) as ListRow,
+  );
+}
+
+/** Patch a list's label/icon/color/ord. Returns null if not found. */
+export function updateList(
+  id: number,
+  patch: { label?: string; icon?: string; color?: string; ord?: number },
+): List | null {
+  if (!current) throw new Error("no project initialized");
+  const existing = current.db.prepare("SELECT * FROM lists WHERE id = ?").get(
+    id,
+  ) as ListRow | undefined;
+  if (!existing) return null;
+  const label =
+    patch.label !== undefined ? patch.label.trim() || existing.label : existing.label;
+  const icon = patch.icon ?? existing.icon;
+  const color = patch.color ?? existing.color;
+  const ord = patch.ord ?? existing.ord;
+  current.db
+    .prepare("UPDATE lists SET label = ?, icon = ?, color = ?, ord = ? WHERE id = ?")
+    .run(label, icon, color, ord, id);
+  return mapList(
+    current.db.prepare("SELECT * FROM lists WHERE id = ?").get(id) as ListRow,
+  );
+}
+
+/** Delete a USER list (cascades its notes). Built-in (system=1) lists refuse. */
+export function deleteList(id: number): boolean {
+  if (!current) throw new Error("no project initialized");
+  const existing = current.db.prepare("SELECT * FROM lists WHERE id = ?").get(
+    id,
+  ) as ListRow | undefined;
+  if (!existing) return false;
+  if (existing.system) throw new Error("cannot delete a built-in list");
+  current.db.prepare("DELETE FROM lists WHERE id = ?").run(id);
+  return true;
+}
+
+/** Notes, optionally filtered by list and/or source, newest-first. */
+export function listNotes(
+  opts: { listId?: number; sourceId?: string } = {},
+): Note[] {
+  if (!current) throw new Error("no project initialized");
+  const where: string[] = [];
+  const params: (string | number)[] = [];
+  if (opts.listId !== undefined) {
+    where.push("n.list_id = ?");
+    params.push(opts.listId);
+  }
+  if (opts.sourceId) {
+    where.push("n.source_file_id = ?");
+    params.push(opts.sourceId);
+  }
+  const sql =
+    NOTES_WITH_CITE +
+    (where.length ? "WHERE " + where.join(" AND ") + " " : "") +
+    "ORDER BY n.created_at DESC";
+  return (current.db.prepare(sql).all(...params) as NoteRow[]).map(mapNote);
+}
+
+/** Create a note. excerpt/body/rect optional. Returns the row w/ citekey. */
+export function createNote(input: {
+  sourceId: string;
+  page: number;
+  excerpt?: string | null;
+  body?: string | null;
+  listId: number;
+  rect?: NoteRect | null;
+}): Note {
+  if (!current) throw new Error("no project initialized");
+  const id = randomUUID();
+  const now = Date.now();
+  current.db
+    .prepare(
+      "INSERT INTO notes(id, source_file_id, page, excerpt, body, list_id, rect, created_at) " +
+        "VALUES (?,?,?,?,?,?,?,?)",
+    )
+    .run(
+      id,
+      input.sourceId,
+      input.page,
+      input.excerpt ?? null,
+      input.body ?? null,
+      input.listId,
+      input.rect ? JSON.stringify(input.rect) : null,
+      now,
+    );
+  return mapNote(
+    current.db.prepare(NOTES_WITH_CITE + "WHERE n.id = ?").get(id) as NoteRow,
+  );
+}
+
+/** Patch a note's excerpt/body/listId/rect. Returns null if not found. */
+export function updateNote(
+  id: string,
+  patch: {
+    excerpt?: string | null;
+    body?: string | null;
+    listId?: number;
+    rect?: NoteRect | null;
+  },
+): Note | null {
+  if (!current) throw new Error("no project initialized");
+  const existing = current.db.prepare("SELECT * FROM notes WHERE id = ?").get(
+    id,
+  ) as NoteRow | undefined;
+  if (!existing) return null;
+  const excerpt = patch.excerpt !== undefined ? patch.excerpt : existing.excerpt;
+  const body = patch.body !== undefined ? patch.body : existing.body;
+  const listId = patch.listId ?? existing.list_id;
+  const rect =
+    patch.rect !== undefined
+      ? patch.rect
+        ? JSON.stringify(patch.rect)
+        : null
+      : existing.rect;
+  current.db
+    .prepare("UPDATE notes SET excerpt = ?, body = ?, list_id = ?, rect = ? WHERE id = ?")
+    .run(excerpt, body, listId, rect, id);
+  return mapNote(
+    current.db.prepare(NOTES_WITH_CITE + "WHERE n.id = ?").get(id) as NoteRow,
+  );
+}
+
+/** Delete a note by id. Returns true if a row was removed. */
+export function deleteNote(id: string): boolean {
+  if (!current) throw new Error("no project initialized");
+  const res = current.db.prepare("DELETE FROM notes WHERE id = ?").run(id);
+  return res.changes > 0;
 }
 
 /** List all provider rows (chat + embedding), oldest first. */

@@ -565,3 +565,76 @@ export interface Document {
   /** Unix epoch ms (INTEGER column). */
   createdAt: number;
 }
+
+// ---------------------------------------------------------------------------
+// Lists & notes (collect-while-reading → cite-while-writing)
+// ---------------------------------------------------------------------------
+//
+// While reading a source PDF, the user selects a passage and saves it as a
+// Note into one of a small set of Lists. Both the selected text (excerpt)
+// and the user's own note (body) are OPTIONAL. Later, when writing, the user
+// turns a saved note into a citation `[@citekey:page]` (the citekey is the
+// note's source's linked reference). `lists` is the ONE integer-PK table in
+// the schema (1-4 seeded); every other id in the app is TEXT.
+
+/** A user list a note can be saved into. Seeded defaults are non-deletable. */
+export interface List {
+  /** INTEGER primary key (1-4 seeded; auto-increment for user-added). */
+  id: number;
+  label: string;
+  /** Phosphor icon name, rendered dynamically in the UI. */
+  icon: string;
+  /** Hex accent color for the dot/badge. */
+  color: string;
+  /** Display order, ascending. */
+  ord: number;
+  /** true = seeded built-in (non-deletable); false = user-added. */
+  system: boolean;
+}
+
+/** The 4 predefined lists seeded at project init (ids 1-4, system=true). */
+export const LIST_SEEDS: Array<
+  Pick<List, "id" | "label" | "icon" | "color" | "ord">
+> = [
+  { id: 1, label: "Favorites", icon: "Star", color: "#f5a623", ord: 1 },
+  { id: 2, label: "Saved", icon: "BookmarkSimple", color: "#4a90e2", ord: 2 },
+  { id: 3, label: "Important", icon: "WarningCircle", color: "#e0584c", ord: 3 },
+  { id: 4, label: "To revisit", icon: "ArrowUUpLeft", color: "#7b61ff", ord: 4 },
+];
+
+/** Selection bbox stored on a note, normalized to page-space percent so it
+ *  survives zoom (the highlight overlay is rendered later). */
+export interface NoteRect {
+  /** Left, as % of page width (0-100). */
+  x: number;
+  /** Top, as % of page height (0-100). */
+  y: number;
+  /** Width, as % of page width. */
+  w: number;
+  /** Height, as % of page height. */
+  h: number;
+}
+
+/**
+ * A note captured while reading: a (possibly empty) passage on a page of a
+ * source, saved into a {@link List}. `excerpt` = the selected text;
+ * `body` = the user's own note; both optional. `citekey` is COMPUTED at read
+ * time (note.source → its linked reference) — never stored.
+ */
+export interface Note {
+  id: string;
+  sourceId: string;
+  /** 1-based physical page. */
+  page: number;
+  /** The selected passage (optional). */
+  excerpt: string | null;
+  /** The user's own note (optional). */
+  body: string | null;
+  listId: number;
+ /** Selection bbox in page-space %, or null when none was captured. */
+  rect: NoteRect | null;
+  /** Unix epoch ms. */
+  createdAt: number;
+  /** Computed: citekey of the note's source's linked reference, or null. */
+  citekey?: string | null;
+}

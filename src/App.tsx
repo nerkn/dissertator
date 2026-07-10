@@ -682,6 +682,7 @@ export default function App() {
           onOpenDocument={openDocument}
           onOpenSettings={() => setShowSettings(true)}
           onOpenReferences={openReferencesView}
+          onOpenNote={openSourceByIdAtPage}
         />
         <CenterPane
           initialized={initialized}

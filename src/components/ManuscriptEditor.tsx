@@ -328,6 +328,30 @@ function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps)
     [get],
   );
 
+  // Insert-citation bridge: a note's "cite" action in the LibraryPanel
+  // dispatches `dissertator:insert-citation` to drop a `[@citekey:page]`
+  // token at the cursor. We claim the (cancelable) event with
+  // `preventDefault()` so the sender knows it landed and skips its clipboard
+  // fallback. We only mount while our tab is active (CenterPane keeps a single
+  // viewer mounted), so when the user is reading a source PDF the event goes
+  // unclaimed and the sender copies to the clipboard instead. Re-focus so the
+  // caret stays in view.
+  useEffect(() => {
+    const onInsert = (e: Event) => {
+      const detail = (e as CustomEvent<{ token?: string }>).detail;
+      if (!detail?.token) return;
+      const ed = get();
+      if (!ed) return; // not ready yet — let the clipboard fallback run
+      e.preventDefault();
+      insertAtCursor(detail.token);
+      (ed as any)?.editorView?.focus();
+      flashNotice(`Inserted ${detail.token}`);
+    };
+    window.addEventListener("dissertator:insert-citation", onInsert);
+    return () =>
+      window.removeEventListener("dissertator:insert-citation", onInsert);
+  }, [insertAtCursor, get, flashNotice]);
+
   // Import one real file (path from drag-drop or file picker) and insert the
   // right thing at the cursor: image → ![](images/…), audio → link + note,
   // document → just add to the library (watcher ingests it).

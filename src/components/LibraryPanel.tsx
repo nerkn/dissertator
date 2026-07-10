@@ -3,11 +3,16 @@ import {
   ArrowsClockwise,
   CaretDown,
   CaretRight,
+  ClipboardText,
   Gear,
+  Plus,
+  Trash,
 } from "@phosphor-icons/react";
 import type {
   Document,
   EmbeddingStatus,
+  List,
+  Note,
   OcrStrategy,
   ProjectStatus,
   Provider,
@@ -16,6 +21,7 @@ import type {
 } from "@dissertator/shared";
 import { api } from "../lib/api";
 import { AttentionPanel } from "./AttentionPanel";
+import { notifyNotesChanged, insertCitation } from "./NotePopup";
 import { StatusBadge } from "./StatusBadge";
 
 interface Props {
@@ -50,6 +56,9 @@ interface Props {
   /** Open the bibliography manager as a center-pane tab. Fired by the
    *  📒 References group card. */
   onOpenReferences?: () => void;
+  /** Open a note's source in the viewer at the note's page (click-to-open
+   *  from the Lists group). */
+  onOpenNote?: (sourceId: string, page: number) => void;
 }
 
 const ATTENTION_STATUSES: SourceFile["textStatus"][] = [
@@ -92,6 +101,7 @@ export function LibraryPanel({
   onOpenDocument,
   onOpenSettings,
   onOpenReferences,
+  onOpenNote,
 }: Props) {
   // All hooks run BEFORE the early return (rules of hooks): the panel mounts
   // even on a not-yet-initialized project, so hook order must stay stable.
@@ -122,6 +132,39 @@ export function LibraryPanel({
       clearInterval(id);
     };
   }, [project?.initialized]);
+
+  // --- Lists & notes (collect-while-reading) ------------------------------
+  // Self-fetched: the Library is the only browser of saved notes. A window
+  // `dissertator:notes-changed` CustomEvent (fired by NotePopup on save, and
+  // by the delete/copy actions below) triggers a refresh so a note saved in
+  // the PDF viewer appears here without any App-level plumbing.
+  const [lists, setLists] = useState<List[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [openLists, setOpenLists] = useState<Set<number>>(() => new Set());
+  const [copiedNote, setCopiedNote] = useState<string | null>(null);
+
+  const refreshListsNotes = useCallback(async () => {
+    if (!project?.initialized) return;
+    try {
+      const [ls, ns] = await Promise.all([
+        api.listLists(),
+        api.listNotes(),
+      ]);
+      setLists(ls);
+      setNotes(ns);
+    } catch {
+      /* sidecar mid-restart; the event listener will retry on next change */
+    }
+  }, [project?.initialized]);
+
+  useEffect(() => {
+    if (!project?.initialized) return;
+    void refreshListsNotes();
+    const onChange = () => void refreshListsNotes();
+    window.addEventListener("dissertator:notes-changed", onChange);
+    return () =>
+      window.removeEventListener("dissertator:notes-changed", onChange);
+  }, [project?.initialized, refreshListsNotes]);
 
   // "Embed now": push all pending chunks through the embedding provider.
   // Requires the embedding key (separate from the chat key). Errors from the
@@ -186,6 +229,67 @@ export function LibraryPanel({
   const attentionItems = (sources?.items ?? []).filter((i) =>
     ATTENTION_STATUSES.includes(i.textStatus),
   );
+
+  // source id → filename, for labelling note rows (notes cascade-delete with
+  // their source, so every note's source is present here).
+  const filenameById = new Map<string, string>(
+    (sources?.items ?? []).map((s) => [s.id, s.filename]),
+  );
+
+  // Lists-group actions.
+  const toggleList = (id: number) =>
+    setOpenLists((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const addList = async () => {
+    const label = window.prompt("New list name:");
+    if (!label?.trim()) return;
+    try {
+      await api.createList({ label: label.trim() });
+      notifyNotesChanged();
+    } catch {
+      /* best-effort; refresh on next notes-changed */
+    }
+  };
+
+  const removeList = async (id: number, label: string) => {
+    if (!window.confirm(`Delete list "${label}" and its notes?`)) return;
+    try {
+      await api.deleteList(id);
+      notifyNotesChanged();
+    } catch {
+      /* built-in lists refuse server-side; ignore here */
+    }
+  };
+
+  const removeNote = async (note: Note) => {
+    try {
+      await api.deleteNote(note.id);
+      notifyNotesChanged();
+    } catch {
+      /* sidecar mid-restart */
+    }
+  };
+
+  const copyCite = async (note: Note) => {
+    if (!note.citekey) return;
+    const token = `[@${note.citekey}:${note.page}]`;
+    // Insert at the manuscript cursor when an editor is open; otherwise copy
+    // to the clipboard so the user can paste into whatever they're writing.
+    if (!insertCitation(token)) {
+      try {
+        await navigator.clipboard.writeText(token);
+      } catch {
+        /* clipboard blocked (e.g. not focused) — silently ignore */
+      }
+    }
+    setCopiedNote(note.id);
+    setTimeout(() => setCopiedNote((cur) => (cur === note.id ? null : cur)), 1200);
+  };
 
   // One-line aggregate embedding summary (corpus-wide). Hidden until we have
   // a status fetch back; degrades to nothing rather than "0/0".
@@ -380,6 +484,126 @@ export function LibraryPanel({
         <div className="group-head">📒 References</div>
         <div className="count">{c.references} entries</div>
         <div className="muted small">APA bibliography (citeproc)</div>
+      </div>
+
+      <div className="group green">
+        <div className="group-head group-head-row">
+          <span>🔖 Lists</span>
+          <button
+            className="btn ghost tiny-btn"
+            onClick={addList}
+            title="Create a new list"
+          >
+            <Plus size={13} weight="bold" />
+            New
+          </button>
+        </div>
+        <div className="count">{notes.length} notes</div>
+        <div className="muted small">
+          Select text in a PDF → save a note. Copy a citation while writing.
+        </div>
+        {lists.length === 0 ? (
+          <div className="muted small source-tree-empty">
+            No lists yet.
+          </div>
+        ) : (
+          <div className="lists-tree">
+            {lists.map((list) => {
+              const listNotes = notes.filter((n) => n.listId === list.id);
+              const isOpen = openLists.has(list.id);
+              return (
+                <div key={list.id} className="list-group">
+                  <div
+                    className="list-head"
+                    role="button"
+                    aria-expanded={isOpen}
+                    onClick={() => toggleList(list.id)}
+                    title={isOpen ? "Collapse" : "Expand"}
+                  >
+                    {isOpen ? (
+                      <CaretDown size={12} weight="bold" />
+                    ) : (
+                      <CaretRight size={12} weight="bold" />
+                    )}
+                    <span
+                      className="list-dot"
+                      style={{ background: list.color }}
+                    />
+                    <span className="list-label">{list.label}</span>
+                    <span className="list-count">{listNotes.length}</span>
+                    {!list.system && (
+                      <button
+                        className="list-del"
+                        title={`Delete “${list.label}”`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void removeList(list.id, list.label);
+                        }}
+                      >
+                        <Trash size={12} weight="bold" />
+                      </button>
+                    )}
+                  </div>
+                  {isOpen && (
+                    <div className="list-notes">
+                      {listNotes.length === 0 ? (
+                        <div className="muted small source-tree-empty">
+                          No notes in this list.
+                        </div>
+                      ) : (
+                        listNotes.map((note) => (
+                          <div key={note.id} className="note-row">
+                            <div
+                              className="note-row-main"
+                              title={`${filenameById.get(note.sourceId) ?? "source"} · p.${note.page}`}
+                              onClick={() =>
+                                onOpenNote?.(note.sourceId, note.page)
+                              }
+                            >
+                              <span className="note-page">p.{note.page}</span>
+                              <span className="note-excerpt">
+                                {note.excerpt
+                                  ? note.excerpt
+                                  : note.body
+                                    ? note.body
+                                    : "(empty note)"}
+                              </span>
+                            </div>
+                            <div className="note-row-actions">
+                              <button
+                                className="note-act"
+                                disabled={!note.citekey}
+                                title={
+                                  note.citekey
+                                    ? `Insert citation at cursor [@${note.citekey}:${note.page}] — copies if no manuscript is open`
+                                    : "Link a reference to this source first"
+                                }
+                                onClick={() => void copyCite(note)}
+                              >
+                                {copiedNote === note.id ? (
+                                  "✓"
+                                ) : (
+                                  <ClipboardText size={12} weight="bold" />
+                                )}
+                              </button>
+                              <button
+                                className="note-act"
+                                title="Delete note"
+                                onClick={() => void removeNote(note)}
+                              >
+                                <Trash size={12} weight="bold" />
+                              </button>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <AttentionPanel

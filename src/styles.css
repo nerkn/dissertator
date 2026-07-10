@@ -264,6 +264,10 @@ body {
   border-color: var(--red);
   background: #3a1414;
 }
+.group.green {
+  border-color: var(--green);
+  background: rgba(34, 197, 94, 0.08);
+}
 .group-head {
   font-weight: 600;
 }
@@ -2022,4 +2026,224 @@ code {
   padding: 6px 10px;
   color: #4ade80;
   word-break: break-all;
+}
+
+/* === PDF text layer + note capture ====================================== */
+
+/* The page wrapper holds the canvas + the transparent, selectable text layer.
+   `--scale-factor` (set inline by PdfViewer) drives each TextLayer span's
+   font-size calc, so the layer tracks zoom. line-height:0 kills the inline
+   whitespace gap under the canvas. */
+.pdf-page-wrap {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+}
+.pdf-page-wrap > canvas {
+  display: block;
+}
+.pdf-page-wrap .textLayer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  opacity: 1;
+  line-height: 1;
+  z-index: 1;
+}
+.pdf-page-wrap .textLayer span,
+.pdf-page-wrap .textLayer br {
+  color: transparent;
+  position: absolute;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0 0;
+}
+.pdf-page-wrap .textLayer ::selection {
+  background: rgba(74, 144, 226, 0.35);
+}
+
+/* Floating "Save note" pill that appears at a live text selection. Fixed so
+   it tracks viewport coords from the selection's bounding rect. */
+.note-save-pill {
+  position: fixed;
+  transform: translateX(-50%);
+  z-index: 72;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 999px;
+  border: 1px solid var(--border, #334155);
+  background: var(--panel-2, #273449);
+  color: var(--text, #e2e8f0);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.note-save-pill:hover {
+  background: var(--panel-3, #334155);
+}
+
+/* NotePopup reuses .citation-popup; these add the field/save bits. */
+.note-popup {
+  min-width: 280px;
+  max-width: 420px;
+}
+.note-popup-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.note-popup-excerpt,
+.note-popup-body {
+  width: 100%;
+  resize: vertical;
+  min-height: 28px;
+  padding: 6px 8px;
+  background: var(--bg, #15181f);
+  color: var(--text, #e2e7eb);
+  border: 1px solid var(--border, #334155);
+  border-radius: 6px;
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.note-popup-excerpt:focus,
+.note-popup-body:focus {
+  outline: none;
+  border-color: var(--blue, #3b82f6);
+}
+.note-popup-error {
+  color: var(--red, #ef4444);
+  font-size: 12px;
+}
+.note-popup-save {
+  align-self: flex-end;
+  margin-top: 2px;
+}
+
+/* === Lists group (LibraryPanel) ========================================= */
+.lists-tree {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.list-group {
+  border-radius: 6px;
+}
+.list-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+  font-size: 12.5px;
+}
+.list-head:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.list-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+.list-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.list-count {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text, #e2e8f0);
+  background: rgba(255, 255, 255, 0.08);
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+.list-del {
+  background: transparent;
+  border: none;
+  color: var(--muted, #94a3b8);
+  cursor: pointer;
+  display: inline-flex;
+  padding: 2px;
+  border-radius: 4px;
+}
+.list-del:hover {
+  color: var(--red, #ef4444);
+  background: rgba(239, 68, 68, 0.12);
+}
+.list-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0 4px 16px;
+}
+.note-row {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  border-radius: 6px;
+}
+.note-row-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.note-row-main:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.note-page {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--blue, #60a5fa);
+  font-variant-numeric: tabular-nums;
+}
+.note-excerpt {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text, #e2e8f0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.note-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.note-act {
+  background: transparent;
+  border: none;
+  color: var(--muted, #94a3b8);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  padding: 4px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.note-act:hover {
+  color: var(--text, #e2e8f0);
+  background: rgba(255, 255, 255, 0.08);
+}
+.note-act:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
 }

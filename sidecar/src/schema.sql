@@ -121,3 +121,30 @@ CREATE TABLE IF NOT EXISTS agent_runs (
   budget      INTEGER,
   spent       INTEGER DEFAULT 0
 );
+
+-- Lists & notes (collect-while-reading → cite-while-writing).
+-- `lists.id` is INTEGER (1-4 seeded via seedLists with system=1; user-added
+-- rows auto-increment). `notes.list_id` is ONE list per note. Both excerpt
+-- (the selected passage) and body (the user's note) are nullable. `rect`
+-- stores the selection bbox as JSON in page-space % (overlay rendered later).
+CREATE TABLE IF NOT EXISTS lists (
+  id     INTEGER PRIMARY KEY,
+  label  TEXT NOT NULL,
+  icon   TEXT NOT NULL DEFAULT 'BookmarkSimple',
+  color  TEXT NOT NULL DEFAULT '#4a90e2',
+  ord    INTEGER NOT NULL DEFAULT 0,
+  system INTEGER NOT NULL DEFAULT 0   -- 1 = seeded built-in (non-deletable)
+);
+
+CREATE TABLE IF NOT EXISTS notes (
+  id             TEXT PRIMARY KEY,
+  source_file_id TEXT NOT NULL REFERENCES source_files(id) ON DELETE CASCADE,
+  page           INTEGER NOT NULL,
+  excerpt        TEXT,               -- the selected passage (optional)
+  body           TEXT,               -- the user's own note (optional)
+  list_id        INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+  rect           TEXT,               -- JSON {x,y,w,h} in page-space %
+  created_at     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_notes_file ON notes(source_file_id);
+CREATE INDEX IF NOT EXISTS idx_notes_list ON notes(list_id);

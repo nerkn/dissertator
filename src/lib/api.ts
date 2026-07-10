@@ -7,6 +7,9 @@ import type {
   GuiEvent,
   HealthResponse,
   InitProjectResponse,
+  List,
+  Note,
+  NoteRect,
   ProjectStatus,
   Prompt,
   ProviderConfig,
@@ -334,6 +337,61 @@ export const api = {
   /** Export all references as a .bib string. */
   exportBibtex: () =>
     fetch(`${base()}/references/export.bibtex`).then((r) => r.text()),
+
+  // --- Lists & notes (collect-while-reading → cite-while-writing) ---------
+  // `lists.id` is INTEGER; note ids are TEXT (same as everything else). The
+  // delete routes return 204 with no body, so those clients don't parse JSON.
+
+  /** All lists (built-in seeded + user-added), ordered by display order. */
+  listLists: () => req<List[]>("/lists"),
+  createList: (input: { label: string; icon?: string; color?: string }) =>
+    req<List>("/lists", { method: "POST", body: JSON.stringify(input) }),
+  updateList: (
+    id: number,
+    patch: { label?: string; icon?: string; color?: string; ord?: number },
+  ) =>
+    req<List>(`/lists/${id}`, { method: "PUT", body: JSON.stringify(patch) }),
+  /** Delete a user list (cascades its notes). Built-in lists 400 server-side. */
+  deleteList: (id: number) =>
+    fetch(`${base()}/lists/${id}`, { method: "DELETE" }).then(async (r) => {
+      if (!r.ok) throw new Error((await r.text().catch(() => "")) || `${r.status}`);
+    }),
+
+  /** Notes, optionally filtered by list and/or source (newest-first). */
+  listNotes: (opts?: { listId?: number; sourceId?: string }) => {
+    const params = new URLSearchParams();
+    if (opts?.listId !== undefined) params.set("listId", String(opts.listId));
+    if (opts?.sourceId) params.set("sourceId", opts.sourceId);
+    const qs = params.toString();
+    return req<Note[]>(`/notes${qs ? `?${qs}` : ""}`);
+  },
+  createNote: (input: {
+    sourceId: string;
+    page: number;
+    excerpt?: string | null;
+    body?: string | null;
+    listId: number;
+    rect?: NoteRect | null;
+  }) => req<Note>("/notes", { method: "POST", body: JSON.stringify(input) }),
+  updateNote: (
+    id: string,
+    patch: Partial<{
+      excerpt: string | null;
+      body: string | null;
+      listId: number;
+      rect: NoteRect | null;
+    }>,
+  ) =>
+    req<Note>(`/notes/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    }),
+  deleteNote: (id: string) =>
+    fetch(`${base()}/notes/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }).then(async (r) => {
+      if (!r.ok) throw new Error((await r.text().catch(() => "")) || `${r.status}`);
+    }),
 
   /** Render a manuscript (as HTML) to PDF / DOCX / DOC via headless
    *  LibreOffice on the sidecar. Returns the converted file as a Blob.
