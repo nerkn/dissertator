@@ -26,6 +26,10 @@ import { detectKind, extract } from "../extract/index.ts";
 import type { ExtractResult } from "../extract/index.ts";
 import { runOcr } from "../ocr/index.ts";
 import type { OcrEngine, OcrOptions } from "../ocr/index.ts";
+import {
+  runTranscribe,
+  type TranscribeOptions,
+} from "../transcribe/index.ts";
 import { embedBatch, type EmbedEngine } from "../embed/index.ts";
 import {
   getCurrentProject,
@@ -242,6 +246,17 @@ async function ingestFile(relPath: string): Promise<void> {
     return;
   }
 
+  // 4b. Audio has no born-digital text to extract — park it for STT.
+  // The actual transcription is key-gated (like OCR-vision), so it is
+  // triggered later by the frontend via POST /sources/:id/transcribe.
+  if (kind === "audio") {
+    db.prepare(
+      "UPDATE source_files SET text_status = 'needs_transcription', needs_ocr_reason = 'audio' WHERE id = ?"
+    ).run(id);
+    emit({ sourceFileId: id, status: "needs_transcription" });
+    return;
+  }
+
   // 5. Extract.
   let result: ExtractResult;
   try {
@@ -440,6 +455,66 @@ export async function ocrSource(
   }
 }
 
+/**
+ * Transcribe an audio source via a Whisper-compatible endpoint, then chunk +
+ * store the transcript exactly like OCR text. The API key is supplied by the
+ * caller (HTTP layer → keychain) via `opts.apiKey`; never read from settings.
+ */
+export async function transcribeSource(
+  id: string,
+  opts?: TranscribeOptions
+): Promise<void> {
+  const project = getCurrentProject();
+  if (!project) throw new Error("no project initialized");
+  const { db, projectPath, dissertatorDir } = project;
+
+  const row = db
+    .prepare("SELECT * FROM source_files WHERE id = ?")
+    .get(id) as SourceFileRow | undefined;
+  if (!row) throw new Error(`source file not found: ${id}`);
+
+  db.prepare(
+    "UPDATE source_files SET text_status = 'pending_transcription', error = NULL WHERE id = ?"
+  ).run(id);
+  emit({ sourceFileId: id, status: "pending_transcription" });
+
+  const absPath = resolve(projectPath, row.rel_path);
+  try {
+    const result = await runTranscribe(absPath, opts ?? {});
+
+    const hash = row.content_hash ?? id;
+    const cachePath = join(dissertatorDir, "cache", `${hash}.stt.txt`);
+    await writeFile(cachePath, result.text, "utf8");
+    db.prepare(
+      "UPDATE source_files SET extracted_path = ?, ocr_method = 'whisper' WHERE id = ?"
+    ).run(cachePath, id);
+
+    // Transcript is a single "page"; reuse page_count if any.
+    const physPage = row.page_count ?? 1;
+    const chunks = chunkExtracted({
+      text: result.text,
+      pages: [{ physicalPage: physPage, text: result.text }],
+      pageCount: 1,
+      needsOcr: false,
+      mimeType: row.mime_type ?? "text/plain",
+    });
+    insertChunks(db, id, chunks);
+
+    db.prepare(
+      "UPDATE source_files SET text_status = 'done', error = NULL WHERE id = ?"
+    ).run(id);
+    emit({ sourceFileId: id, status: "done" });
+  } catch (e) {
+    const msg = (e as Error)?.message ?? String(e);
+    await appendLog(`[stt] ${row.rel_path}: ${msg}`);
+    failRow(db, id, msg);
+    // Rethrow so the HTTP layer surfaces a real error to the frontend (the
+    // attention panel shows it inline). Status is already 'failed' via
+    // failRow above.
+    throw e;
+  }
+}
+
 /** All source files, oldest first. */
 export function listSources(): SourceFile[] {
   const project = getCurrentProject();
@@ -450,13 +525,14 @@ export function listSources(): SourceFile[] {
   return rows.map((r) => mapSourceFile(r));
 }
 
-/** Files needing attention: `needs_ocr`, `pending_vision`, or `failed`. */
+/** Files needing attention: `needs_ocr`, `pending_vision`,
+ * `needs_transcription`, `pending_transcription`, or `failed`. */
 export function listAttention(): SourceFile[] {
   const project = getCurrentProject();
   if (!project) return [];
   const rows = project.db
     .prepare(
-      "SELECT * FROM source_files WHERE text_status IN ('needs_ocr', 'pending_vision', 'failed') ORDER BY added_at ASC"
+      "SELECT * FROM source_files WHERE text_status IN ('needs_ocr', 'pending_vision', 'needs_transcription', 'pending_transcription', 'failed') ORDER BY added_at ASC"
     )
     .all() as SourceFileRow[];
   return rows.map((r) => mapSourceFile(r));

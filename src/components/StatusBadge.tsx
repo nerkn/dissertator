@@ -12,6 +12,8 @@ const STATUS_MAP: Record<TextStatus, { label: string; cls: string }> = {
   needs_ocr: { label: "needs OCR", cls: "badge orange" },
   ocr_tesseract: { label: "OCR tesseract", cls: "badge yellow" },
   pending_vision: { label: "pending vision", cls: "badge orange" },
+  needs_transcription: { label: "needs transcription", cls: "badge orange" },
+  pending_transcription: { label: "transcribing", cls: "badge yellow" },
   failed: { label: "failed", cls: "badge red" },
 };
 

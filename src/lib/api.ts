@@ -246,6 +246,16 @@ export const api = {
       body: JSON.stringify({ engine }),
     }),
 
+  /** Transcribe an audio source via a Whisper-compatible endpoint. `apiKey`
+   *  is the chat-provider key (same one OCR-vision uses); passed as a Bearer
+   *  header, never persisted. */
+  transcribeSource: (id: string, apiKey?: string) =>
+    req<{ ok: true; id: string }>(`/sources/${id}/transcribe`, {
+      method: "POST",
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+      body: JSON.stringify({}),
+    }),
+
   // --- Semantic search (P2 Track 2) ----------------------------------------
 
   /** Semantic search over the embedded corpus. `apiKey` is the embedding key

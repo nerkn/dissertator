@@ -275,6 +275,8 @@ export type TextStatus =
   | "needs_ocr"
   | "ocr_tesseract"
   | "pending_vision"
+  | "needs_transcription"
+  | "pending_transcription"
   | "failed";
 
 /** A source file row, as exposed by the sidecar to the frontend. */

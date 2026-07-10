@@ -19,6 +19,7 @@ export type FileKind =
   | "xlsx"
   | "text"
   | "image"
+  | "audio"
   | "unsupported";
 
 export interface ExtractedPage {
@@ -68,6 +69,15 @@ const EXT_TO_KIND: Record<string, FileKind> = {
   tiff: "image",
   bmp: "image",
   gif: "image",
+  // Audio (speech-to-text in Track C, mirrors OCR for images)
+  wav: "audio",
+  mp3: "audio",
+  m4a: "audio",
+  flac: "audio",
+  ogg: "audio",
+  oga: "audio",
+  webm: "audio",
+  aac: "audio",
 };
 
 /**

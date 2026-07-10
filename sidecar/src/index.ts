@@ -58,6 +58,7 @@ import {
   start,
   scanAll,
   ocrSource,
+  transcribeSource,
   listSources,
   listAttention,
   getSourceCounts,
@@ -547,6 +548,33 @@ app.post("/sources/:id/ocr", async (c) => {
   }
   try {
     await ocrSource(id, engine, opts);
+    return c.json({ ok: true, id });
+  } catch (e) {
+    return c.json({ error: (e as Error)?.message ?? String(e) }, 500);
+  }
+});
+
+// Speech-to-text for audio sources. Mirrors the OCR-vision key discipline:
+// the Whisper API key is sourced ONLY from the request Authorization header —
+// never read from settings, never logged, never persisted. Uses the chat
+// provider's base URL + key; the model defaults to whisper-1 (the chat model
+// is NOT a valid STT model, so it is ignored here).
+app.post("/sources/:id/transcribe", async (c) => {
+  if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+  const id = c.req.param("id");
+  const settings = getSettings();
+  const auth = c.req.header("Authorization") ?? "";
+  const apiKey = auth.startsWith("Bearer ") ? auth.slice(7) : undefined;
+  const body = await c.req
+    .json<{ model?: string }>()
+    .catch(() => ({}) as { model?: string });
+  const opts = {
+    apiKey,
+    apiUrl: settings.apiUrl,
+    model: body.model,
+  };
+  try {
+    await transcribeSource(id, opts);
     return c.json({ ok: true, id });
   } catch (e) {
     return c.json({ error: (e as Error)?.message ?? String(e) }, 500);

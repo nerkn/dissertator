@@ -56,6 +56,27 @@ export function AttentionPanel({
     }
   };
 
+  const runTranscribe = async (item: SourceFile) => {
+    const key = `${item.id}:whisper`;
+    setWorking((w) => ({ ...w, [key]: true }));
+    setErrors((e) => {
+      const next = { ...e };
+      delete next[key];
+      return next;
+    });
+    try {
+      await api.transcribeSource(item.id, apiKey);
+      onResolved();
+    } catch (e) {
+      setErrors((prev) => ({
+        ...prev,
+        [key]: (e as Error)?.message ?? String(e),
+      }));
+    } finally {
+      setWorking((w) => ({ ...w, [key]: false }));
+    }
+  };
+
   const visionEnabled = !!apiKey;
   const visionTitle = visionEnabled
     ? `Run vision OCR via ${provider ?? "your provider"}`
@@ -68,7 +89,8 @@ export function AttentionPanel({
         <span className="count-inline">{items.length}</span>
       </div>
       <div className="muted small">
-        Files that failed extraction or need OCR. Resolve each below.
+        Files that failed extraction, need OCR, or need transcription.
+        Resolve each below.
       </div>
 
       <div className="attention-list">
@@ -87,27 +109,50 @@ export function AttentionPanel({
               {reason && <div className="muted small reason">{reason}</div>}
 
               <div className="attention-actions">
-                <button
-                  className="btn ghost small-btn"
-                  onClick={() => runOcr(item, "tesseract")}
-                  disabled={working[tKey]}
-                  title="Run local Tesseract OCR (free, no key)"
-                >
-                  {working[tKey] ? "working…" : "OCR (tesseract)"}
-                </button>
-                <button
-                  className="btn ghost small-btn"
-                  onClick={() => runOcr(item, "vision")}
-                  disabled={!visionEnabled || working[vKey]}
-                  title={visionTitle}
-                >
-                  {working[vKey] ? "working…" : "OCR (vision)"}
-                </button>
+                {item.kind === "audio" ? (
+                  <button
+                    className="btn ghost small-btn"
+                    onClick={() => runTranscribe(item)}
+                    disabled={!visionEnabled || working[`${item.id}:whisper`]}
+                    title={
+                      visionEnabled
+                        ? `Transcribe via ${provider ?? "your provider"} (whisper-1)`
+                        : "Set an API key in Settings to transcribe audio"
+                    }
+                  >
+                    {working[`${item.id}:whisper`]
+                      ? "transcribing…"
+                      : "Transcribe"}
+                  </button>
+                ) : (
+                  <>
+                    <button
+                      className="btn ghost small-btn"
+                      onClick={() => runOcr(item, "tesseract")}
+                      disabled={working[tKey]}
+                      title="Run local Tesseract OCR (free, no key)"
+                    >
+                      {working[tKey] ? "working…" : "OCR (tesseract)"}
+                    </button>
+                    <button
+                      className="btn ghost small-btn"
+                      onClick={() => runOcr(item, "vision")}
+                      disabled={!visionEnabled || working[vKey]}
+                      title={visionTitle}
+                    >
+                      {working[vKey] ? "working…" : "OCR (vision)"}
+                    </button>
+                  </>
+                )}
               </div>
 
-              {(errors[tKey] || errors[vKey]) && (
+              {(errors[tKey] ||
+                errors[vKey] ||
+                errors[`${item.id}:whisper`]) && (
                 <div className="attention-error small">
-                  {errors[tKey] || errors[vKey]}
+                  {errors[tKey] ||
+                    errors[vKey] ||
+                    errors[`${item.id}:whisper`]}
                 </div>
               )}
             </div>
