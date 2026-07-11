@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowsClockwise,
+  Scan,
   DownloadSimple,
   FilePdf,
   Link,
@@ -21,8 +22,14 @@ import {
   UploadSimple,
   X,
 } from "@phosphor-icons/react";
-import type { Author, Reference, SourceFile } from "@dissertator/shared";
+import type { Reference, SourceFile } from "@dissertator/shared";
 import { api } from "../lib/api";
+import {
+  fmtAuthors,
+  parseAuthors,
+  ReferenceFields,
+  type ReferenceDraft,
+} from "./ReferenceFields";
 
 interface Props {
   /** Ingested source files — populates the "link to source" picker. */
@@ -33,55 +40,21 @@ interface Props {
 
 type Status = "idle" | "saving" | "error";
 
-/** Editable draft for an in-progress reference edit. `authorsText` carries the
- *  free-text authors field until save (parsed back to Author[] on submit). */
-interface Draft {
-  citekey?: string;
-  title?: string | null;
-  year?: number | null;
-  doi?: string | null;
-  authors?: Author[];
-  authorsText?: string;
-}
-
-/** Format [{given,family}] → "Given Family, Given Family". */
-function fmtAuthors(a: Author[]): string {
-  return a
-    .map((x) => [x.given, x.family].filter(Boolean).join(" "))
-    .filter(Boolean)
-    .join(", ");
-}
-
-/** Parse "Given Family; Given Family" (or "Family, Given; ...") → Author[]. */
-function parseAuthors(s: string): Author[] {
-  return s
-    .split(/[;\n]/)
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .map((p) => {
-      // "Family, Given" form
-      const m = p.match(/^([^,]+),\s*(.+)$/);
-      if (m) return { family: m[1].trim(), given: m[2].trim() };
-      // "Given Family" form (last token = family)
-      const i = p.lastIndexOf(" ");
-      if (i === -1) return { family: p, given: "" };
-      return { given: p.slice(0, i).trim(), family: p.slice(i + 1).trim() };
-    });
-}
-
 export function ReferencesView({ sources, onOpenSource }: Props) {
   const [refs, setRefs] = useState<Reference[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<Status>("idle");
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState<Draft>({});
+  const [draft, setDraft] = useState<ReferenceDraft>({});
   // Crossref / DOI add:
   const [lookup, setLookup] = useState("");
   const [looking, setLooking] = useState(false);
   // BibTeX import textarea toggle:
   const [showImport, setShowImport] = useState(false);
   const [bibText, setBibText] = useState("");
+  // Bulk auto-detect (Option A): scanning unlinked sources for DOIs.
+  const [detecting, setDetecting] = useState(false);
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -231,6 +204,39 @@ export function ReferencesView({ sources, onOpenSource }: Props) {
     }
   };
 
+  // Auto-detect references (Option A): for every source NOT already linked to
+  // a reference, scan its extracted text for a DOI, resolve via Crossref, and
+  // create + link the reference. Sources with no resolvable DOI (books,
+  // preprints, scans) are skipped silently — that's not an error.
+  const detectAll = async () => {
+    const linked = new Set(
+      refs.map((r) => r.source_file_id).filter(Boolean) as string[],
+    );
+    const targets = sources.filter((s) => !linked.has(s.id));
+    if (targets.length === 0) {
+      alert("Nothing to detect \u2014 every source is already linked.");
+      return;
+    }
+    setDetecting(true);
+    let found = 0;
+    try {
+      for (const s of targets) {
+        const res = await api.detectReference(s.id);
+        if (res.found && !res.alreadyLinked) found++;
+      }
+      await reload();
+      alert(
+        found > 0
+          ? `Linked ${found} of ${targets.length} source(s) via DOI.`
+          : `No DOIs resolved from ${targets.length} source(s) \u2014 add those manually or by title.`,
+      );
+    } catch {
+      setStatus("error");
+    } finally {
+      setDetecting(false);
+    }
+  };
+
   return (
     <div className="references-view">
       <div className="references-toolbar">
@@ -243,6 +249,14 @@ export function ReferencesView({ sources, onOpenSource }: Props) {
           />
         </div>
         <span className="muted small">{filtered.length} / {refs.length}</span>
+        <button
+          className="btn ghost small-btn"
+          onClick={detectAll}
+          disabled={detecting || sources.length === 0}
+          title="Scan every unlinked source's text for a DOI and auto-create + link its reference"
+        >
+          <Scan size={14} weight="bold" /> {detecting ? "Detecting\u2026" : "Auto-detect"}
+        </button>
         <div className="spacer" />
         <button className="btn ghost small-btn" onClick={() => reload()} title="Reload">
           <ArrowsClockwise size={14} weight="bold" /> Refresh
@@ -312,38 +326,7 @@ export function ReferencesView({ sources, onOpenSource }: Props) {
               <div key={r.id} className="reference-row">
                 <div className="reference-main">
                   {editing ? (
-                    <div className="reference-edit">
-                      <input
-                        placeholder="citekey"
-                        value={(draft.citekey as string) ?? ""}
-                        onChange={(e) => setDraft({ ...draft, citekey: e.target.value })}
-                      />
-                      <input
-                        placeholder="Title"
-                        value={(draft.title as string) ?? ""}
-                        onChange={(e) => setDraft({ ...draft, title: e.target.value })}
-                      />
-                      <input
-                        placeholder="Authors (Given Family; …)"
-                        value={draft.authorsText ?? ""}
-                        onChange={(e) => setDraft({ ...draft, authorsText: e.target.value })}
-                      />
-                      <div className="reference-edit-row">
-                        <input
-                          placeholder="Year"
-                          type="number"
-                          value={draft.year ?? ""}
-                          onChange={(e) =>
-                            setDraft({ ...draft, year: e.target.value ? Number(e.target.value) : null })
-                          }
-                        />
-                        <input
-                          placeholder="DOI"
-                          value={(draft.doi as string) ?? ""}
-                          onChange={(e) => setDraft({ ...draft, doi: e.target.value })}
-                        />
-                      </div>
-                    </div>
+                    <ReferenceFields draft={draft} setDraft={setDraft} />
                   ) : (
                     <>
                       <div className="reference-head">

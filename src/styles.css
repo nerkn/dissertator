@@ -187,6 +187,15 @@ body {
 .btn.ghost {
   background: transparent;
 }
+.btn.danger {
+  background: var(--red);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+.btn.danger:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
 .icon-btn {
   background: transparent;
   border: none;
@@ -985,6 +994,49 @@ code {
   color: var(--red, #e5484d);
 }
 
+/* providers-tab + functions matrix rows */
+.providers-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+.function-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.provider-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* test-badge: compact mono status pill after a provider/binding Test */
+.test-badge {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.test-badge.ok {
+  color: var(--green);
+  border-color: rgba(34, 197, 94, 0.4);
+  background: rgba(34, 197, 94, 0.12);
+}
+.test-badge.err {
+  color: var(--red);
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.12);
+}
+
 /* ---- functions / prompts tabs ---- */
 .functions-tab .field {
   margin-bottom: 16px;
@@ -1197,6 +1249,18 @@ code {
   overflow: auto;
   display: flex;
   flex-direction: column;
+}
+/* Keep-alive panes for stateful viewers (manuscript editors): each open
+   document stays mounted and is merely hidden when inactive, so the caret,
+   scroll position, and undo history survive tab switches. */
+.keepalive-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.keepalive-pane[hidden] {
+  display: none !important;
 }
 
 /* ---- source tree (LibraryPanel) ---- */
@@ -1791,6 +1855,10 @@ code {
   align-items: flex-start;
   color: var(--text, #e5e7eb);
 }
+.citation-popup-unknown > div {
+  flex: 1;
+  min-width: 0;
+}
 .citation-popup-unknown .muted.small {
   margin-top: 2px;
 }
@@ -1965,6 +2033,14 @@ code {
   background: var(--panel-2);
   color: var(--text);
   font-size: 13px;
+}
+/* Frozen citekey (DESIGN.md §8 #9): read-only, dimmed, mono — visibly fixed. */
+.reference-edit input.citekey-readonly {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  font-family: var(--mono, ui-monospace, monospace);
+  cursor: not-allowed;
+  opacity: 0.85;
 }
 .reference-edit-row {
   display: flex;
@@ -2246,4 +2322,110 @@ code {
 .note-act:disabled {
   opacity: 0.35;
   cursor: not-allowed;
+}
+
+/* === SourceCombobox (writable dropdown for picking a source) ============= */
+.source-combobox {
+  position: relative;
+  width: 100%;
+}
+.source-combobox-input {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--bg, #15181f);
+  color: var(--text, #e5e7eb);
+  border: 1px solid var(--border, #333a47);
+  border-radius: 6px;
+}
+.source-combobox-input > svg:first-child {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.source-combobox-input input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: inherit;
+  outline: none;
+  font-size: 12px;
+}
+.source-combobox-input input::placeholder {
+  color: var(--muted);
+}
+.source-combobox-caret {
+  color: var(--muted);
+  flex-shrink: 0;
+  transition: transform 0.12s ease;
+}
+.source-combobox.open .source-combobox-caret {
+  transform: rotate(180deg);
+}
+.source-combobox-list {
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 0;
+  right: 0;
+  z-index: 80;
+  max-height: 220px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--panel, #1f2430);
+  border: 1px solid var(--border, #333a47);
+  border-radius: 8px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+.source-combobox-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text, #e5e7eb);
+}
+.source-combobox-list li svg {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.source-combobox-list li.active,
+.source-combobox-list li:hover {
+  background: rgba(110, 168, 254, 0.14);
+}
+.source-combobox-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-combobox-empty {
+  cursor: default !important;
+  padding: 6px 8px !important;
+}
+.source-combobox-empty:hover {
+  background: transparent !important;
+}
+
+/* === ReferenceEditDialog (centered modal over the PDF viewer) =========== */
+.ref-edit-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  min-width: 360px;
+  max-width: min(440px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  overflow-y: auto;
+}
+.ref-edit-dialog-linked {
+  margin-bottom: -2px;
+}
+/* The edit fields reuse .reference-edit; inside the dialog give them room. */
+.ref-edit-dialog .reference-edit input,
+.ref-edit-dialog .reference-edit-row input {
+  font-size: 13px;
 }

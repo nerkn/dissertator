@@ -23,9 +23,11 @@ import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 // `?url` is a Vite feature (types declared via `vite/client`): it returns the
 // resolved worker URL as a string, which pdf.js loads in a Web Worker.
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
+import { BookOpen } from "@phosphor-icons/react";
 import { api } from "../lib/api";
 import type { NoteRect } from "@dissertator/shared";
 import { NotePopup } from "./NotePopup";
+import { ReferenceEditDialog } from "./ReferenceEditDialog";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -67,6 +69,8 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
   const [total, setTotal] = useState<number>(0);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  // When set, the edit/create-citation modal is open over the PDF.
+  const [showCitation, setShowCitation] = useState<boolean>(false);
   // A live text selection inside the PDF text layer (drives the "Save note"
   // pill). Cleared on page/source change. `clientRect` is viewport coords for
   // anchoring the pill + popup; `pageRect` is the bbox in page-space %.
@@ -84,9 +88,15 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
 
   // --- Load the document once per sourceId. --------------------------------
   useEffect(() => {
+    // Abort the in-flight PDF fetch on unmount / source-switch. Without this,
+    // rapidly switching tabs abandons large downloads inside WebKit's network
+    // loader, which floods `internallyFailedLoadTimerFired` and crashes the
+    // webview (the WebLoaderStrategy.cpp:618 error storm on Linux).
+    const controller = new AbortController();
     let aborted = false;
     // Captured per-run so cleanup destroys exactly this run's document.
     let doc: PDFDocumentProxy | null = null;
+    let loadingTask: ReturnType<typeof pdfjsLib.getDocument> | null = null;
 
     setLoading(true);
     setError(null);
@@ -105,13 +115,17 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
 
     (async () => {
       try {
-        const res = await fetch(api.fileUrl(sourceId));
+        const res = await fetch(api.fileUrl(sourceId), {
+          signal: controller.signal,
+        });
         if (!res.ok) {
           const body = await res.text().catch(() => "");
           throw new Error(`${res.status} ${body}`.trim());
         }
         const data = await res.arrayBuffer();
-        doc = await pdfjsLib.getDocument({ data }).promise;
+        const task = pdfjsLib.getDocument({ data });
+        loadingTask = task;
+        doc = await task.promise;
         if (aborted) {
           void doc.destroy();
           doc = null;
@@ -123,7 +137,8 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
         setPage((p) => Math.min(Math.max(1, p), doc!.numPages));
         setLoading(false);
       } catch (e) {
-        if (aborted) return;
+        // A clean abort from a tab switch is expected — never surface it.
+        if (aborted || controller.signal.aborted) return;
         setError((e as Error)?.message ?? String(e));
         setLoading(false);
       }
@@ -131,10 +146,15 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
 
     return () => {
       aborted = true;
+      // Cancel the in-flight PDF-byte fetch so WebKit's network loader frees
+      // the slot instead of queueing an "internal failure".
+      controller.abort();
       renderTaskRef.current?.cancel();
       renderTaskRef.current = null;
-      // Free the document loaded by THIS run (null until fetch resolves).
-      void doc?.destroy();
+      // Free the finished document, or cancel a still-loading one (not both).
+      if (doc) void doc.destroy();
+      else void loadingTask?.destroy();
+      doc = null;
     };
   }, [sourceId]);
 
@@ -357,6 +377,14 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
         >
           +
         </button>
+        <span className="pdf-controls-divider" />
+        <button
+          className="btn ghost small-btn"
+          onClick={() => setShowCitation(true)}
+          title="Edit the reference / citation linked to this source"
+        >
+          <BookOpen size={14} weight="bold" /> Citation
+        </button>
       </div>
       <div className="pdf-canvas-area" ref={areaRef}>
         {/* --scale-factor drives the TextLayer's per-span font-size calc. */}
@@ -395,6 +423,12 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
             setPopup(null);
             window.getSelection()?.removeAllRanges();
           }}
+        />
+      )}
+      {showCitation && (
+        <ReferenceEditDialog
+          sourceId={sourceId}
+          onClose={() => setShowCitation(false)}
         />
       )}
     </div>

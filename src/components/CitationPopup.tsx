@@ -10,6 +10,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { X, BookOpen, Warning } from "@phosphor-icons/react";
 import type { Reference, SourceFile } from "@dissertator/shared";
 import { api } from "../lib/api";
+import { SourceCombobox } from "./SourceCombobox";
 
 interface Props {
   citekey: string;
@@ -115,6 +116,20 @@ export function CitationPopup({ citekey, page, rect, sources, onClose, onLinkOpe
     }
   };
 
+  // No reference record exists for this citekey: create one on the fly,
+  // linked to the chosen source, so the chip resolves on future clicks.
+  const createAndOpen = async (source: SourceFile) => {
+    if (linking) return;
+    setLinking(true);
+    try {
+      await api.createReference({ citekey, source_file_id: source.id });
+      onLinkOpen(source.id, page);
+      onClose();
+    } catch {
+      setLinking(false);
+    }
+  };
+
   return (
     <div className="citation-popup-overlay" onClick={onClose}>
       <div
@@ -146,9 +161,18 @@ export function CitationPopup({ citekey, page, rect, sources, onClose, onLinkOpe
               <div>
                 <div>No reference found for this citekey.</div>
                 <div className="muted small">
-                  Add it via the References tab or import a .bib file so this
-                  citation can be resolved and opened.
+                  Pick a source to create this reference and open it, or add it
+                  via the References tab.
                 </div>
+                <label className="citation-popup-link">
+                  <span className="muted small">Link to source file:</span>
+                  <SourceCombobox
+                    sources={sources}
+                    disabled={linking}
+                    placeholder={linking ? "Linking…" : "Type to search a source…"}
+                    onSelect={createAndOpen}
+                  />
+                </label>
               </div>
             </div>
           )}
@@ -183,24 +207,12 @@ export function CitationPopup({ citekey, page, rect, sources, onClose, onLinkOpe
               </div>
               <label className="citation-popup-link">
                 <span className="muted small">Link to source file:</span>
-                <select
-                  className="citation-popup-select"
-                  value=""
+                <SourceCombobox
+                  sources={sources}
                   disabled={linking}
-                  onChange={(e) => {
-                    const id = e.target.value;
-                    if (id) void linkAndOpen(id);
-                  }}
-                >
-                  <option value="" disabled>
-                    {linking ? "Linking…" : "Choose a file…"}
-                  </option>
-                  {sources.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.filename}
-                    </option>
-                  ))}
-                </select>
+                  placeholder={linking ? "Linking…" : "Choose a file…"}
+                  onSelect={(s) => void linkAndOpen(s.id)}
+                />
               </label>
             </>
           )}
