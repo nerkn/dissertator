@@ -1,0 +1,360 @@
+/* ---- dialog ---- */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+.dialog {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 20px;
+  width: 440px;
+  max-width: 90vw;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+.dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+}
+.dialog-head h2 {
+  margin: 0;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+}
+.field span {
+  font-size: 12px;
+  color: var(--muted);
+}
+.field input,
+.field select {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+}
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 6px;
+}
+.field-section-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 10px 0 2px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+/* ---- settings dialog: wide, tabbed, scrollable (P6) ---- */
+.dialog-wide {
+  width: 620px;
+  max-width: 92vw;
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 20px 16px;
+}
+.settings-tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 12px;
+  flex-shrink: 0;
+}
+.settings-tab-btn {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+.settings-tab-btn:hover {
+  color: var(--text);
+}
+.settings-tab-btn.active {
+  color: var(--text);
+  border-bottom-color: var(--accent, #6c8aff);
+}
+.settings-tab-body {
+  overflow-y: auto;
+  padding-right: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ---- providers tab ---- */
+.provider-group {
+  margin-bottom: 18px;
+}
+.provider-group:last-child {
+  margin-bottom: 4px;
+}
+.provider-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+.provider-group-title {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.provider-group-hint {
+  margin-bottom: 8px;
+}
+.provider-row {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+  background: var(--panel-2);
+}
+.provider-row-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.provider-name-input {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 6px;
+  color: var(--text);
+}
+.provider-name-input:hover,
+.provider-name-input:focus {
+  border-color: var(--border);
+  background: var(--panel);
+  outline: none;
+}
+.provider-row-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 10px;
+}
+.field.field-wide {
+  grid-column: 1 / -1;
+  margin-bottom: 0;
+}
+.provider-row-grid .field {
+  margin-bottom: 0;
+  gap: 2px;
+}
+.key-input {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.key-input input {
+  flex: 1;
+}
+.provider-row-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+}
+.provider-row-foot code {
+  font-size: 10px;
+}
+.icon-btn.active {
+  color: #e0c020;
+}
+.icon-btn.danger:hover {
+  color: var(--red, #e5484d);
+}
+
+/* providers-tab + functions matrix rows */
+.providers-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 0;
+}
+.function-row-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 2px;
+}
+.provider-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+/* test-badge: compact mono status pill after a provider/binding Test */
+.test-badge {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  white-space: nowrap;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.test-badge.ok {
+  color: var(--green);
+  border-color: rgba(34, 197, 94, 0.4);
+  background: rgba(34, 197, 94, 0.12);
+}
+.test-badge.err {
+  color: var(--red);
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+/* ---- functions / prompts tabs ---- */
+.functions-tab .field {
+  margin-bottom: 16px;
+}
+.prompts-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.prompts-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding-right: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 52vh;
+}
+.prompts-empty {
+  padding: 14px;
+  text-align: center;
+}
+.prompt-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: var(--panel-2);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.prompt-item-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.prompt-category-input {
+  width: 130px;
+  flex-shrink: 0;
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 6px;
+  color: var(--muted);
+}
+.prompt-category-input:focus {
+  outline: none;
+  border-color: var(--accent, #6c8aff);
+  color: var(--text);
+}
+.prompt-title-input {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 4px 6px;
+  color: var(--text);
+}
+.prompt-title-input:hover,
+.prompt-title-input:focus {
+  border-color: var(--border);
+  background: var(--panel);
+  outline: none;
+}
+.prompt-textarea {
+  width: 100%;
+  resize: vertical;
+  min-height: 48px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 7px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+}
+.prompt-textarea:focus {
+  outline: none;
+  border-color: var(--accent, #6c8aff);
+}
+.prompts-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-shrink: 0;
+}
+.tiny-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  font-size: 11px;
+}
+.btn.small {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  font-size: 12px;
+}
+
+/* ---- toast ---- */
+.toast {
+  position: fixed;
+  bottom: 40px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #3a1414;
+  border: 1px solid var(--red);
+  color: var(--text);
+  padding: 10px 16px;
+  border-radius: 10px;
+  z-index: 60;
+  cursor: pointer;
+  max-width: 80vw;
+}
+

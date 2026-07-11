@@ -1,0 +1,139 @@
+/* ---- pdf viewer ---- */
+.pdf-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.pdf-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+.pdf-page-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+.pdf-page-input {
+  width: 52px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+  text-align: center;
+}
+.pdf-canvas-area {
+  flex: 1;
+  overflow: auto;
+  /* Block layout (NOT flex): a flex container with the default
+     `align-items: stretch` distorts the canvas — it stretches the canvas's
+     CSS height (which resolves to `auto`) to fill this box while the width
+     stays intrinsic, squashing the page's aspect ratio. Block + auto margins
+     also avoid flexbox's quirk of clipping centered overflow on the start
+     side when the canvas is wider than the pane (zoomed in). */
+  padding: 16px;
+}
+.pdf-controls-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+}
+.pdf-zoom-reset {
+  min-width: 52px;
+  font-variant-numeric: tabular-nums;
+}
+.pdf-canvas-area canvas {
+  display: block;
+  margin: 0 auto; /* center horizontally; scrolls correctly when wider/taller */
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+  background: #fff;
+}
+.pdf-status {
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+.pdf-error {
+  margin: 16px;
+  padding: 10px 12px;
+  background: #3a1414;
+  border-left: 3px solid var(--red);
+  border-radius: 6px;
+  color: #fca5a5;
+  font-size: 13px;
+}
+
+/* ---- image viewer ---- */
+.image-viewer {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 16px;
+}
+.image-viewer img {
+  max-width: 100%;
+  border-radius: 6px;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
+}
+
+/* ---- text viewer ---- */
+.text-viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.text-viewer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+.text-viewer-filename {
+  font-weight: 600;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.text-viewer-body {
+  flex: 1;
+  margin: 0;
+  padding: 14px 18px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: "JetBrains Mono", "SFMono-Regular", "Menlo", monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: auto;
+}
+.text-viewer-empty {
+  padding: 24px;
+  text-align: center;
+}
+.text-viewer-empty .small {
+  display: block;
+  margin-top: 6px;
+}
+.text-viewer-status {
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+

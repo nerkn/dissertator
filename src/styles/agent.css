@@ -1,0 +1,262 @@
+/* ------------------------------------------------------------------ */
+/* P5 agent narration: tool-call beats inside the live assistant bubble, */
+/* quick-reply option chips, ephemeral action toasts.                   */
+/* ------------------------------------------------------------------ */
+.tool-beats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 2px 0 6px;
+  padding: 4px 8px;
+  border-left: 2px solid var(--border);
+  background: var(--panel-2);
+  border-radius: 4px;
+}
+.tool-beat {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--muted);
+  display: flex;
+  gap: 4px;
+  align-items: baseline;
+}
+.tool-beat-verb {
+  color: var(--text);
+  font-weight: 600;
+}
+.tool-beat-detail {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tool-beat.ok {
+  border-left: 2px solid #22c55e;
+  margin-left: -2px;
+  padding-left: 6px;
+}
+.tool-beat.ok .tool-beat-verb::after {
+  content: " ✓";
+  color: #22c55e;
+}
+.tool-beat.err {
+  border-left: 2px solid #ef4444;
+  margin-left: -2px;
+  padding-left: 6px;
+}
+.tool-beat.err .tool-beat-verb::after {
+  content: " ✗";
+  color: #ef4444;
+}
+.tool-beat.err .tool-beat-detail {
+  color: #fca5a5;
+}
+
+/* Quick-reply chips the agent offers via gui_options. Sit just above the
+   composer; clickable to send the option's prompt as a new turn. */
+.option-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 10px;
+}
+.option-chip {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--yellow);
+  background: rgba(234, 179, 8, 0.12);
+  color: #fde68a;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.option-chip:hover {
+  background: rgba(234, 179, 8, 0.24);
+}
+
+/* Ephemeral gui_action beats (warn / celebrate / info). */
+.chat-toasts {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 10px 4px;
+}
+.chat-toast {
+  font-size: 12px;
+  padding: 5px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  border: 1px solid var(--border);
+}
+.chat-toast.warn {
+  background: rgba(239, 68, 68, 0.14);
+  border-color: #ef4444;
+  color: #fecaca;
+}
+.chat-toast.celebrate {
+  background: rgba(34, 197, 94, 0.14);
+  border-color: #22c55e;
+  color: #bbf7d0;
+}
+.chat-toast.info {
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+/* P5 stale banner in the editor: the agent edited the doc while the user had
+   unsaved changes. Offer reload (discard local) or keep mine. */
+.editor-stale-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: rgba(234, 179, 8, 0.14);
+  border-bottom: 1px solid var(--yellow);
+  color: #fde68a;
+  font-size: 12px;
+}
+.editor-stale-banner span {
+  flex: 1;
+}
+.btn.small {
+  padding: 3px 8px;
+  font-size: 11px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Dev debug panel: exact LLM payloads (dev builds only).             */
+/* ------------------------------------------------------------------ */
+.dev-debug {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.25);
+  overflow: hidden;
+}
+.dev-debug-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 10px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+.dev-debug-head:hover {
+  color: var(--text);
+}
+.dev-debug-steps {
+  font-weight: 700;
+  color: #c4b5fd;
+}
+.dev-debug-model {
+  margin-left: auto;
+  font-family: ui-monospace, monospace;
+  color: var(--muted);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dev-debug-caret {
+  transition: transform 0.15s;
+}
+.dev-debug.open .dev-debug-caret {
+  transform: rotate(180deg);
+}
+.dev-debug-body {
+  border-top: 1px solid var(--border);
+  padding: 6px;
+  max-height: 260px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.dev-debug-step > summary {
+  font-size: 11px;
+  color: var(--text);
+  cursor: pointer;
+  padding: 3px 4px;
+  border-radius: 4px;
+}
+.dev-debug-step > summary:hover {
+  background: var(--panel-3);
+}
+.dev-debug-step[open] > summary {
+  margin-bottom: 4px;
+}
+.dev-debug-pre {
+  margin: 0;
+  padding: 6px 8px;
+  background: #0b1220;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: #cbd5e1;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+
+/* ------------------------------------------------------------------ */
+/* Embedding status + action box (LibraryPanel, Sources group).       */
+/* Surfaces the extract-vs-embed distinction + a one-click Embed.     */
+/* ------------------------------------------------------------------ */
+.embed-box {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.2);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.embed-box.pending {
+  border-color: rgba(234, 179, 8, 0.5);
+  background: rgba(234, 179, 8, 0.08);
+}
+.embed-box.ready {
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.08);
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.embed-box-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.embed-box-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+.embed-box.ready .embed-box-title {
+  color: #86efac;
+}
+.embed-box-sub {
+  line-height: 1.4;
+}
+.embed-box-error {
+  margin-top: 4px;
+  font-size: 11px;
+  color: #fca5a5;
+  word-break: break-word;
+}
+.embed-btn {
+  flex-shrink: 0;
+}
+.embed-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+

@@ -1,0 +1,13 @@
+/* Global stylesheet barrel.
+ * Each file below is a contiguous slice of the original monolithic
+ * styles.css, imported IN ORDER so the cascade is byte-identical to
+ * the pre-refactor output. Do not reorder these imports. */
+@import "./base.css";
+@import "./library.css";
+@import "./chat.css";
+@import "./settings.css";
+@import "./center.css";
+@import "./viewers.css";
+@import "./agent.css";
+@import "./editor.css";
+@import "./overlays.css";

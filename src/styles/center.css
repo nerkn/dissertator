@@ -1,0 +1,171 @@
+/* ---- misc ---- */
+.muted {
+  color: var(--muted);
+}
+.small {
+  font-size: 12px;
+}
+
+/* =========================================================================
+   P3 Workstream 2 — tab bar, source tree, viewers
+   (all dark-theme, reusing the variables above)
+   ========================================================================= */
+
+/* ---- center pane with tabs (switches from centered to top-aligned fill) ---- */
+.panel.center.with-tabs {
+  align-items: stretch;
+  justify-content: flex-start;
+  flex-direction: column;
+  padding: 0;
+}
+
+/* ---- tab bar ---- */
+.tabs {
+  display: flex;
+  flex-direction: row;
+  gap: 2px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  padding: 6px 6px 0;
+  overflow-x: auto;
+  flex-shrink: 0;
+}
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  padding: 6px 8px 7px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+.tab:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.tab.active {
+  background: var(--bg);
+  color: var(--text);
+  border-color: var(--border);
+}
+.tab-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 180px;
+}
+.tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  border-radius: 4px;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0;
+}
+.tab-close:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+/* ---- active tab content fill ---- */
+.tab-content {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+/* Keep-alive panes for stateful viewers (manuscript editors): each open
+   document stays mounted and is merely hidden when inactive, so the caret,
+   scroll position, and undo history survive tab switches. */
+.keepalive-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.keepalive-pane[hidden] {
+  display: none !important;
+}
+
+/* ---- source tree (LibraryPanel) ---- */
+.sources-head {
+  cursor: pointer;
+  user-select: none;
+}
+.sources-head-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.source-tree {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.source-tree-empty {
+  padding: 6px 4px;
+}
+.source-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.source-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+.source-row .source-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  box-shadow: 0 0 6px currentColor;
+}
+/* kind → CSS variable color */
+.source-dot.pdf {
+  background: var(--blue);
+  color: var(--blue);
+}
+.source-dot.image {
+  background: var(--purple);
+  color: var(--purple);
+}
+.source-dot.text {
+  background: var(--green);
+  color: var(--green);
+}
+.source-dot.doc {
+  background: var(--yellow);
+  color: var(--yellow);
+}
+.source-dot.other {
+  background: var(--muted);
+  color: var(--muted);
+}
+

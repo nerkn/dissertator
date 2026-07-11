@@ -1,0 +1,244 @@
+:root {
+  color-scheme: dark;
+  --bg: #0f172a;
+  --panel: #1e293b;
+  --panel-2: #273449;
+  --panel-3: #334155;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+
+  --blue: #3b82f6;
+  --blue-bg: #1e3a5f;
+  --yellow: #eab308;
+  --yellow-bg: #42360f;
+  --purple: #a855f7;
+  --purple-bg: #3a1d54;
+  --red: #ef4444;
+  --green: #22c55e;
+
+  --border: #334155;
+  --radius: 10px;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+body {
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  overflow: hidden;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+/* ---- top bar ---- */
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  /* Frameless window: the topbar IS the drag handle. Prevent text
+     selection while dragging, and keep a hair of right padding clear of
+     the window-control buttons. */
+  user-select: none;
+  -webkit-user-select: none;
+}
+.brand {
+  font-weight: 700;
+  font-size: 15px;
+}
+.project-name {
+  color: var(--muted);
+  font-size: 13px;
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.spacer {
+  flex: 1;
+}
+.window-controls {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  /* Drag-region gap: keep these buttons out of the draggable area by NOT
+     giving them data-tauri-drag-region (they sit inside the topbar which is
+     draggable, but clicks on them are captured before drag starts). */
+}
+.wc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 26px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.wc-btn:hover {
+  background: var(--panel-2, #232831);
+  color: var(--text);
+}
+.wc-close:hover {
+  background: #e02424;
+  color: #fff;
+}
+
+/* SE corner resize grip for the frameless window (decorations:false strips
+   OS resize borders on Windows/macOS). Fixed so it floats over content;
+   only the 16x16 hit area catches the mouse. */
+.resize-handle-se {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  z-index: 9999;
+  cursor: nwse-resize;
+  pointer-events: auto;
+}
+.resize-handle-se::before {
+  content: "";
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid rgba(128, 128, 128, 0.45);
+  border-bottom: 2px solid rgba(128, 128, 128, 0.45);
+  border-bottom-right-radius: 2px;
+  transition: border-color 0.15s ease;
+}
+.resize-handle-se:hover::before {
+  border-color: rgba(96, 96, 96, 0.95);
+}
+.health-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--muted);
+  box-shadow: 0 0 8px currentColor;
+}
+.health-dot.up {
+  background: var(--green);
+  color: var(--green);
+}
+.health-dot.down {
+  background: var(--red);
+  color: var(--red);
+}
+.health-dot.checking {
+  background: var(--yellow);
+  color: var(--yellow);
+  animation: pulse 1s infinite;
+}
+@keyframes pulse {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+/* ---- buttons ---- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  padding: 7px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.btn:hover:not(:disabled) {
+  background: var(--panel-3);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn.primary {
+  background: linear-gradient(135deg, var(--blue), var(--purple));
+  border-color: transparent;
+  font-weight: 600;
+}
+.btn.primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.btn.ghost {
+  background: transparent;
+}
+.btn.danger {
+  background: var(--red);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+.btn.danger:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.icon-btn {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+}
+.icon-btn:hover {
+  background: var(--panel-3);
+  color: var(--text);
+}
+
+/* ---- body layout ---- */
+.body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 280px 1fr 340px;
+  gap: 0;
+  min-height: 0;
+}
+.panel {
+  min-width: 0;
+  overflow: auto;
+  padding: 14px;
+}
+.panel.lib {
+  background: var(--panel);
+  border-right: 1px solid var(--border);
+}
+.panel.chat {
+  background: var(--panel);
+  border-left: 1px solid var(--border);
+}
+.panel.center {
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.panel-title {
+  font-weight: 700;
+  margin-bottom: 12px;
+  color: var(--text);
+}
+
