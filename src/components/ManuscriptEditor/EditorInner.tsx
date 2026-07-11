@@ -1,152 +1,29 @@
-// ManuscriptEditor — the writable, Word-like editor for a Dissertation
-// `Document` (a paper / thesis being authored). Built on Milkdown 7 (a
-// markdown-first WYSIWYG on ProseMirror) so the user sees formatted text and
-// never has to know markdown — yet the stored source of truth is the document's
-// `body_md` column, which is what the agent contract and pandoc export consume.
-//
-// Data flow (DESIGN.md §3 + docs/tools.md §4):
-//   GET /documents/:id  → Document (with bodyMd)   (load once per documentId)
-//   edit the body in Milkdown
-//   on every change → debounced (800ms) PUT /documents/:id { bodyMd }   (autosave)
-//
-// The editor is keyed by `documentId` in CenterPane, so switching documents
-// remounts a fresh instance with the right initial markdown — no in-place
-// content swapping, no save/replace guard needed.
-//
-// A Document is ONE body. Markdown headers (`## intro`) are just lines in
-// the body, not separate rows — structural stats (line count, header
-// positions) are computed by parsing the body, never stored.
-//
-// Citation tokens `[@citekey:printedPage]` (DESIGN.md §11 #8) are rendered as
-// clickable "chips" by a ProseMirror decorations plugin (see
-// `citationPlugin`) — the raw token stays editable text so the agent, autosave
-// and pandoc export all see clean markdown. Clicking a chip resolves the
-// citation (open the linked PDF at the page, or pop up the reference card).
-//
-// Source-MD toggle: a read-only peek at the underlying markdown for power
-// users / debugging (the user-facing surface stays WYSIWYG by default).
-
-import "../lib/milkdown-theme.css";
-import "@milkdown/theme-nord/style.css";
-
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
-import {
-  Milkdown,
-  MilkdownProvider,
-  useEditor,
-  useInstance,
-} from "@milkdown/react";
-import { Editor, rootCtx, defaultValueCtx, editorViewOptionsCtx } from "@milkdown/kit/core";
-import { commonmark } from "@milkdown/kit/preset/commonmark";
-import { gfm } from "@milkdown/kit/preset/gfm";
-import { history, undoCommand, redoCommand } from "@milkdown/kit/plugin/history";
-import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
-import { nord } from "@milkdown/theme-nord";
-import { callCommand } from "@milkdown/kit/utils";
-import type { MilkdownPlugin } from "@milkdown/kit/ctx";
-import {
-  toggleStrongCommand,
-  toggleEmphasisCommand,
-  toggleInlineCodeCommand,
-  wrapInHeadingCommand,
-  wrapInBulletListCommand,
-  wrapInOrderedListCommand,
-  wrapInBlockquoteCommand,
-  toggleLinkCommand,
-} from "@milkdown/kit/preset/commonmark";
-import { replaceAll, getHTML, insert } from "@milkdown/kit/utils";
-import {
-  TextB,
-  TextItalic,
-  TextHOne,
-  TextHTwo,
-  TextHThree,
-  ListBullets,
-  ListNumbers,
-  Quotes,
-  LinkSimple,
-  ArrowCounterClockwise,
-  ArrowClockwise,
-  Code,
-  Eye,
-  FileArrowDown,
-  Paperclip,
-} from "@phosphor-icons/react";
-import type { Document } from "@dissertator/shared";
-import { api } from "../lib/api";
-import {
-  importAssetFromPath,
-  importAssetFromBlob,
-} from "../lib/assetImport";
-import {
-  citationPlugin,
-  type CitationClickHandler,
-} from "../lib/citationPlugin";
-
-interface Props {
-  documentId: string;
-  /** P5: bumps whenever the agent edits this document. The editor refetches
-   *  on change and live-swaps the body via `replaceAll` when it has no unsaved
-   *  local edits (otherwise it shows a stale banner the user can accept). */
-  revision?: number;
-  /** Citation-chip click handler. When omitted, chips still render (styled)
-   *  but are inert. */
-  onCitationClick?: CitationClickHandler;
-}
-
-/** Autosave lifecycle, shown as a small status pip in the toolbar. */
-type SaveState = "idle" | "dirty" | "saving" | "saved" | "error";
-
-const AUTOSAVE_DEBOUNCE_MS = 800;
-
-export function ManuscriptEditor({ documentId, revision = 0, onCitationClick }: Props) {
-  const [doc, setDoc] = useState<Document | null>(null);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let aborted = false;
-    setLoading(true);
-    setError(null);
-    setDoc(null);
-    (async () => {
-      try {
-        const d = await api.getDocument(documentId);
-        if (aborted) return;
-        setDoc(d);
-        setLoading(false);
-      } catch (e) {
-        if (aborted) return;
-        setError((e as Error)?.message ?? String(e));
-        setLoading(false);
-      }
-    })();
-    return () => {
-      aborted = true;
-    };
-  }, [documentId, revision]);
-
-  if (loading) return <div className="editor-status">Loading document…</div>;
-  if (error)
-    return <div className="editor-error">Failed to load document: {error}</div>;
-  if (!doc) return null;
-
-  return (
-    <MilkdownProvider>
-      <EditorInner
-        document={doc}
-        initialMarkdown={doc.bodyMd ?? ""}
-        onCitationClick={onCitationClick}
-      />
-    </MilkdownProvider>
-  );
-}
-
 // ---------------------------------------------------------------------------
 // EditorInner — owns the Milkdown instance, the toolbar, autosave, and the
 // source-MD toggle. Kept separate so the MilkdownProvider wraps it (the hooks
 // below must run inside a provider).
 // ---------------------------------------------------------------------------
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Milkdown, useEditor } from "@milkdown/react";
+import { Editor, rootCtx, defaultValueCtx, editorViewOptionsCtx } from "@milkdown/kit/core";
+import { commonmark } from "@milkdown/kit/preset/commonmark";
+import { gfm } from "@milkdown/kit/preset/gfm";
+import { history } from "@milkdown/kit/plugin/history";
+import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
+import { nord } from "@milkdown/theme-nord";
+import type { MilkdownPlugin } from "@milkdown/kit/ctx";
+import { replaceAll, insert } from "@milkdown/kit/utils";
+import type { Document } from "@dissertator/shared";
+import { api } from "../../lib/api";
+import {
+  importAssetFromPath,
+  importAssetFromBlob,
+} from "../../lib/assetImport";
+import { citationPlugin } from "../../lib/citationPlugin";
+import { Toolbar } from "./Toolbar";
+import { StatusBar } from "./StatusBar";
+import type { CitationClickHandler, SaveState } from "./_shared";
 
 interface InnerProps {
   document: Document;
@@ -154,7 +31,9 @@ interface InnerProps {
   onCitationClick?: CitationClickHandler;
 }
 
-function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps) {
+const AUTOSAVE_DEBOUNCE_MS = 800;
+
+export function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps) {
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [showSource, setShowSource] = useState<boolean>(false);
   // P5: the agent edited this doc while we had unsaved local changes. Show a
@@ -583,259 +462,6 @@ function EditorPage({ onCitationClick }: { onCitationClick?: CitationClickHandle
   return (
     <div className="editor-page" onClick={handleClick}>
       <Milkdown />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Toolbar — Word-like formatting buttons. Each fires a Milkdown command via
-// `editor.action(callCommand(key, payload?))`. Selection/active-state tracking
-// (e.g. highlighting Bold when the cursor is in bold text) is deferred; v1
-// buttons are stateless triggers.
-// ---------------------------------------------------------------------------
-
-interface ToolbarProps {
-  getEditor: () => Editor | undefined;
-  title: string;
-  saveState: SaveState;
-  showSource: boolean;
-  onToggleSource: () => void;
-  onInsertFile: () => void;
-  canUndo: boolean;
-  canRedo: boolean;
-}
-
-type ExportFormat = "pdf" | "docx" | "doc";
-
-function Toolbar({
-  getEditor,
-  title,
-  saveState,
-  showSource,
-  onToggleSource,
-  onInsertFile,
-  canUndo,
-  canRedo,
-}: ToolbarProps) {
-  // `useInstance` re-renders the toolbar once the editor is ready; buttons are
-  // disabled until then so a fast click can't call .action() on undefined.
-  const [loading] = useInstance();
-  const inTauri = "__TAURI_INTERNALS__" in window;
-  const [exporting, setExporting] = useState<ExportFormat | null>(null);
-  const [exportErr, setExportErr] = useState<string | null>(null);
-  const [savedTo, setSavedTo] = useState<string | null>(null);
-  const exportMenuRef = useRef<HTMLDetailsElement | null>(null);
-
-  // Run a Milkdown command. Spread into `callCommand` so the key + payload
-  // are typed exactly as `callCommand` expects (no manual casts).
-  const run = (...args: Parameters<typeof callCommand>) => {
-    const ed = getEditor();
-    if (!ed) return;
-    ed.action(callCommand(...args));
-  };
-
-  const insertLink = () => {
-    const url = window.prompt("Link URL");
-    if (url) run(toggleLinkCommand.key, { href: url });
-  };
-
-  // Export the current document (as HTML via Milkdown) to PDF/DOCX/DOC. The
-  // sidecar drives headless LibreOffice for the conversion. In the Tauri
-  // webview we MUST use a Save dialog + write-to-path: a programmatic
-  // <a download> of a blob URL is swallowed by the webview and never lands
-  // anywhere. The browser fallback keeps the blob download.
-  const exportDoc = async (format: ExportFormat) => {
-    if (exportMenuRef.current) exportMenuRef.current.open = false;
-    const ed = getEditor();
-    const html = ed?.action(getHTML());
-    if (!html) return;
-    setExportErr(null);
-    setSavedTo(null);
-    setExporting(format);
-    const safeTitle = (title || "manuscript").replace(/[^\w\- .()]/g, "_");
-    const filename = `${safeTitle}.${format}`;
-    try {
-      const inTauri = "__TAURI_INTERNALS__" in window;
-      if (inTauri) {
-        const { save } = await import("@tauri-apps/plugin-dialog");
-        const outPath = await save({
-          defaultPath: filename,
-          filters: [{ name: format.toUpperCase(), extensions: [format] }],
-        });
-        if (!outPath) return; // user cancelled the save dialog
-        const res = await api.exportDocumentToPath(html, format, outPath, title);
-        setSavedTo(res.path);
-      } else {
-        const blob = await api.exportDocument(html, format, title);
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = filename;
-        a.click();
-        URL.revokeObjectURL(url);
-        setSavedTo("(browser download)");
-      }
-    } catch (e) {
-      setExportErr((e as Error)?.message ?? String(e));
-    } finally {
-      setExporting(null);
-    }
-  };
-
-  const Btn = ({
-    label,
-    onClick,
-    children,
-    disabled,
-  }: {
-    label: string;
-    onClick: () => void;
-    children: ReactNode;
-    disabled?: boolean;
-  }) => (
-    <button
-      type="button"
-      className="tb"
-      title={label}
-      aria-label={label}
-      disabled={disabled || loading}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
-
-  const Sep = () => <span className="tb-sep" />;
-
-  return (
-    <div className="editor-toolbar">
-      <div className="editor-toolbar-doc">{title}</div>
-      <Sep />
-      <Btn label="Bold (Ctrl+B)" onClick={() => run(toggleStrongCommand.key)}>
-        <TextB size={16} weight="bold" />
-      </Btn>
-      <Btn label="Italic (Ctrl+I)" onClick={() => run(toggleEmphasisCommand.key)}>
-        <TextItalic size={16} weight="bold" />
-      </Btn>
-      <Btn label="Inline code" onClick={() => run(toggleInlineCodeCommand.key)}>
-        <Code size={16} weight="bold" />
-      </Btn>
-      <Sep />
-      <Btn label="Heading 1" onClick={() => run(wrapInHeadingCommand.key, { level: 1 })}>
-        <TextHOne size={16} weight="bold" />
-      </Btn>
-      <Btn label="Heading 2" onClick={() => run(wrapInHeadingCommand.key, { level: 2 })}>
-        <TextHTwo size={16} weight="bold" />
-      </Btn>
-      <Btn label="Heading 3" onClick={() => run(wrapInHeadingCommand.key, { level: 3 })}>
-        <TextHThree size={16} weight="bold" />
-      </Btn>
-      <Sep />
-      <Btn label="Bulleted list" onClick={() => run(wrapInBulletListCommand.key)}>
-        <ListBullets size={16} weight="bold" />
-      </Btn>
-      <Btn label="Numbered list" onClick={() => run(wrapInOrderedListCommand.key)}>
-        <ListNumbers size={16} weight="bold" />
-      </Btn>
-      <Btn label="Quote" onClick={() => run(wrapInBlockquoteCommand.key)}>
-        <Quotes size={16} weight="bold" />
-      </Btn>
-      <Btn label="Insert link" onClick={insertLink}>
-        <LinkSimple size={16} weight="bold" />
-      </Btn>
-      {inTauri && (
-        <Btn label="Insert file / image (drag-drop also works)" onClick={onInsertFile}>
-          <Paperclip size={16} weight="bold" />
-        </Btn>
-      )}
-      <Sep />
-      <Btn label="Undo (Ctrl+Z)" onClick={() => run(undoCommand.key)} disabled={!canUndo}>
-        <ArrowCounterClockwise size={16} weight="bold" />
-      </Btn>
-      <Btn label="Redo (Ctrl+Shift+Z)" onClick={() => run(redoCommand.key)} disabled={!canRedo}>
-        <ArrowClockwise size={16} weight="bold" />
-      </Btn>
-      <div className="editor-toolbar-spacer" />
-      <SavePip state={saveState} />
-      <button
-        type="button"
-        className={`tb${showSource ? " active" : ""}`}
-        title={showSource ? "Show formatted view" : "Show markdown source"}
-        onClick={onToggleSource}
-      >
-        <Eye size={16} weight="bold" />
-      </button>
-      <details className="export-menu" ref={exportMenuRef}>
-        <summary className="tb" title="Export document">
-          <FileArrowDown size={16} weight="bold" />
-          Export
-        </summary>
-        <div className="export-dropdown">
-          <button type="button" disabled={exporting !== null} onClick={() => exportDoc("pdf")}>
-            {exporting === "pdf" ? "Exporting…" : "PDF (.pdf)"}
-          </button>
-          <button type="button" disabled={exporting !== null} onClick={() => exportDoc("docx")}>
-            {exporting === "docx" ? "Exporting…" : "Word (.docx)"}
-          </button>
-          <button type="button" disabled={exporting !== null} onClick={() => exportDoc("doc")}>
-            {exporting === "doc" ? "Exporting…" : "Word 97-2003 (.doc)"}
-          </button>
-          {exportErr && <div className="export-err small">{exportErr}</div>}
-          {savedTo && !exportErr && (
-            <div className="export-ok small" title={savedTo}>
-              Saved: {savedTo}
-            </div>
-          )}
-        </div>
-      </details>
-    </div>
-  );
-}
-
-function SavePip({ state }: { state: SaveState }) {
-  const map: Record<SaveState, { label: string; cls: string }> = {
-    idle: { label: "", cls: "" },
-    dirty: { label: "Unsaved", cls: "dirty" },
-    saving: { label: "Saving…", cls: "saving" },
-    saved: { label: "Saved", cls: "saved" },
-    error: { label: "Save failed", cls: "error" },
-  };
-  const m = map[state];
-  if (!m.label) return null;
-  return <span className={`save-pip ${m.cls}`}>{m.label}</span>;
-}
-
-// ---------------------------------------------------------------------------
-// StatusBar — Shows document stats and save state at the bottom of the editor
-// ---------------------------------------------------------------------------
-
-interface StatusBarProps {
-  saveState: SaveState;
-  docStats: { words: number; chars: number };
-}
-
-function StatusBar({ saveState, docStats }: StatusBarProps) {
-  const map: Record<SaveState, { label: string; icon: string }> = {
-    idle: { label: "All changes saved", icon: "✓" },
-    dirty: { label: "Unsaved changes", icon: "●" },
-    saving: { label: "Saving…", icon: "⟳" },
-    saved: { label: "Saved", icon: "✓" },
-    error: { label: "Save failed", icon: "✕" },
-  };
-  const m = map[saveState];
-  const statusClass = saveState === "saved" ? "status-saved" : saveState === "error" ? "status-error" : saveState === "dirty" ? "status-dirty" : "status-neutral";
-
-  return (
-    <div className="editor-statusbar">
-      <div className="statusbar-left">
-        <span className={`status-indicator ${statusClass}`}>{m.icon}</span>
-        <span className="status-text">{m.label}</span>
-      </div>
-      <div className="statusbar-right">
-        <span className="stat-item">{docStats.words.toLocaleString()} words</span>
-        <span className="stat-divider">|</span>
-        <span className="stat-item">{docStats.chars.toLocaleString()} characters</span>
-      </div>
     </div>
   );
 }
