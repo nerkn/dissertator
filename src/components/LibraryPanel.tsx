@@ -15,7 +15,6 @@ import type {
   Note,
   OcrStrategy,
   ProjectStatus,
-  Provider,
   SourceFile,
   SourcesResponse,
 } from "@dissertator/shared";
@@ -37,9 +36,14 @@ interface Props {
   /** While a rescan / OCR call is in flight, disable the rescan button. */
   busy?: boolean;
   /** Provider + strategy forwarded to the AttentionPanel. */
-  provider?: Provider;
+  provider?: string;
   ocrStrategy?: OcrStrategy;
-  apiKey?: string;
+  /** Vision-doc provider key (OCR-vision). Separate from the chat key. */
+  visionDocKey?: string;
+  /** Vision-image provider key (describe standalone images). */
+  visionImageKey?: string;
+  /** STT provider key (transcribe). */
+  sttKey?: string;
   /** Embedding API key (separate slot from the chat key). When set + there are
    *  pending chunks, the Sources group offers an "Embed now" action. */
   embeddingApiKey?: string;
@@ -93,7 +97,9 @@ export function LibraryPanel({
   busy,
   provider,
   ocrStrategy,
-  apiKey,
+  visionDocKey,
+  visionImageKey,
+  sttKey,
   embeddingApiKey,
   onOpen,
   documents,
@@ -278,11 +284,16 @@ export function LibraryPanel({
   const copyCite = async (note: Note) => {
     if (!note.citekey) return;
     const token = `[@${note.citekey}:${note.page}]`;
-    // Insert at the manuscript cursor when an editor is open; otherwise copy
-    // to the clipboard so the user can paste into whatever they're writing.
-    if (!insertCitation(token)) {
+    // Bring the fav INTO the manuscript: the highlighted excerpt (or the
+    // user's own note as a fallback) followed by its source token, so the
+    // passage lands with its citation attached. Falls back to the bare token
+    // when the note has no text. Inserts at the manuscript cursor when an
+    // editor is open; otherwise copies to the clipboard for manual paste.
+    const text = (note.excerpt ?? note.body ?? "").trim();
+    const snippet = text ? `${text} ${token}` : token;
+    if (!insertCitation(snippet)) {
       try {
-        await navigator.clipboard.writeText(token);
+        await navigator.clipboard.writeText(snippet);
       } catch {
         /* clipboard blocked (e.g. not focused) — silently ignore */
       }
@@ -575,7 +586,7 @@ export function LibraryPanel({
                                 disabled={!note.citekey}
                                 title={
                                   note.citekey
-                                    ? `Insert citation at cursor [@${note.citekey}:${note.page}] — copies if no manuscript is open`
+                                    ? `Insert excerpt + [@${note.citekey}:${note.page}] at cursor — copies if no manuscript is open`
                                     : "Link a reference to this source first"
                                 }
                                 onClick={() => void copyCite(note)}
@@ -608,7 +619,9 @@ export function LibraryPanel({
 
       <AttentionPanel
         items={attentionItems}
-        apiKey={apiKey}
+        visionDocKey={visionDocKey}
+        visionImageKey={visionImageKey}
+        sttKey={sttKey}
         provider={provider}
         ocrStrategy={ocrStrategy ?? "tesseract"}
         onResolved={() => (onAttentionResolved ?? onRescan)?.()}

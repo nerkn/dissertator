@@ -19,14 +19,17 @@ import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 
 import {
+  backfillSourceReferences,
+  ensureReferenceForSource,
   getCurrentProject,
   getEmbeddingStatus,
   getSettings,
   getSourceById,
   getSourceText,
   initProject,
+  listReferences,
   lockDimensions,
-} from "./db.ts";
+} from "./db";
 import { parsePrompts } from "./prompts.ts";
 
 let dir: string;
@@ -46,15 +49,14 @@ afterAll(() => {
 
 test("first lockDimensions creates the vec0 table + stamps the lock", () => {
   // Before: dimensions unlocked.
-  expect(getSettings().embedding.dimensions).toBe(0);
+  expect(getSettings().embeddingDimensions).toBe(0);
   expect(getEmbeddingStatus().dimensions).toBe(0);
 
   lockDimensions(1536, "text-embedding-3-small");
 
-  // After: lock mirrored into settings + surfaced via status.
+  // After: dimensions lock mirrored into settings + surfaced via status.
   const s = getSettings();
-  expect(s.embedding.dimensions).toBe(1536);
-  expect(s.embedding.model).toBe("text-embedding-3-small");
+  expect(s.embeddingDimensions).toBe(1536);
   expect(getEmbeddingStatus().dimensions).toBe(1536);
 });
 
@@ -73,7 +75,7 @@ test("the vec0 table now accepts a vector at the locked dimension", () => {
 
 test("re-locking at the SAME dimension is a no-op (no throw)", () => {
   expect(() => lockDimensions(1536, "text-embedding-3-small")).not.toThrow();
-  expect(getSettings().embedding.dimensions).toBe(1536);
+  expect(getSettings().embeddingDimensions).toBe(1536);
 });
 
 test("locking at a DIFFERENT dimension throws the mismatch error", () => {
@@ -89,7 +91,7 @@ test("locking at a DIFFERENT dimension throws the mismatch error", () => {
     "embedding dimension mismatch: locked 1536, got 768; switch model requires re-embed (P6)"
   );
   // The original lock is preserved (768 must not have replaced 1536).
-  expect(getSettings().embedding.dimensions).toBe(1536);
+  expect(getSettings().embeddingDimensions).toBe(1536);
 });
 
 test("getEmbeddingStatus reports vecLoaded + zero counts on a fresh project", () => {
@@ -235,4 +237,56 @@ test("initProject still accepts a normal folder that happens to contain a projec
   } finally {
     rmSync(plainDir, { recursive: true, force: true });
   }
+});
+
+// --- citekey: every source needs a reference (docs/citekey.md §3) ---------
+// A source with no linked reference has no citekey → greyed cite button. The
+// backfill + ingest hook guarantee every source gets a placeholder reference
+// whose citekey derives from its filename. Pins: citekey = first significant
+// word of the title (case + accents preserved), idempotency, and that the
+// backfill sweep covers orphans then reaches steady state.
+test("ensureReferenceForSource mints a placeholder reference keyed off the title", () => {
+  const db = getCurrentProject()!.db;
+  const src = "src-cengelkoylu-pdf";
+  db.prepare(
+    `INSERT OR REPLACE INTO source_files
+     (id, rel_path, filename, ext, kind, text_status, added_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(src, "Anneleri_ile_Ceza.pdf", "Anneleri_ile_Ceza.pdf", "pdf", "pdf", "done", 1700000004);
+
+  const ref = ensureReferenceForSource(src, "Anneleri_ile_Ceza");
+  expect(ref.source_file_id).toBe(src);
+  // citekey = first significant word, case + accents preserved (B-cap).
+  expect(ref.citekey).toBe("Anneleri");
+  expect(ref.title).toBe("Anneleri_ile_Ceza");
+});
+
+test("ensureReferenceForSource is idempotent — a second call returns the same ref", () => {
+  const src = "src-cengelkoylu-pdf";
+  const again = ensureReferenceForSource(src, "ignored-second-title");
+  const refs = listReferences({ sourceFileId: src });
+  expect(refs.length).toBe(1);
+  expect(again.id).toBe(refs[0].id);
+  expect(again.citekey).toBe("Anneleri"); // unchanged
+});
+
+test("backfillSourceReferences covers orphan sources then reaches steady state", () => {
+  const db = getCurrentProject()!.db;
+  const orphan = "src-backfill-orphan-pdf";
+  db.prepare(
+    `INSERT OR REPLACE INTO source_files
+     (id, rel_path, filename, ext, kind, text_status, added_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(orphan, "Çocuk_istismarı.pdf", "Çocuk_istismarı.pdf", "pdf", "pdf", "done", 1700000005);
+
+  const created = backfillSourceReferences();
+  expect(created).toBeGreaterThanOrEqual(1);
+
+  const refs = listReferences({ sourceFileId: orphan });
+  expect(refs.length).toBe(1);
+  // ext stripped, first significant word, accent (Ç) preserved.
+  expect(refs[0].citekey).toBe("Çocuk");
+
+  // Idempotent: a second sweep finds nothing left to create.
+  expect(backfillSourceReferences()).toBe(0);
 });

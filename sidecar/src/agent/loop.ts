@@ -15,7 +15,7 @@
 // deltas. Persistence (user msg up-front, final assistant msg on completion)
 // lives in the route, not here — the loop is pure orchestration.
 
-import type { GuiEvent, ResolvedChatConfig } from "@dissertator/shared";
+import type { GuiEvent, ChatEndpointConfig } from "@dissertator/shared";
 import {
   streamOpenAIChat,
   type LoopMessage,
@@ -57,7 +57,7 @@ export type AgentStreamEvent =
 
 export interface RunAgentOptions {
   apiKey: string;
-  config: ResolvedChatConfig;
+  config: ChatEndpointConfig;
   /** Initial messages (system + replayed history + new user message). */
   messages: LoopMessage[];
   /** Tool advertisements; defaults to the full P5 {@link TOOL_SPECS}. */

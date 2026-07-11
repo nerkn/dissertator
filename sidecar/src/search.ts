@@ -13,7 +13,7 @@
 // key-bearing payload can't leak through an error string.
 //
 // DIMENSIONS MUST MATCH (hard design rule #2): the query embedding's
-// dimensionality must equal the locked `settings.embedding.dimensions`. If
+// dimensionality must equal the locked dimension (`settings.embeddingDimensions`). If
 // the corpus isn't embedded yet (`dimensions===0` OR `done===0`), returns an
 // empty result with `embedded:false` — NOT an error — so the UI can show
 // "embed first". A query returning a different dim throws
@@ -29,7 +29,7 @@
 // distance 1.0, vs [1,1,0] → 0.293 (= 1 - cos45°).
 
 import {
-  EMBEDDING_DEFAULTS,
+  adapterFromType,
   type SearchHit,
   type SearchResponse,
 } from "@dissertator/shared";
@@ -38,7 +38,7 @@ import {
   getCurrentProject,
   getEmbeddingStatus,
   getSettings,
-} from "./db.ts";
+} from "./db";
 import type { SQLQueryBindings } from "bun:sqlite";
 
 /** Options for {@link searchCorpus}. */
@@ -194,14 +194,17 @@ export async function searchCorpusWith(
       };
     }
 
-    // 2. Resolve the DECOUPLED embedding config + adapter engine (independent
-    //    of the chat provider — a Claude chat user may embed via OpenAI).
-    const cfg = getSettings().embedding;
-    const defaults =
-      EMBEDDING_DEFAULTS[cfg.provider] ?? EMBEDDING_DEFAULTS.openai;
-    const engine: EmbedEngine = defaults.adapter;
-    const apiUrl = cfg.apiUrl || defaults.apiUrl;
-    const model = cfg.model || defaults.defaultModel;
+    // 2. Resolve the embed binding (single source of truth): engine derived
+    //    from the provider `type` (google → google adapter; else openai).
+    const cfg = getSettings().resolved?.embed;
+    if (!cfg?.apiUrl || !cfg?.model) {
+      throw new Error(
+        "no embed provider/model bound — set one in Settings → Functions",
+      );
+    }
+    const engine: EmbedEngine = adapterFromType(cfg.type);
+    const apiUrl = cfg.apiUrl;
+    const model = cfg.model;
 
     // 3. Embed the query (key flows in ONLY via opts.apiKey → header inside
     //    the adapter). `embedBatch` wraps adapter errors as

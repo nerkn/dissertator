@@ -10,9 +10,10 @@ import {
 import { api, resolveSidecarBase, resetSidecarBase, sidecarBase } from "./lib/api";
 import { ipc } from "./ipc";
 import type {
+  AiFunction,
   Document,
   ProjectStatus,
-  ProviderConfig,
+  ProviderRow,
   Reference,
   Settings,
   SourceFile,
@@ -55,7 +56,7 @@ export default function App() {
   const [docRevisions, setDocRevisions] = useState<Record<string, number>>({});
   // P6: named provider rows (chat + embedding). The Functions tab assigns
   // one chat-kind row to `chat` and one embedding-kind row to `vectorizer`.
-  const [providers, setProviders] = useState<ProviderConfig[]>([]);
+  const [providers, setProviders] = useState<ProviderRow[]>([]);
   // P6: in-memory API-key store, keyed by a provider's `keyUser` slot. Loaded
   // from the OS keychain on startup / when providers change; the Settings
   // dialog writes here as the user edits key fields. apiKey / embeddingApiKey
@@ -396,16 +397,24 @@ export default function App() {
     };
   }, [providers]);
 
-  // Derived: the chat + embedding keys for the currently-selected function
-  // providers. These feed the ChatPanel / LibraryPanel / agent loop unchanged.
-  const apiKey = useMemo(() => {
-    const cp = providers.find((p) => p.id === settings?.chatProviderId);
-    return cp ? keys[cp.keyUser] ?? "" : "";
-  }, [providers, settings?.chatProviderId, keys]);
-  const embeddingApiKey = useMemo(() => {
-    const ep = providers.find((p) => p.id === settings?.embeddingProviderId);
-    return ep ? keys[ep.keyUser] ?? "" : "";
-  }, [providers, settings?.embeddingProviderId, keys]);
+  // Derived: per-function API keys. Each function's binding points at a
+  // provider whose `keyUser` slot holds its key. `apiKey`/`embeddingApiKey`
+  // are kept as chat/embed aliases for the existing ChatPanel / LibraryPanel
+  // consumers; the vision/stt keys route the correct key to OCR + transcribe.
+  const keyFor = useCallback(
+    (fn: AiFunction): string => {
+      const pid = settings?.bindings?.[fn]?.providerId;
+      if (!pid) return "";
+      const p = providers.find((x) => x.id === pid);
+      return p ? keys[p.keyUser] ?? "" : "";
+    },
+    [settings?.bindings, providers, keys],
+  );
+  const apiKey = useMemo(() => keyFor("chat"), [keyFor]);
+  const embeddingApiKey = useMemo(() => keyFor("embed"), [keyFor]);
+  const visionDocKey = useMemo(() => keyFor("vision_doc"), [keyFor]);
+  const visionImageKey = useMemo(() => keyFor("vision_image"), [keyFor]);
+  const sttKey = useMemo(() => keyFor("stt"), [keyFor]);
 
   // --- SSE: live updates as files ingest -----------------------------------
   // Open a single EventSource once the sidecar is up and a project is open.
@@ -673,9 +682,11 @@ export default function App() {
           onRescan={handleRescan}
           onAttentionResolved={refreshSources}
           busy={busy}
-          provider={settings?.provider}
+          provider={settings?.resolved?.vision_doc?.type}
           ocrStrategy={settings?.ocrStrategy}
-          apiKey={apiKey}
+          visionDocKey={visionDocKey}
+          visionImageKey={visionImageKey}
+          sttKey={sttKey}
           embeddingApiKey={embeddingApiKey}
           onOpen={openSource}
           onNewDocument={handleNewDocument}

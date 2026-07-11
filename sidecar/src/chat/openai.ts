@@ -9,11 +9,9 @@
 // through an error string.
 //
 // Provider notes: openai, z.ai (`https://api.z.ai/api/paas/v4`), openrouter,
-// and any OpenAI-compatible `/chat/completions` endpoint work on this single
-// path. Anthropic (`provider==="claude"`) uses a different schema and is
-// surfaced as a clean `Error("chat adapter: claude provider is not OpenAI...")`
-// — acceptable for v1 (mirrors ocr/vision.ts discipline); a native Anthropic
-// adapter can be added later without touching this file's signature.
+// deepseek, and any OpenAI-compatible `/chat/completions` endpoint work on
+// this single path. The engine is OpenAI-style only — no provider-specific
+// branching, so no `provider` flavor field is needed on the config.
 //
 // STREAM PROTOCOL: the response is `text/event-stream` of `data: {json}\n\n`
 // lines, terminated by `data: [DONE]`. Each chunk's `choices[0].delta.content`
@@ -24,7 +22,7 @@
 // (e.g. user clicks Stop). The in-flight fetch is aborted and the error is
 // swallowed (`onAbort` callback fires instead of `onError`).
 
-import type { ResolvedChatConfig } from "@dissertator/shared";
+import type { ChatEndpointConfig } from "@dissertator/shared";
 
 /** Cap on echoed provider error bodies — never let a key leak via an error. */
 const ERR_BODY_CAP = 500;
@@ -78,8 +76,8 @@ export interface StreamResult {
 export interface StreamChatOptions {
   /** Chat API key. Sent ONLY as a Bearer header; never stored or logged. */
   apiKey: string;
-  /** Resolved chat endpoint config (provider/apiUrl/model). */
-  config: ResolvedChatConfig;
+  /** Resolved chat endpoint target (apiUrl + model). */
+  config: ChatEndpointConfig;
   /** Conversation turns (system + history + new user message). */
   messages: LoopMessage[];
   /** Max output tokens. Provider default if omitted. */
@@ -104,12 +102,11 @@ function truncate(body: string): string {
 
 /**
  * Stream an OpenAI-compatible chat completion. Throws
- * `Error("chat adapter requires an api key")` (caller guards this),
- * `Error("chat adapter: <provider> provider is not OpenAI-compatible")` for
- * Anthropic, or `Error("chat adapter failed: <status> <body-truncated>")` on
- * a non-2xx response. Network/abort errors are rethrown verbatim unless the
- * signal aborted, in which case `onAbort` fires and the function returns an
- * empty result.
+ * `Error("chat adapter requires an api key")` (caller guards this), or
+ * `Error("chat adapter failed: <status> <body-truncated>")` on a non-2xx
+ * response. Network/abort errors are rethrown verbatim unless the signal
+ * aborted, in which case `onAbort` fires and the function returns an empty
+ * result.
  *
  * Returns the assembled tool calls + finish reason so the agent loop can
  * decide whether to execute tools and re-stream, or treat the turn as final.
@@ -131,12 +128,6 @@ export async function streamOpenAIChat(
   // Sentinel returned when the stream was aborted (no tool calls, no finish).
   const ABORTED: StreamResult = { toolCalls: [], finishReason: null };
   if (!apiKey) throw new Error("chat adapter requires an api key");
-  // Anthropic is intentionally unsupported on this path (see file header).
-  if (config.provider === "claude") {
-    throw new Error(
-      "chat adapter: claude provider is not OpenAI-compatible (set a non-claude chat provider)"
-    );
-  }
 
   const apiUrl = config.apiUrl.replace(/\/+$/, "");
   const url = `${apiUrl}/chat/completions`;

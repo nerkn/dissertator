@@ -16,7 +16,7 @@ import {
   getDocument,
   initProject,
   updateDocument,
-} from "../db.ts";
+} from "../db";
 import type { LoopMessage, StreamChatOptions, StreamResult } from "../chat/openai.ts";
 import { runAgentLoop, type AgentStreamEvent } from "./loop.ts";
 import { dispatchTool, type ToolContext } from "./tools.ts";
@@ -152,7 +152,7 @@ test("loop: multiple sequential tool calls in one round each execute", async () 
     config: CFG,
     messages: [] as LoopMessage[],
     toolContext: { ...ctxBase, activeDocumentId: doc.id },
-    onEvent: (e) => events.push(e),
+    onEvent: (e) => { events.push(e); },
     streamFn: stream,
   });
 
@@ -186,7 +186,7 @@ test("loop: step cap stops a tool-only loop and flags capped", async () => {
     config: CFG,
     messages: [],
     toolContext: ctxBase,
-    onEvent: (e) => events.push(e),
+    onEvent: (e) => { events.push(e); },
     streamFn: stream,
     maxSteps: 2,
   });

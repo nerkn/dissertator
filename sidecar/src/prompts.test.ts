@@ -151,7 +151,7 @@ test("parse(serialize(prompts)) is stable (idempotent round-trip)", () => {
   const once = parsePrompts(serializePrompts(prompts));
   const twice = parsePrompts(serializePrompts(once));
   expect(twice).toEqual(once);
-  expect(once.map(({ category, label, prompt }) => ({ category, label, prompt }))).toEqual(prompts);
+  expect(once).toEqual(prompts);
 });
 
 test("serializePrompts skips empty rows and defaults a missing label", () => {

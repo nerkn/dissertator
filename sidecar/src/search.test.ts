@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 
-import { initProject, lockDimensions } from "./db.ts";
+import { initProject, lockDimensions } from "./db";
 import {
   distanceToScore,
   searchCorpus,

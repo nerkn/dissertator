@@ -7,9 +7,8 @@
 // the error is thrown as `Error("vision ocr failed: <status> <body>")`.
 //
 // Provider notes: z.ai (`https://api.z.ai/api/paas/v4`), openrouter, openai,
-// and custom OpenAI-compatible endpoints work on this single path. Anthropic
-// (`provider==="claude"`) uses a different schema and will surface as an error
-// here — acceptable for v1; no special-casing is done.
+// and custom OpenAI-compatible endpoints all work on this single path. The
+// engine is OpenAI-style only — no provider-specific branching.
 
 import { extname } from "node:path";
 import type { OcrOptions, OcrResult } from "./index";
@@ -72,6 +71,7 @@ export async function runVision(
 
   const apiUrl = (opts.apiUrl ?? "https://api.openai.com/v1").replace(/\/+$/, "");
   const model = opts.model ?? DEFAULT_MODEL;
+  const instruction = opts.instruction ?? INSTRUCTION;
 
   const buf = await Bun.file(absPath).arrayBuffer();
   const b64 = Buffer.from(buf).toString("base64");
@@ -92,7 +92,7 @@ export async function runVision(
         {
           role: "user",
           content: [
-            { type: "text", text: INSTRUCTION },
+            { type: "text", text: instruction },
             { type: "image_url", image_url: { url: dataUrl } },
           ],
         },

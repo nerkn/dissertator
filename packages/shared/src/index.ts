@@ -11,230 +11,346 @@ export const SIDECAR_PORT = 4319;
  */
 export const SIDECAR_PORT_RANGE = 12;
 
-export type Provider = "openai" | "claude" | "zai" | "openrouter" | "custom";
-
-/**
- * A named, user-editable provider entry in the `providers` table. The user
- * builds a LIST of these (multiple OpenAI accounts, a work Claude, etc.);
- * the Functions tab assigns one chat-kind provider to `chat` and one
- * embedding-kind provider to `vectorizer`.
- *
- * `type` is the backend flavor: a {@link Provider} for `kind==="chat"`, an
- * {@link EmbeddingProvider} for `kind==="embedding"`. Both are string unions
- * (and overlap on openai/zai/custom), so the column is free-text at the DB
- * layer; the UI picks PROVIDER_DEFAULTS vs EMBEDDING_DEFAULTS by `kind`.
- *
- * `keyUser` is the OS keychain slot for this provider's API key. Seeded
- * defaults reuse the LEGACY slots (`openai_api_key`, …) so existing keys
- * survive the upgrade with no keychain migration; providers the user adds
- * get a fresh per-id slot via {@link providerKeyUser}.
- */
-export type ProviderKind = "chat" | "embedding";
-
-export interface ProviderConfig {
-  id: string;
-  /** User-given label, e.g. "Work OpenAI". Shown in the Functions dropdowns. */
-  name: string;
-  kind: ProviderKind;
-  /** Backend flavor. `Provider` for chat, `EmbeddingProvider` for embedding. */
-  type: Provider | EmbeddingProvider;
-  apiUrl: string;
-  model: string;
-  /** OS keychain slot for this provider's API key. */
-  keyUser: string;
-  /** True for the default chat provider (the one new chats / vision use). */
-  isDefault: boolean;
-  createdAt: string;
-}
-
 /** Fresh per-provider keychain slot for a user-added provider. */
 export function providerKeyUser(id: string): string {
   return `dissertator:provider:${id}`;
 }
 
-export interface ProviderDefaults {
-  label: string;
-  apiUrl: string;
-  models: string[];
-  defaultModel: string;
-  /** key under which the API key is stored in the OS keychain */
-  keyUser: string;
+/**
+ * Embedding wire format: "openai" = OpenAI-compatible `/embeddings`;
+ * "google" = Generative Language API. Derived from a provider's `type` —
+ * only `type==="google"` uses the google adapter; every other type
+ * (openai/zai/deepseek/openrouter/custom/…) is OpenAI-compatible.
+ */
+export type EmbedEngine = "openai" | "google";
+
+/** Pick the embedding wire format from a provider `type`. */
+export function adapterFromType(type: string): EmbedEngine {
+  return type === "google" ? "google" : "openai";
 }
 
-export const PROVIDER_DEFAULTS: Record<Provider, ProviderDefaults> = {
-  openai: {
-    label: "OpenAI",
-    apiUrl: "https://api.openai.com/v1",
-    models: ["gpt-4o", "gpt-4o-mini", "o1-mini"],
-    defaultModel: "gpt-4o-mini",
-    keyUser: "openai_api_key",
+// ===========================================================================
+// Multi-provider contract (P-multi): generic provider POOL + a FUNCTION ↔
+// provider MODEL binding matrix.
+//
+//   provider   = a reusable OpenAI-compatible credential (name/type/apiUrl/key).
+//                No `kind`, no `model` on the row. One key serves many functions.
+//   function   = one of five addressable AI jobs (chat/stt/vision_doc/...).
+//   binding    = function → {providerId, model}. `model` lives on the binding
+//                because one key serves different models per function.
+//
+// Engine is OpenAI-style ONLY (/chat/completions, /audio/transcriptions,
+// /embeddings, /models). `type` on a provider row is branding + a routing hint
+// (e.g. "tesseract" selects local OCR); it does NOT branch the wire format.
+//
+// These types are ADDITIVE during the transition: the legacy Settings /
+// PROVIDER_DEFAULTS / EmbeddingConfig machinery is removed once every layer
+// migrates onto bindings.
+// ===========================================================================
+
+/** The five addressable AI functions. Each has exactly one binding. */
+export type AiFunction =
+  | "chat"
+  | "stt"
+  | "vision_doc"
+  | "vision_image"
+  | "embed";
+
+/** UI matrix order. */
+export const AI_FUNCTIONS: AiFunction[] = [
+  "chat",
+  "stt",
+  "vision_doc",
+  "vision_image",
+  "embed",
+];
+
+/** Provider type that means "keyless local OCR" (the only non-LLM type). */
+export const TESSERACT_TYPE = "tesseract";
+
+/** Per-function UI metadata + behavior flags shared by frontend & sidecar. */
+export const FUNCTION_META: Record<
+  AiFunction,
+  {
+    label: string;
+    sublabel: string;
+    /** Whether the local-tesseract provider may be selected for this function. */
+    allowsTesseract: boolean;
+    /** Whether changing the binding has a destructive side effect (re-vectorize). */
+    destructiveOnChange: boolean;
+  }
+> = {
+  chat: {
+    label: "Chat",
+    sublabel: "Assistant chat",
+    allowsTesseract: false,
+    destructiveOnChange: false,
   },
-  claude: {
-    label: "Anthropic Claude",
-    apiUrl: "https://api.anthropic.com/v1",
-    models: ["claude-3-5-sonnet-latest", "claude-3-5-haiku-latest"],
-    defaultModel: "claude-3-5-sonnet-latest",
-    keyUser: "claude_api_key",
+  stt: {
+    label: "STT",
+    sublabel: "Audio → text (transcribe)",
+    allowsTesseract: false,
+    destructiveOnChange: false,
   },
-  zai: {
-    label: "Z.ai",
-    apiUrl: "https://api.z.ai/api/paas/v4",
-    models: ["glm-4.6", "glm-4.5"],
-    defaultModel: "glm-4.6",
-    keyUser: "zai_api_key",
+  vision_doc: {
+    label: "Vision · docs",
+    sublabel: "OCR / understand PDF pages & scans",
+    allowsTesseract: true,
+    destructiveOnChange: false,
   },
-  openrouter: {
-    label: "OpenRouter",
-    apiUrl: "https://openrouter.ai/api/v1",
-    models: ["openai/gpt-4o-mini", "anthropic/claude-3.5-sonnet"],
-    defaultModel: "openai/gpt-4o-mini",
-    keyUser: "openrouter_api_key",
+  vision_image: {
+    label: "Vision · image",
+    sublabel: "Understand a standalone image (jpg/png/webp)",
+    allowsTesseract: false,
+    destructiveOnChange: false,
   },
-  custom: {
-    label: "Custom (OpenAI-compatible)",
-    apiUrl: "",
-    models: [],
-    defaultModel: "",
-    keyUser: "custom_api_key",
+  embed: {
+    label: "Embed",
+    sublabel: "Vectorize chunks",
+    allowsTesseract: false,
+    destructiveOnChange: true,
   },
 };
 
-// ---------------------------------------------------------------------------
-// Embeddings (P2) — DECOUPLED from the chat `provider`.
-// A DeepSeek/Claude chat user may embed via OpenAI; the embedding key lives
-// in its OWN keychain slot and travels ONLY as a request header at call time.
-// ---------------------------------------------------------------------------
-
-/** Embedding backends. `adapter` selects the wire format (see EMBEDDING_DEFAULTS). */
-export type EmbeddingProvider = "openai" | "zai" | "google" | "custom";
-
-/** Static defaults for an embedding provider (label, endpoint, models, dims). */
-export interface EmbeddingDefaults {
-  label: string;
-  apiUrl: string; // base, no trailing slash
-  models: string[]; // supported embedding model ids
-  defaultModel: string;
-  dimensions: number; // dimensionality of defaultModel
-  /** Wire format: "openai" = OpenAI-compatible /embeddings; "google" = Generative Language API. */
-  adapter: "openai" | "google";
-  /** OS keychain slot for the embedding key (separate from the chat key). */
-  keyUser: string;
+/** True for keyless local providers (no API key, no remote call). */
+export function isKeylessProviderType(type: string): boolean {
+  return type === TESSERACT_TYPE;
 }
-
-export const EMBEDDING_DEFAULTS: Record<EmbeddingProvider, EmbeddingDefaults> = {
-  openai: {
-    label: "OpenAI",
-    apiUrl: "https://api.openai.com/v1",
-    models: ["text-embedding-3-small", "text-embedding-3-large"],
-    defaultModel: "text-embedding-3-small",
-    dimensions: 1536,
-    adapter: "openai",
-    keyUser: "openai_embedding_key",
-  },
-  zai: {
-    label: "Z.ai",
-    apiUrl: "https://api.z.ai/api/paas/v4",
-    models: ["embedding-3"],
-    defaultModel: "embedding-3",
-    dimensions: 2048,
-    adapter: "openai",
-    keyUser: "zai_embedding_key",
-  },
-  google: {
-    label: "Google",
-    apiUrl: "https://generativelanguage.googleapis.com/v1beta",
-    models: ["text-embedding-004"],
-    defaultModel: "text-embedding-004",
-    dimensions: 768,
-    adapter: "google",
-    keyUser: "google_embedding_key",
-  },
-  custom: {
-    label: "Custom (OpenAI-compatible)",
-    apiUrl: "",
-    models: [],
-    defaultModel: "",
-    dimensions: 0,
-    adapter: "openai",
-    keyUser: "custom_embedding_key",
-  },
-};
 
 /**
- * Embedding configuration stored in the project DB (decoupled from chat).
- * `dimensions` is 0 until locked on the first successful embed (P2). The API
- * key is NOT stored here — it lives in the OS keychain under the provider's
- * `keyUser` slot.
+ * A generic provider credential row (the POOL). No `kind`, no `model`: a
+ * provider is reusable across functions, and `model` lives on the binding.
+ * The API key is NOT stored here — it lives in the OS keychain under `keyUser`.
  */
-export interface EmbeddingConfig {
-  provider: EmbeddingProvider;
+export interface ProviderRow {
+  id: string;
+  /** User-given label, e.g. "Work OpenAI". Shown in the Functions dropdowns. */
+  name: string;
+  /** Branding/routing hint ("openai"|"zai"|"deepseek"|...|"tesseract"). */
+  type: string;
+  /** Base URL (no trailing slash); "" for keyless local providers. */
+  apiUrl: string;
+  /** OS keychain slot for this provider's key; "" when keyless. */
+  keyUser: string;
+  /** True for the single highlighted default (e.g. seeded Z.ai). */
+  isDefault: boolean;
+  createdAt: string;
+}
+
+/** Input shape for POST/PUT /providers. `keyUser` assigned if omitted. */
+export interface ProviderInput {
+  name: string;
+  type: string;
+  apiUrl: string;
+  /** Optional; defaults to a fresh per-id slot via {@link providerKeyUser}. */
+  keyUser?: string;
+}
+
+/** The match: one row per function. `model` lives here (per-function). */
+export interface FunctionBinding {
+  fn: AiFunction;
+  providerId: string;
+  model: string;
+  updatedAt: number;
+}
+
+/** All five bindings, keyed by function. */
+export type Bindings = Record<AiFunction, FunctionBinding>;
+
+/** A binding joined with its provider's apiUrl/type — what a route needs. */
+export interface ResolvedFunction {
+  fn: AiFunction;
+  providerId: string;
   apiUrl: string;
   model: string;
-  dimensions: number; // 0 = not yet locked
+  type: string;
 }
+
+/** All five resolved. */
+export type ResolvedBindings = Record<AiFunction, ResolvedFunction>;
+
+/** Body of `PUT /bindings/:fn`. */
+export interface BindingPatch {
+  providerId: string;
+  model: string;
+}
+
+/** Result of setting a binding. `revectorized` is true only for embed changes. */
+export interface BindingSetResult {
+  binding: FunctionBinding;
+  revectorized: boolean;
+}
+
+/** `GET /providers/:id/models` response (normalized model id list). */
+export interface ModelsResponse {
+  models: string[];
+}
+
+/** `POST /functions/:fn/test` response. */
+export interface FunctionTestResult {
+  ok: boolean;
+  latencyMs: number;
+  error?: string;
+  /** Optional tiny sample output (e.g. embed dim, a chat token). */
+  sample?: string;
+}
+
+/**
+ * Catalog entry used ONLY by the Add-Provider form (prefill name/apiUrl/key
+ * link). NOT a provider row, and NOT seeded into the pool. All entries are
+ * OpenAI-compatible at the wire level (engine is OpenAI-style only).
+ */
+export interface ProviderDef {
+  id: string;
+  label: string;
+  apiUrl: string;
+  /** "Get an API key" link shown next to the key field. */
+  keyUrl?: string;
+  /** Suggested keychain slot (legacy-compat: reuse an existing key if present). */
+  keyUser: string;
+  /** Suggested default model per function, where known. */
+  defaults?: Partial<Record<AiFunction, string>>;
+}
+
+/** Quick-start catalog for the Add-Provider modal. */
+export const PROVIDER_DEFS: ProviderDef[] = [
+  {
+    id: "zai",
+    label: "Z.ai",
+    apiUrl: "https://api.z.ai/api/paas/v4",
+    keyUrl: "https://z.ai/manage-apikey/apikey-list",
+    keyUser: "zai_api_key",
+    defaults: {
+      chat: "glm-4.6",
+      stt: "whisper-1",
+      vision_doc: "glm-4v",
+      vision_image: "glm-4v",
+      embed: "embedding-3",
+    },
+  },
+  {
+    id: "openai",
+    label: "OpenAI",
+    apiUrl: "https://api.openai.com/v1",
+    keyUrl: "https://platform.openai.com/api-keys",
+    keyUser: "openai_api_key",
+    defaults: {
+      chat: "gpt-4o",
+      stt: "whisper-1",
+      vision_doc: "gpt-4o-mini",
+      vision_image: "gpt-4o",
+      embed: "text-embedding-3-small",
+    },
+  },
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    apiUrl: "https://api.deepseek.com",
+    keyUrl: "https://platform.deepseek.com/api_keys",
+    keyUser: "deepseek_api_key",
+    defaults: { chat: "deepseek-chat", stt: "whisper-1" },
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    apiUrl: "https://openrouter.ai/api/v1",
+    keyUrl: "https://openrouter.ai/keys",
+    keyUser: "openrouter_api_key",
+  },
+  {
+    id: "groq",
+    label: "Groq",
+    apiUrl: "https://api.groq.com/openai/v1",
+    keyUrl: "https://console.groq.com/keys",
+    keyUser: "groq_api_key",
+  },
+  {
+    id: "together",
+    label: "Together",
+    apiUrl: "https://api.together.xyz/v1",
+    keyUrl: "https://api.together.ai/settings/api-keys",
+    keyUser: "together_api_key",
+  },
+  {
+    id: "mistral",
+    label: "Mistral",
+    apiUrl: "https://api.mistral.ai/v1",
+    keyUrl: "https://console.mistral.ai/api-keys",
+    keyUser: "mistral_api_key",
+  },
+  {
+    id: "ollama",
+    label: "Ollama (local)",
+    apiUrl: "http://localhost:11434/v1",
+    keyUser: "",
+  },
+  {
+    id: "custom",
+    label: "Custom (OpenAI-compatible)",
+    apiUrl: "",
+    keyUser: "",
+  },
+];
+
+/** Built-in keyless local OCR provider, seeded into the pool (vision_doc only). */
+export const TESSERACT_PROVIDER: {
+  id: string;
+  name: string;
+  type: string;
+  apiUrl: string;
+  keyUser: string;
+  isDefault: boolean;
+} = {
+  id: "local-tesseract",
+  name: "Local Tesseract",
+  type: TESSERACT_TYPE,
+  apiUrl: "",
+  keyUser: "",
+  isDefault: false,
+};
 
 /** User's global OCR engine preference (overridable per file from the UI). */
 export type OcrStrategy = "tesseract" | "vision" | "skip";
 
 /**
- * Optional CHAT provider override (P3). All three fields are OPTIONAL: when
- * `chatProvider` is unset, the chat endpoint falls back to the main
- * `provider`/`apiUrl`/`model` block (decision #1 — "default provider if not
- * specified"). When `chatProvider` IS set, empty `chatApiUrl`/`chatModel`
- * fall back to that provider's `PROVIDER_DEFAULTS`. The API key is NEVER
- * stored here — it lives in the OS keychain under the resolved provider's
- * `keyUser` slot.
+ * Minimal chat endpoint target: WHERE (`apiUrl`) and WHICH model. The engine
+ * is OpenAI-style only, so there is no provider-flavor field — every bound
+ * chat provider speaks `/chat/completions`. Built by the sidecar from the
+ * resolved `chat` binding; the API key travels separately as a Bearer header.
  */
-export interface ChatConfig {
-  /** Override provider for chat only (e.g. "claude" while vision stays openai). */
-  chatProvider?: Provider;
-  /** Override base URL; empty → `PROVIDER_DEFAULTS[chatProvider].apiUrl`. */
-  chatApiUrl?: string;
-  /** Override model; empty → `PROVIDER_DEFAULTS[chatProvider].defaultModel`. */
-  chatModel?: string;
-}
-
-/**
- * Resolved chat endpoint configuration (computed, never stored). When the
- * optional `ChatConfig` override is absent/incomplete, fields mirror the
- * main `provider`/`apiUrl`/`model` block.
- */
-export interface ResolvedChatConfig {
-  provider: Provider;
+export interface ChatEndpointConfig {
   apiUrl: string;
   model: string;
 }
 
 /**
- * Provider configuration stored in the project DB (Dissertator/dissertator.db).
- * NOTE: the API key is NOT stored here — it lives in the OS keychain.
+ * Project-level configuration stored in the project DB
+ * (Dissertator/dissertator.db). NOTE: NO API keys live here — they stay in
+ * the OS keychain and travel only as request headers at call time.
+ *
+ * The function ↔ provider MODEL bindings (`bindings` / `resolved`) are the
+ * single source of truth for which backend each AI function uses. The flat
+ * `chatProviderId` / `embeddingProviderId` pointers are kept for the legacy
+ * save-settings path and mirror the bindings.
  */
-export interface Settings extends ChatConfig {
-  provider: Provider;
-  apiUrl: string;
-  model: string;
+export interface Settings {
   ocrStrategy: OcrStrategy;
-  /** Embedding config (P2). Independent of `provider`/`apiUrl`/`model` above. */
-  embedding: EmbeddingConfig;
   /**
-   * Contact email for Crossref's polite pool (P2 Track 3). Optional; when set
-   * it is sent in the `User-Agent` so Crossref routes us through the faster
-   * shared-rate-limit pool. Stored in the project DB (NOT a keychain slot):
-   * this is a public contact address, not a secret. Defaults to `""`.
+   * Contact email for Crossref's polite pool. Optional; sent in the
+   * `User-Agent` so Crossref routes us through the faster shared-rate-limit
+   * pool. A public contact address (NOT a keychain secret). Defaults to `""`.
    */
   contactEmail: string;
-  /**
-   * The chat-kind provider row assigned to the `chat` function (Functions
-   * tab). When set, `provider`/`apiUrl`/`model` above are RESOLVED from that
-   * row by `getSettings` (read-only on the wire). Absent on legacy DBs until
-   * the providers-table migration runs.
-   */
+  /** Provider row id bound to the `chat` function. */
   chatProviderId?: string;
-  /**
-   * The embedding-kind provider row assigned to the `vectorizer` function.
-   * When set, `embedding.{provider,apiUrl,model}` are RESOLVED from it.
-   */
+  /** Provider row id bound to the `embed` function. */
   embeddingProviderId?: string;
+  /** Locked embedding dimensionality (0 = vec0 table not created yet). */
+  embeddingDimensions?: number;
+  /** All five function bindings, populated by `getSettings` once seeded. */
+  bindings?: Bindings;
+  /** All five bindings resolved with their provider's apiUrl/type. */
+  resolved?: ResolvedBindings;
 }
 
 export interface HealthResponse {
@@ -485,24 +601,6 @@ export interface SettingsPatch {
   chatProviderId?: string;
   embeddingProviderId?: string;
   embeddingDimensions?: number;
-}
-
-/**
- * Resolve the effective chat provider/model/url. Decision #1: if `chatProvider`
- * is unset, mirror the main `provider`/`apiUrl`/`model`. If set but incomplete,
- * fill gaps from `PROVIDER_DEFAULTS[chatProvider]`. Pure + exported so the
- * sidecar and tests share one resolution path.
- */
-export function resolveChatConfig(s: Settings): ResolvedChatConfig {
-  if (!s.chatProvider) {
-    return { provider: s.provider, apiUrl: s.apiUrl, model: s.model };
-  }
-  const d = PROVIDER_DEFAULTS[s.chatProvider];
-  return {
-    provider: s.chatProvider,
-    apiUrl: (s.chatApiUrl && s.chatApiUrl.trim()) || d.apiUrl,
-    model: (s.chatModel && s.chatModel.trim()) || d.defaultModel,
-  };
 }
 
 /** A bibliographic author. CSL shape (`{ family, given }`). */

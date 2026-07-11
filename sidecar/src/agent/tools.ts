@@ -29,7 +29,7 @@ import {
   getSourceText,
   updateDocument,
   upsertReference,
-} from "../db.ts";
+} from "../db";
 import { listSources } from "../ingest/index.ts";
 import { searchCorpus } from "../search.ts";
 

@@ -27,7 +27,7 @@ import {
   listChatMessages,
   listChats,
   updateChat,
-} from "./db.ts";
+} from "./db";
 
 let dir: string;
 

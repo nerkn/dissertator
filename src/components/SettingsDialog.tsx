@@ -1,25 +1,21 @@
-// Settings dialog (P6): three tabs — Providers, Functions, Prompts.
+// Settings dialog (P-multi): three tabs — Providers, Functions, Prompts.
 //
-// PROVIDERS: a list of named, user-editable provider rows (chat-kind and
-// embedding-kind). The user can have several (two OpenAI accounts, a work
-// Claude, an embedding backend, …). Each row carries its own API key (eye/
-// uneye) stored in the OS keychain under the row's `keyUser` slot. Rows are
-// persisted as the user edits them (POST on add, PUT on save, DELETE on
-// remove) — there is no global stage/commit for provider rows, so Cancel
-// only closes the dialog.
+// PROVIDERS: a POOL of generic, named credentials (name/type/apiUrl/key). No
+// `kind`, no `model` on a row — a provider is reusable across functions, and
+// `model` lives on the function binding. Add via a catalog quick-start
+// (PROVIDER_DEFS prefills apiUrl + a get-key link). Each row persists on Save
+// (PUT) and its key lives in the OS keychain under the row's `keyUser` slot.
 //
-// FUNCTIONS: assigns provider rows to the three functions.
-//   - chat          → one chat-kind provider (the default; vision uses it too)
-//   - visual understand → tesseract | vision | skip (vision = the chat
-//     provider's model; disabled when that provider has no key)
-//   - vectorizer    → one embedding-kind provider
+// FUNCTIONS: the wiring MATRIX — one row per AiFunction (chat/stt/vision_doc/
+// vision_image/embed). Each row picks a provider from the pool + a model
+// (fetched LIVE from the provider's /models), with a per-row connectivity
+// test. Changing the embed binding re-vectorizes everything (confirm modal).
 //
-// PROMPTS: edits the raw `Dissertator/prompts.md`. Save writes it back and
-// re-parses (the quick-pick menu consumes the result).
+// PROMPTS: edits the raw `Dissertator/prompts.md` (unchanged).
 //
 // The dialog mutates state via api + the App callbacks (onProvidersChange /
-// onSettingsChange / onKeyChange) so the derived apiKey / embeddingApiKey in
-// App recompute and the Library / Chat panels see new selections live.
+// onSettingsChange / onKeyChange) so the derived per-function keys in App
+// recompute and the Library / Chat panels see new selections live.
 
 import { useEffect, useRef, useState } from "react";
 import {
@@ -29,17 +25,19 @@ import {
   Plus,
   Trash,
   FloppyDisk,
-  Star,
+  Warning,
 } from "@phosphor-icons/react";
 import {
-  EMBEDDING_DEFAULTS,
-  PROVIDER_DEFAULTS,
+  AI_FUNCTIONS,
+  FUNCTION_META,
+  PROVIDER_DEFS,
+  isKeylessProviderType,
   serializePrompts,
-  type EmbeddingProvider,
-  type OcrStrategy,
-  type Provider,
-  type ProviderConfig,
-  type ProviderKind,
+  type AiFunction,
+  type FunctionBinding,
+  type ProviderRow,
+  type ProviderDef,
+  type ResolvedFunction,
   type Settings,
 } from "@dissertator/shared";
 import { api } from "../lib/api";
@@ -48,7 +46,7 @@ type TabId = "providers" | "functions" | "prompts";
 
 interface Props {
   settings: Settings;
-  providers: ProviderConfig[];
+  providers: ProviderRow[];
   /** keyUser → API key, for display in the eye-toggle key fields. */
   keys: Record<string, string>;
   onProvidersChange: () => Promise<void>;
@@ -71,10 +69,7 @@ export function SettingsDialog({
 
   return (
     <div className="overlay" onClick={onClose}>
-      <div
-        className="dialog dialog-wide"
-        onClick={(e) => e.stopPropagation()}
-      >
+      <div className="dialog dialog-wide" onClick={(e) => e.stopPropagation()}>
         <div className="dialog-head">
           <h2>Settings</h2>
           <button className="icon-btn" onClick={onClose} title="Close">
@@ -83,16 +78,10 @@ export function SettingsDialog({
         </div>
 
         <div className="settings-tabs" role="tablist">
-          <TabButton
-            active={tab === "providers"}
-            onClick={() => setTab("providers")}
-          >
+          <TabButton active={tab === "providers"} onClick={() => setTab("providers")}>
             Providers
           </TabButton>
-          <TabButton
-            active={tab === "functions"}
-            onClick={() => setTab("functions")}
-          >
+          <TabButton active={tab === "functions"} onClick={() => setTab("functions")}>
             Functions
           </TabButton>
           <TabButton active={tab === "prompts"} onClick={() => setTab("prompts")}>
@@ -105,7 +94,6 @@ export function SettingsDialog({
             <ProvidersTab
               providers={providers}
               keys={keys}
-              chatProviderId={settings.chatProviderId}
               onChange={onProvidersChange}
               onKeyChange={onKeyChange}
             />
@@ -153,147 +141,73 @@ function TabButton({
 }
 
 // ===========================================================================
-// Providers tab
+// Providers tab — the credential POOL.
 // ===========================================================================
 
 interface ProvidersTabProps {
-  providers: ProviderConfig[];
+  providers: ProviderRow[];
   keys: Record<string, string>;
-  chatProviderId?: string;
   onChange: () => Promise<void>;
   onKeyChange: (keyUser: string, value: string) => Promise<void>;
 }
 
-function ProvidersTab({
-  providers,
-  keys,
-  chatProviderId,
-  onChange,
-  onKeyChange,
-}: ProvidersTabProps) {
-  const chat = providers.filter((p) => p.kind === "chat");
-  const embedding = providers.filter((p) => p.kind === "embedding");
-
-  const addProvider = async (kind: ProviderKind) => {
-    const type: ProviderConfig["type"] = "openai";
-    try {
-      await api.createProvider({
-        name:
-          kind === "chat"
-            ? "New provider"
-            : "New embedding provider",
-        kind,
-        type,
-      });
-      await onChange();
-    } catch {
-      /* ignore — refresh keeps the list honest */
-    }
-  };
+function ProvidersTab({ providers, keys, onChange, onKeyChange }: ProvidersTabProps) {
+  const [adding, setAdding] = useState(false);
 
   const removeProvider = async (id: string) => {
     try {
       await api.deleteProvider(id);
       await onChange();
     } catch {
-      /* last-of-kind refusal surfaces as a no-op here */
-    }
-  };
-
-  const setDefaultChat = async (id: string) => {
-    try {
-      await api.updateProvider(id, { isDefault: true });
-      await onChange();
-    } catch {
-      /* ignore */
+      /* a bound provider refuses delete (RESTRICT) — refresh keeps it honest */
     }
   };
 
   return (
     <div className="providers-tab">
-      <ProviderGroup
-        title="Chat providers"
-        hint="The model that answers chat and powers vision OCR. Star the default."
-        items={chat}
-        keys={keys}
-        defaultId={chatProviderId}
-        onAdd={() => addProvider("chat")}
-        onRemove={removeProvider}
-        onSetDefault={setDefaultChat}
-        onChange={onChange}
-        onKeyChange={onKeyChange}
-      />
-      <ProviderGroup
-        title="Embedding providers"
-        hint="The backend that vectorizes your corpus for semantic search."
-        items={embedding}
-        keys={keys}
-        onAdd={() => addProvider("embedding")}
-        onRemove={removeProvider}
-        onChange={onChange}
-        onKeyChange={onKeyChange}
-      />
-    </div>
-  );
-}
-
-interface ProviderGroupProps {
-  title: string;
-  hint: string;
-  items: ProviderConfig[];
-  keys: Record<string, string>;
-  defaultId?: string;
-  onAdd: () => void;
-  onRemove: (id: string) => void;
-  onSetDefault?: (id: string) => void;
-  onChange: () => Promise<void>;
-  onKeyChange: (keyUser: string, value: string) => Promise<void>;
-}
-
-function ProviderGroup({
-  title,
-  hint,
-  items,
-  keys,
-  defaultId,
-  onAdd,
-  onRemove,
-  onSetDefault,
-  onChange,
-  onKeyChange,
-}: ProviderGroupProps) {
-  return (
-    <div className="provider-group">
-      <div className="provider-group-head">
-        <span className="provider-group-title">{title}</span>
-        <button className="btn ghost tiny-btn" onClick={onAdd} title="Add">
-          <Plus size={13} weight="bold" /> Add
-        </button>
+      <div className="provider-group">
+        <div className="provider-group-head">
+          <span className="provider-group-title">Providers</span>
+          <button
+            className="btn ghost tiny-btn"
+            onClick={() => setAdding(true)}
+            title="Add a provider"
+          >
+            <Plus size={13} weight="bold" /> Add
+          </button>
+        </div>
+        <div className="muted small provider-group-hint">
+          Credentials the Functions tab can assign. One key serves many
+          functions — model is picked per function, not here.
+        </div>
+        {providers.map((p) => (
+          <ProviderRow
+            key={p.id}
+            provider={p}
+            keyValue={keys[p.keyUser] ?? ""}
+            onRemove={removeProvider}
+            onChange={onChange}
+            onKeyChange={onKeyChange}
+          />
+        ))}
       </div>
-      <div className="muted small provider-group-hint">{hint}</div>
-      {items.map((p) => (
-        <ProviderRow
-          key={p.id}
-          provider={p}
-          keyValue={keys[p.keyUser] ?? ""}
-          isDefault={defaultId === p.id}
-          canSetDefault={!!onSetDefault}
-          onSetDefault={onSetDefault}
-          onRemove={onRemove}
-          onChange={onChange}
+      {adding && (
+        <AddProviderModal
           onKeyChange={onKeyChange}
+          onDone={async () => {
+            setAdding(false);
+            await onChange();
+          }}
+          onCancel={() => setAdding(false)}
         />
-      ))}
+      )}
     </div>
   );
 }
 
 interface ProviderRowProps {
-  provider: ProviderConfig;
+  provider: ProviderRow;
   keyValue: string;
-  isDefault: boolean;
-  canSetDefault: boolean;
-  onSetDefault?: (id: string) => void;
   onRemove: (id: string) => void;
   onChange: () => Promise<void>;
   onKeyChange: (keyUser: string, value: string) => Promise<void>;
@@ -302,64 +216,61 @@ interface ProviderRowProps {
 function ProviderRow({
   provider,
   keyValue,
-  isDefault,
-  canSetDefault,
-  onSetDefault,
   onRemove,
   onChange,
   onKeyChange,
 }: ProviderRowProps) {
-  // Local draft for the editable scalar fields; committed via the row's Save.
+  const keyless = isKeylessProviderType(provider.type);
+  const def: ProviderDef | undefined = PROVIDER_DEFS.find(
+    (d) => d.id === provider.type,
+  );
+  // Local draft for the editable scalar fields; committed via Save.
   const [name, setName] = useState(provider.name);
-  const [type, setType] = useState<ProviderConfig["type"]>(provider.type);
+  const [type, setType] = useState<string>(provider.type);
   const [apiUrl, setApiUrl] = useState(provider.apiUrl);
-  const [model, setModel] = useState(provider.model);
   const [key, setKey] = useState(keyValue);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
 
-  // Re-sync from upstream when the row identity changes (add/remove/refresh).
+  // Test-connection state (probes the provider's /models with its key).
+  const [testing, setTesting] = useState(false);
+  const [test, setTest] = useState<
+    { ok: boolean; latencyMs?: number; sample?: string; n?: number; error?: string } | null
+  >(null);
+
   useEffect(() => {
     setName(provider.name);
     setType(provider.type);
     setApiUrl(provider.apiUrl);
-    setModel(provider.model);
     setDirty(false);
-  }, [provider.id, provider.name, provider.type, provider.apiUrl, provider.model]);
+  }, [provider.id, provider.name, provider.type, provider.apiUrl]);
   useEffect(() => {
     setKey(keyValue);
   }, [keyValue]);
 
-  const typeOptions =
-    provider.kind === "chat"
-      ? (Object.keys(PROVIDER_DEFAULTS) as Provider[])
-      : (Object.keys(EMBEDDING_DEFAULTS) as EmbeddingProvider[]);
-  const def =
-    provider.kind === "chat"
-      ? PROVIDER_DEFAULTS[type as Provider]
-      : EMBEDDING_DEFAULTS[type as EmbeddingProvider];
-
-  const onTypeChange = (t: ProviderConfig["type"]) => {
-    setType(t);
-    setDirty(true);
-  };
-
   const save = async () => {
     setSaving(true);
     try {
-      await api.updateProvider(provider.id, {
-        name,
-        type,
-        apiUrl,
-        model,
-      });
-      // Key lives in the keychain, not the row — persist via the App callback.
+      await api.updateProvider(provider.id, { name, type, apiUrl });
       await onKeyChange(provider.keyUser, key.trim());
       setDirty(false);
       await onChange();
     } finally {
       setSaving(false);
+    }
+  };
+
+  const runTest = async () => {
+    setTesting(true);
+    setTest(null);
+    try {
+      const r = await api.getProviderModels(provider.id, keyValue);
+      setTest({ ok: true, n: r.models.length });
+    } catch (e) {
+      setTest({ ok: false, error: (e as Error)?.message ?? String(e) });
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -375,19 +286,6 @@ function ProviderRow({
           }}
           placeholder="Provider name"
         />
-        {canSetDefault && (
-          <button
-            className={`icon-btn${isDefault ? " active" : ""}`}
-            title={isDefault ? "Default chat provider" : "Set as default"}
-            onClick={() => onSetDefault?.(provider.id)}
-            disabled={isDefault}
-          >
-            <Star
-              size={16}
-              weight={isDefault ? "fill" : "regular"}
-            />
-          </button>
-        )}
         <button
           className="icon-btn danger"
           title="Remove provider"
@@ -400,27 +298,24 @@ function ProviderRow({
       <div className="provider-row-grid">
         <label className="field">
           <span>Type</span>
-          <select value={type} onChange={(e) => onTypeChange(e.target.value as ProviderConfig["type"])}>
-            {typeOptions.map((t) => (
-              <option key={t} value={t}>
-                {(provider.kind === "chat"
-                  ? PROVIDER_DEFAULTS[t as Provider]
-                  : EMBEDDING_DEFAULTS[t as EmbeddingProvider]
-                ).label}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="field">
-          <span>Model</span>
-          <input
-            value={model}
-            onChange={(e) => {
-              setModel(e.target.value);
-              setDirty(true);
-            }}
-            placeholder={"defaultModel" in def ? def.defaultModel : "model id"}
-          />
+          {keyless ? (
+            <input value={def?.label ?? provider.type} disabled />
+          ) : (
+            <select
+              value={type}
+              onChange={(e) => {
+                setType(e.target.value);
+                setDirty(true);
+              }}
+            >
+              {PROVIDER_DEFS.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.label}
+                </option>
+              ))}
+              {!def && <option value={type}>{type}</option>}
+            </select>
+          )}
         </label>
         <label className="field field-wide">
           <span>API URL</span>
@@ -430,144 +325,494 @@ function ProviderRow({
               setApiUrl(e.target.value);
               setDirty(true);
             }}
-            placeholder={def.apiUrl || "https://…"}
+            placeholder={def?.apiUrl || "https://…"}
+            disabled={keyless}
           />
         </label>
-        <label className="field field-wide">
-          <span>API Key</span>
-          <div className="key-input">
-            <input
-              type={showKey ? "text" : "password"}
-              value={key}
-              onChange={(e) => {
-                setKey(e.target.value);
-                setDirty(true);
-              }}
-              placeholder="stored in OS keychain — never in your project folder"
-            />
-            <button
-              type="button"
-              className="icon-btn"
-              title={showKey ? "Hide" : "Show"}
-              onClick={() => setShowKey((v) => !v)}
-            >
-              {showKey ? <EyeSlash size={16} /> : <Eye size={16} />}
-            </button>
-          </div>
-        </label>
+        {!keyless && (
+          <label className="field field-wide">
+            <span>API Key</span>
+            <div className="key-input">
+              <input
+                type={showKey ? "text" : "password"}
+                value={key}
+                onChange={(e) => {
+                  setKey(e.target.value);
+                  setDirty(true);
+                }}
+                placeholder="stored in OS keychain — never in your project folder"
+              />
+              <button
+                type="button"
+                className="icon-btn"
+                title={showKey ? "Hide" : "Show"}
+                onClick={() => setShowKey((v) => !v)}
+              >
+                {showKey ? <EyeSlash size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </label>
+        )}
       </div>
 
       <div className="provider-row-foot">
         <span className="muted small">
-          keychain slot: <code>{provider.keyUser}</code>
+          {keyless
+            ? "local — no key needed"
+            : <>keychain slot: <code>{provider.keyUser}</code></>}
         </span>
-        <button
-          className="btn small primary"
-          onClick={save}
-          disabled={saving || !dirty}
-          title="Save this provider"
-        >
-          <FloppyDisk size={14} weight="bold" />
-          {saving ? "saving…" : "Save"}
-        </button>
+        <div className="provider-row-actions">
+          {!keyless && (
+            <>
+              {test && (
+                <span
+                  className={`muted small test-badge ${test.ok ? "ok" : "err"}`}
+                >
+                  {test.ok ? `✓ ${test.n} models` : `✗ ${test.error}`}
+                </span>
+              )}
+              <button
+                className="btn ghost tiny-btn"
+                onClick={runTest}
+                disabled={testing || !keyValue}
+                title="Probe /models with this key"
+              >
+                {testing ? "testing…" : "Test"}
+              </button>
+            </>
+          )}
+          <button
+            className="btn small primary"
+            onClick={save}
+            disabled={saving || !dirty}
+            title="Save this provider"
+          >
+            <FloppyDisk size={14} weight="bold" />
+            {saving ? "saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** Add-provider modal: catalog quick-start prefills name/apiUrl + a get-key
+ *  link; the key is stored to the keychain on save. */
+function AddProviderModal({
+  onKeyChange,
+  onDone,
+  onCancel,
+}: {
+  onKeyChange: (keyUser: string, value: string) => Promise<void>;
+  onDone: () => void;
+  onCancel: () => void;
+}) {
+  const [defId, setDefId] = useState<string>(PROVIDER_DEFS[0].id);
+  const def = PROVIDER_DEFS.find((d) => d.id === defId) ?? PROVIDER_DEFS[0];
+  const [name, setName] = useState(def.label);
+  const [apiUrl, setApiUrl] = useState(def.apiUrl);
+  const [key, setKey] = useState("");
+  const [showKey, setShowKey] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const pickDef = (id: string) => {
+    const d = PROVIDER_DEFS.find((x) => x.id === id) ?? PROVIDER_DEFS[0];
+    setDefId(d.id);
+    setName(d.label);
+    setApiUrl(d.apiUrl);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    setErr("");
+    try {
+      const created = await api.createProvider({
+        name: name.trim() || def.label,
+        type: def.id,
+        apiUrl: apiUrl.trim(),
+      });
+      if (key.trim()) await onKeyChange(created.keyUser, key.trim());
+      onDone();
+    } catch (e) {
+      setErr((e as Error)?.message ?? String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="overlay" onClick={onCancel}>
+      <div className="dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="dialog-head">
+          <h2>Add provider</h2>
+          <button className="icon-btn" onClick={onCancel} title="Close">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="settings-tab-body">
+          <label className="field">
+            <span>Quick start</span>
+            <select value={defId} onChange={(e) => pickDef(e.target.value)}>
+              {PROVIDER_DEFS.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.label}
+                </option>
+              ))}
+            </select>
+            <span className="muted small helper">
+              Picks a preset; edit the fields below. All are OpenAI-compatible.
+            </span>
+          </label>
+          <label className="field">
+            <span>Name</span>
+            <input value={name} onChange={(e) => setName(e.target.value)} />
+          </label>
+          <label className="field">
+            <span>API URL</span>
+            <input
+              value={apiUrl}
+              onChange={(e) => setApiUrl(e.target.value)}
+              placeholder="https://…"
+            />
+          </label>
+          <label className="field">
+            <span>
+              API Key{" "}
+              {def.keyUrl && (
+                <a
+                  href={def.keyUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="muted small"
+                >
+                  get one ↗
+                </a>
+              )}
+            </span>
+            <div className="key-input">
+              <input
+                type={showKey ? "text" : "password"}
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                placeholder="stored in OS keychain"
+              />
+              <button
+                type="button"
+                className="icon-btn"
+                title={showKey ? "Hide" : "Show"}
+                onClick={() => setShowKey((v) => !v)}
+              >
+                {showKey ? <EyeSlash size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </label>
+          {err && <div className="muted small err">{err}</div>}
+        </div>
+        <div className="actions">
+          <button className="btn ghost" onClick={onCancel}>
+            Cancel
+          </button>
+          <button className="btn primary" onClick={save} disabled={saving}>
+            {saving ? "saving…" : "Save"}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
 // ===========================================================================
-// Functions tab
+// Functions tab — the wiring MATRIX.
 // ===========================================================================
 
 interface FunctionsTabProps {
   settings: Settings;
-  providers: ProviderConfig[];
+  providers: ProviderRow[];
   keys: Record<string, string>;
   onChange: () => Promise<void>;
 }
 
 function FunctionsTab({ settings, providers, keys, onChange }: FunctionsTabProps) {
-  const chatProviders = providers.filter((p) => p.kind === "chat");
-  const embeddingProviders = providers.filter((p) => p.kind === "embedding");
-
-  // Vision uses the chat-selected provider's model; disable the option when
-  // that provider has no key (the user's choice — see discussion).
-  const chatProvider = chatProviders.find((p) => p.id === settings.chatProviderId);
-  const visionEnabled = !!chatProvider && !!(keys[chatProvider.keyUser] ?? "");
-
-  const setChat = async (id: string) => {
-    await api.saveSettings({ chatProviderId: id });
-    await onChange();
-  };
-  const setEmbedding = async (id: string) => {
-    // Switching embedding provider resets the dimension lock so the next
-    // embed re-locks against the new model (forces a fresh vector build).
-    await api.saveSettings({ embeddingProviderId: id, embeddingDimensions: 0 });
-    await onChange();
-  };
-  const setOcr = async (ocrStrategy: OcrStrategy) => {
-    await api.saveSettings({ ocrStrategy });
-    await onChange();
-  };
-
+  const bindings = settings.bindings;
+  const resolved = settings.resolved;
+  if (!bindings || !resolved) {
+    return <div className="muted">Loading bindings…</div>;
+  }
   return (
     <div className="functions-tab">
-      <label className="field">
-        <span>Chat</span>
-        <select
-          value={settings.chatProviderId ?? ""}
-          onChange={(e) => setChat(e.target.value)}
-        >
-          {chatProviders.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} ({p.type})
-            </option>
-          ))}
-        </select>
-        <span className="muted small helper">
-          The model that answers the chat.
-        </span>
-      </label>
+      <div className="muted small helper">
+        Wire each function to a provider + model. Model lists are fetched live
+        from each provider; type manually if the list is empty.
+      </div>
+      {AI_FUNCTIONS.map((fn) => (
+        <FunctionRow
+          key={fn}
+          fn={fn}
+          binding={bindings[fn]}
+          resolved={resolved[fn]}
+          providers={providers}
+          keys={keys}
+          onChanged={onChange}
+        />
+      ))}
+    </div>
+  );
+}
 
-      <label className="field">
-        <span>Visual understand</span>
-        <select
-          value={settings.ocrStrategy}
-          onChange={(e) => setOcr(e.target.value as OcrStrategy)}
-        >
-          <option value="tesseract">Tesseract (local, free)</option>
-          <option value="vision" disabled={!visionEnabled}>
-            Vision API{visionEnabled ? "" : " — needs a chat API key"}
-          </option>
-          <option value="skip">Skip</option>
-        </select>
-        <span className="muted small helper">
-          How image-only files are read. Vision uses the chat provider's model.
-        </span>
-      </label>
+interface FunctionRowProps {
+  fn: AiFunction;
+  binding: FunctionBinding;
+  resolved: ResolvedFunction;
+  providers: ProviderRow[];
+  keys: Record<string, string>;
+  onChanged: () => Promise<void>;
+}
 
-      <label className="field">
-        <span>Vectorizer</span>
-        <select
-          value={settings.embeddingProviderId ?? ""}
-          onChange={(e) => setEmbedding(e.target.value)}
-        >
-          {embeddingProviders.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name} ({p.type})
-            </option>
-          ))}
-        </select>
-        <span className="muted small helper">
-          The backend that embeds your corpus for semantic search.
+function FunctionRow({
+  fn,
+  binding,
+  resolved,
+  providers,
+  keys,
+  onChanged,
+}: FunctionRowProps) {
+  const meta = FUNCTION_META[fn];
+  const allowsTesseract = meta.allowsTesseract;
+
+  // Draft (unsaved) provider + model; committed via Apply.
+  const [draftProvider, setDraftProvider] = useState(binding.providerId);
+  const [draftModel, setDraftModel] = useState(binding.model);
+  useEffect(() => {
+    setDraftProvider(binding.providerId);
+    setDraftModel(binding.model);
+  }, [binding.providerId, binding.model]);
+
+  // Live model list for the draft provider (fetched with its key).
+  const [models, setModels] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const draftProv = providers.find((p) => p.id === draftProvider);
+  const draftKey = draftProv ? keys[draftProv.keyUser] ?? "" : "";
+  useEffect(() => {
+    if (!draftProv || isKeylessProviderType(draftProv.type)) {
+      setModels([]);
+      return;
+    }
+    let stopped = false;
+    setLoadingModels(true);
+    api
+      .getProviderModels(draftProv.id, draftKey)
+      .then((r) => {
+        if (!stopped) setModels(r.models);
+      })
+      .catch(() => {
+        if (!stopped) setModels([]);
+      })
+      .finally(() => {
+        if (!stopped) setLoadingModels(false);
+      });
+    return () => {
+      stopped = true;
+    };
+  }, [draftProv, draftKey]);
+
+  // Connectivity test (runs against the SAVED binding).
+  const [testing, setTesting] = useState(false);
+  const [test, setTest] = useState<
+    | { ok: boolean; latencyMs?: number; sample?: string; error?: string }
+    | null
+  >(null);
+  const savedProv = providers.find((p) => p.id === binding.providerId);
+  const savedKey = savedProv ? keys[savedProv.keyUser] ?? "" : "";
+
+  const dirty =
+    draftProvider !== binding.providerId || draftModel !== binding.model;
+  const confirmRevector = fn === "embed" && dirty;
+
+  const [confirming, setConfirming] = useState(false);
+  const [applying, setApplying] = useState(false);
+
+  const commit = async () => {
+    setApplying(true);
+    try {
+      await api.setBinding(fn, draftProvider, draftModel);
+      await onChanged();
+    } finally {
+      setApplying(false);
+      setConfirming(false);
+    }
+  };
+
+  const apply = async () => {
+    if (!dirty) return;
+    if (confirmRevector) {
+      setConfirming(true);
+      return;
+    }
+    await commit();
+  };
+
+  const runTest = async () => {
+    setTesting(true);
+    setTest(null);
+    try {
+      const r = await api.testFunction(fn, savedKey);
+      setTest(r);
+    } catch (e) {
+      setTest({ ok: false, error: (e as Error)?.message ?? String(e) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const availableProviders = providers.filter(
+    (p) => allowsTesseract || !isKeylessProviderType(p.type),
+  );
+
+  return (
+    <div className="provider-row function-row">
+      <div className="function-row-head">
+        <div>
+          <strong>{meta.label}</strong>
+          {fn === "embed" && (
+            <span className="muted small"> ⚠ changes re-vectorize everything</span>
+          )}
+        </div>
+        <div className="provider-row-actions">
+          {test && (
+            <span className={`muted small test-badge ${test.ok ? "ok" : "err"}`}>
+              {test.ok
+                ? `✓ ${test.latencyMs}ms${test.sample ? ` · ${test.sample}` : ""}`
+                : `✗ ${test.error}`}
+            </span>
+          )}
+          <button
+            className="btn ghost tiny-btn"
+            onClick={runTest}
+            disabled={testing || dirty || !savedKey}
+            title={
+              dirty
+                ? "Apply the change first"
+                : "Run a minimal real call against this binding"
+            }
+          >
+            {testing ? "testing…" : "Test"}
+          </button>
+        </div>
+      </div>
+      <span className="muted small helper">{meta.sublabel}</span>
+
+      <div className="provider-row-grid">
+        <label className="field">
+          <span>Provider</span>
+          <select
+            value={draftProvider}
+            onChange={(e) => setDraftProvider(e.target.value)}
+          >
+            {availableProviders.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+                {isKeylessProviderType(p.type) ? " (local)" : ` · ${p.type}`}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field field-wide">
+          <span>Model {loadingModels && <span className="muted">loading…</span>}</span>
+          <input
+            list={`models-${fn}`}
+            value={draftModel}
+            onChange={(e) => setDraftModel(e.target.value)}
+            placeholder="model id"
+          />
+          <datalist id={`models-${fn}`}>
+            {models.map((m) => (
+              <option key={m} value={m} />
+            ))}
+          </datalist>
+        </label>
+      </div>
+
+      <div className="provider-row-foot">
+        <span className="muted small">
+          {isKeylessProviderType(resolved.type)
+            ? "local — no key"
+            : savedKey
+              ? <>key ok · <code>{resolved.apiUrl}</code></>
+              : "⚠ no key set for this provider"}
         </span>
-      </label>
+        <button
+          className="btn small primary"
+          onClick={apply}
+          disabled={!dirty || applying}
+          title="Apply this binding"
+        >
+          <FloppyDisk size={14} weight="bold" />
+          {applying ? "applying…" : "Apply"}
+        </button>
+      </div>
+
+      {confirming && (
+        <RevectorizeModal
+          onCancel={() => setConfirming(false)}
+          onConfirm={commit}
+          busy={applying}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Confirm modal before an embed binding change re-vectorizes the corpus. */
+function RevectorizeModal({
+  onCancel,
+  onConfirm,
+  busy,
+}: {
+  onCancel: () => void;
+  onConfirm: () => void;
+  busy: boolean;
+}) {
+  return (
+    <div className="overlay" onClick={onCancel}>
+      <div className="dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="dialog-head">
+          <h2>
+            <Warning size={18} /> Re-vectorize everything?
+          </h2>
+          <button className="icon-btn" onClick={onCancel} title="Close">
+            <X size={18} />
+          </button>
+        </div>
+        <div className="settings-tab-body">
+          <p>
+            You changed the <strong>Embed</strong> provider or model. Vector
+            dimensions change, so <strong>all chunks must be re-embedded</strong>:
+          </p>
+          <ul className="muted small">
+            <li>every chunk is reset to "pending"</li>
+            <li>the vector index is rebuilt</li>
+            <li>this costs API calls and runs in the background</li>
+          </ul>
+          <p className="muted small">
+            Chats, notes, and source text are NOT touched.
+          </p>
+        </div>
+        <div className="actions">
+          <button className="btn ghost" onClick={onCancel} disabled={busy}>
+            Cancel
+          </button>
+          <button className="btn danger" onClick={onConfirm} disabled={busy}>
+            {busy ? "re-vectorizing…" : "Re-vectorize"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
 // ===========================================================================
-// Prompts tab
+// Prompts tab (unchanged).
 // ===========================================================================
 
 /** Internal row shape: a Prompt plus a transient client-side id so React can

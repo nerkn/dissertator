@@ -24,13 +24,22 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS providers (
   id         TEXT PRIMARY KEY,
   name       TEXT NOT NULL,
-  kind       TEXT NOT NULL,        -- 'chat' | 'embedding'
-  type       TEXT NOT NULL,        -- backend flavor (Provider | EmbeddingProvider)
+  type       TEXT NOT NULL,        -- backend flavor ('openai'|'zai'|...|'tesseract')
   api_url    TEXT NOT NULL DEFAULT '',
-  model      TEXT NOT NULL DEFAULT '',
   key_user   TEXT NOT NULL,        -- OS keychain slot for this provider's key
   is_default INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
+);
+
+-- Function ↔ provider+model bindings (P-multi). Exactly one row per AiFunction
+-- (chat|stt|vision_doc|vision_image|embed). `model` lives HERE, not on the
+-- provider, because one key serves different models per function. ON DELETE
+-- RESTRICT prevents deleting a provider a function is bound to (rebind first).
+CREATE TABLE IF NOT EXISTS function_bindings (
+  function    TEXT PRIMARY KEY,        -- chat|stt|vision_doc|vision_image|embed
+  provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE RESTRICT,
+  model       TEXT NOT NULL DEFAULT '',
+  updated_at  INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS source_files (
@@ -49,7 +58,6 @@ CREATE TABLE IF NOT EXISTS source_files (
   extracted_path TEXT,
   error         TEXT,
   needs_ocr_reason TEXT,
-  reference_id  TEXT,
   added_at      INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_source_files_hash ON source_files(content_hash);

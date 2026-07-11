@@ -9,7 +9,6 @@
 // the HTTP layer from the OS keychain at call time and is never stored or
 // logged in this module (see vision.ts).
 
-import type { Provider } from "@dissertator/shared";
 import { runTesseract } from "./tesseract";
 import { runVision } from "./vision";
 
@@ -18,10 +17,11 @@ export type OcrEngine = "tesseract" | "vision";
 export interface OcrOptions {
   /** Required for vision; ignored by tesseract. Never stored or logged. */
   apiKey?: string;
-  provider?: Provider;
   apiUrl?: string;
   /** Vision-capable chat model id. */
   model?: string;
+  /** Override the vision prompt (describe instead of OCR). */
+  instruction?: string;
 }
 
 export interface OcrResult {
@@ -29,6 +29,11 @@ export interface OcrResult {
   /** Best-effort; tesseract returns 1 for a single image. */
   pageCount: number;
 }
+
+/** Vision DESCRIBE prompt (vision_image function): understand a standalone
+ *  image and return a textual description for search (vs runOcr's extraction). */
+const DESCRIBE_INSTRUCTION =
+  "Describe this image in detail for later search: the subjects, scene, any visible text, charts/figures, and context. Write clear flowing prose.";
 
 /**
  * Run OCR on the image at `absPath` using `engine`. Tesseract runs locally
@@ -50,5 +55,22 @@ export async function runOcr(
     throw new Error(`unknown ocr engine: ${engine}`);
   } catch (e) {
     throw new Error(`ocr failed: ${(e as Error)?.message ?? String(e)}`);
+  }
+}
+
+/**
+ * Vision DESCRIBE (vision_image function): understand a standalone image and
+ * return a textual description. Same wire path as vision OCR, different
+ * prompt. Requires `opts.apiKey`. Errors normalize to `Error("describe
+ * failed: …")`.
+ */
+export async function runDescribe(
+  absPath: string,
+  opts: OcrOptions = {}
+): Promise<OcrResult> {
+  try {
+    return await runVision(absPath, { ...opts, instruction: DESCRIBE_INSTRUCTION });
+  } catch (e) {
+    throw new Error(`describe failed: ${(e as Error)?.message ?? String(e)}`);
   }
 }

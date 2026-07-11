@@ -39,8 +39,8 @@ Dissertator is **not a one-shot pipeline**. It is a living writing tool:
 |---|---|
 | **Project** | One opened folder. Owns a `Dissertator/` workspace + SQLite DB. |
 | **Corpus** | All indexed source files in the project. Shared across documents. |
-| **SourceFile** | An ingested file (pdf, docx, xlsx...) with extracted text, chunks, vectors. |
-| **Reference** | A bibliographic record (APA entry). May or may not have a backing SourceFile. |
+| **SourceFile** | An ingested file (pdf, docx, xlsx...) with extracted text, chunks, vectors. **Citekey-less until linked to a Reference** — distinct from a Reference. |
+| **Reference** | A bibliographic record (APA entry) that **owns a citekey**. May or may not have a backing SourceFile (fileless refs are valid). *External metadata only.* |
 | **Document** | A focused work product (paper / dissertation). Born from a **wizard**. Many per project. |
 | **Section** | A node in a document's editable outline tree (heading + body). |
 | **Citation token** | Inline marker `[@citekey:printedPage]` binding a claim to evidence. |
@@ -285,12 +285,21 @@ sits in `pending_vision` until the user chooses to run it through a vision API.
 
 ## 8. Citation System
 
+> **See [`docs/citekey.md`](docs/citekey.md)** for the full model. Summary:
+> *internally* the app uses only **citekey** (chips, notes, tools, joins);
+> *externally*, the real world knows **scientific references**, not your PDFs.
+> `references` (BibTeX/CSL) is the external face — it exists to resolve each
+> citekey to a real-world reference at **export time**. Sources never store a
+> citekey; they are linked *from* a reference (`references.source_file_id`).
+
 - **Token form:** `[@citekey:printedPage]` — stores the *printed* page number,
   which is human-meaningful and re-chunk-safe. The chunk DB row holds both
   `physical_page` (for the viewer) and `printed_page` (for the token).
 - **Citekey:** auto-generated on first ingest (author+year, fallback to
-  filename slug); user-renameable; **frozen thereafter** (never regenerated on
-  re-ingest, or every token in existing docs breaks).
+  filename slug); **frozen from first assignment — never renamed, never
+  regenerated on re-ingest** (or every token in existing docs breaks).
+  Resolution is always `citekey → references → source_file_id → PDF`; there is
+  no direct chip→PDF path.
 - **DOI lookup:** on ingest, parse first page → query Crossref → fill reference
   fields when confident.
 - **Bibliography:** `citeproc-js` renders APA/Chicago/etc. from CSL records.

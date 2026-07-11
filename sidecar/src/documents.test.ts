@@ -30,7 +30,7 @@ import {
   listDocuments,
   updateDocument,
   initProject,
-} from "./db.ts";
+} from "./db";
 
 let dir: string;
 

@@ -3,9 +3,11 @@
 // When no tabs are open it shows the empty placeholder (hero on a fresh
 // project load, or the "No document open" wizard stub once initialized).
 // When tabs ARE open it switches to a flex-column layout: a tab bar pinned
-// at the top and the active tab's viewer filling the rest. Only the active
-// tab's content is mounted — switching tabs re-mounts the viewer (cheap; each
-// viewer manages its own fetch + cleanup).
+// at the top and the active tab's viewer filling the rest. Read-only viewers
+// (pdf/image/text/references) mount only while active — they're cheap to
+// refetch. Manuscript editors are the exception: they're kept mounted (just
+// hidden) across tab switches so the caret, scroll position, and undo
+// history survive — see the keep-alive block below.
 
 import { Sparkle } from "@phosphor-icons/react";
 import type { Tab } from "../lib/tabs";
@@ -139,14 +141,6 @@ export function CenterPane({
         {active.kind === "text" && (
           <TextViewer key={active.sourceId} sourceId={active.sourceId} />
         )}
-        {active.kind === "doc" && (
-          <ManuscriptEditor
-            key={active.sourceId}
-            documentId={active.sourceId}
-            revision={docRevisions?.[active.sourceId] ?? 0}
-            onCitationClick={onCitationClick}
-          />
-        )}
         {active.kind === "references" && (
           <ReferencesView
             key={active.sourceId}
@@ -154,6 +148,33 @@ export function CenterPane({
             onOpenSource={onOpen}
           />
         )}
+
+        {/* Manuscript editors are stateful and expensive to rebuild
+            (Milkdown/ProseMirror instance, undo history, caret, scroll
+            position). Keep every open document mounted and hide the inactive
+            ones with `display:none`, so switching to a PDF and back preserves
+            cursor, scroll, and undo history. Closing a tab removes it from
+            this list, which unmounts it (ManuscriptEditor flushes any pending
+            autosave on unmount). */}
+        {tabs
+          .filter((t) => t.kind === "doc")
+          .map((t) => {
+            const visible = t.sourceId === activeTabId;
+            return (
+              <div
+                key={t.sourceId}
+                className="keepalive-pane"
+                hidden={!visible}
+                aria-hidden={!visible}
+              >
+                <ManuscriptEditor
+                  documentId={t.sourceId}
+                  revision={docRevisions?.[t.sourceId] ?? 0}
+                  onCitationClick={onCitationClick}
+                />
+              </div>
+            );
+          })}
       </div>
     </section>
   );

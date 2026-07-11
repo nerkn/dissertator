@@ -17,7 +17,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Prompt } from "@dissertator/shared";
-import { getCurrentProject } from "./db.ts";
+import { getCurrentProject } from "./db";
 
 /** Max label length for a plain (un-labeled) bullet before truncation. */
 const LABEL_MAX = 40;

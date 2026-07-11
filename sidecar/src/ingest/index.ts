@@ -20,11 +20,11 @@ import type {
   SourceFile,
   TextStatus,
 } from "@dissertator/shared";
-import { EMBEDDING_DEFAULTS } from "@dissertator/shared";
+import { adapterFromType } from "@dissertator/shared";
 
 import { detectKind, extract } from "../extract/index.ts";
 import type { ExtractResult } from "../extract/index.ts";
-import { runOcr } from "../ocr/index.ts";
+import { runOcr, runDescribe } from "../ocr/index.ts";
 import type { OcrEngine, OcrOptions } from "../ocr/index.ts";
 import {
   runTranscribe,
@@ -32,12 +32,13 @@ import {
 } from "../transcribe/index.ts";
 import { embedBatch, type EmbedEngine } from "../embed/index.ts";
 import {
+  ensureReferenceForSource,
   getCurrentProject,
   getSettings,
   lockDimensions,
   mapSourceFile,
   type SourceFileRow,
-} from "../db.ts";
+} from "../db";
 
 import { createQueue } from "./queue.ts";
 import { chunkExtracted, type ChunkOutput } from "./chunk.ts";
@@ -52,6 +53,15 @@ export interface IngestEvent {
   sourceFileId: string;
   status: TextStatus;
   error?: string;
+}
+
+/** Strip a file's extension to form a human-readable placeholder reference
+ *  title (the citekey is derived from this title's first significant word). */
+function refTitle(filename: string, ext: string): string {
+  const dotExt = ext ? `.${ext}` : "";
+  return dotExt && filename.endsWith(dotExt)
+    ? filename.slice(0, -dotExt.length)
+    : filename;
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +308,12 @@ async function ingestFile(relPath: string): Promise<void> {
   db.prepare(
     "UPDATE source_files SET text_status = 'done', error = NULL WHERE id = ?"
   ).run(id);
+  // Guarantee this freshly-ingested source has a citekey-bearing reference
+  // so its notes are immediately citable (no greyed button). No-op if a
+  // reference was already linked (e.g. by Crossref/DOI detection). The
+  // placeholder citekey derives from the filename; metadata arrives later.
+  // See docs/citekey.md §3.
+  ensureReferenceForSource(id, refTitle(filename, ext));
   emit({ sourceFileId: id, status: "done" });
 }
 
@@ -451,6 +467,63 @@ export async function ocrSource(
   } catch (e) {
     const msg = (e as Error)?.message ?? String(e);
     await appendLog(`[ocr] ${row.rel_path}: ${msg}`);
+    failRow(db, id, msg);
+  }
+}
+
+/**
+ * Describe a standalone image (vision_image function) via an OpenAI-compatible
+ * vision endpoint, then chunk + store the description as the source's text —
+ * mirrors {@link ocrSource} but uses a describe prompt instead of OCR
+ * extraction. The API key is supplied by the caller (HTTP → keychain) via
+ * `opts.apiKey`; never read from settings.
+ */
+export async function describeImageSource(
+  id: string,
+  opts?: OcrOptions
+): Promise<void> {
+  const project = getCurrentProject();
+  if (!project) throw new Error("no project initialized");
+  const { db, projectPath, dissertatorDir } = project;
+
+  const row = db
+    .prepare("SELECT * FROM source_files WHERE id = ?")
+    .get(id) as SourceFileRow | undefined;
+  if (!row) throw new Error(`source file not found: ${id}`);
+
+  db.prepare(
+    "UPDATE source_files SET text_status = 'pending_vision', error = NULL WHERE id = ?"
+  ).run(id);
+  emit({ sourceFileId: id, status: "pending_vision" });
+
+  const absPath = resolve(projectPath, row.rel_path);
+  try {
+    const result = await runDescribe(absPath, opts ?? {});
+
+    const hash = row.content_hash ?? id;
+    const cachePath = join(dissertatorDir, "cache", `${hash}.img.txt`);
+    await writeFile(cachePath, result.text, "utf8");
+    db.prepare(
+      "UPDATE source_files SET extracted_path = ?, ocr_method = 'vision-image' WHERE id = ?"
+    ).run(cachePath, id);
+
+    const physPage = row.page_count ?? 1;
+    const chunks = chunkExtracted({
+      text: result.text,
+      pages: [{ physicalPage: physPage, text: result.text }],
+      pageCount: result.pageCount,
+      needsOcr: false,
+      mimeType: row.mime_type ?? "text/plain",
+    });
+    insertChunks(db, id, chunks);
+
+    db.prepare(
+      "UPDATE source_files SET text_status = 'done', error = NULL WHERE id = ?"
+    ).run(id);
+    emit({ sourceFileId: id, status: "done" });
+  } catch (e) {
+    const msg = (e as Error)?.message ?? String(e);
+    await appendLog(`[describe] ${row.rel_path}: ${msg}`);
     failRow(db, id, msg);
   }
 }
@@ -610,12 +683,17 @@ export async function embedPending(
   }
   const { db } = project;
 
-  // Resolve the decoupled embedding config + adapter engine.
-  const cfg = getSettings().embedding;
-  const defaults = EMBEDDING_DEFAULTS[cfg.provider] ?? EMBEDDING_DEFAULTS.openai;
-  const engine: EmbedEngine = defaults.adapter;
-  const apiUrl = cfg.apiUrl || defaults.apiUrl;
-  const model = cfg.model || defaults.defaultModel;
+  // Resolve the embed binding (single source of truth): engine is derived
+  // from the provider `type` (google → google adapter; else openai).
+  const cfg = getSettings().resolved?.embed;
+  if (!cfg?.apiUrl || !cfg?.model) {
+    throw new Error(
+      "no embed provider/model bound — set one in Settings → Functions",
+    );
+  }
+  const engine: EmbedEngine = adapterFromType(cfg.type);
+  const apiUrl = cfg.apiUrl;
+  const model = cfg.model;
 
   // Pull the backlog (bounded). `text != ''` skips degenerate chunks.
   const pending = db

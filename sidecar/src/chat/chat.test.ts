@@ -1,4 +1,4 @@
-// Tests for the P3 chat DB layer: chat settings round-trip (decision #1),
+// Tests for the chat DB layer: chat binding → resolved-endpoint round-trip,
 // chat message persistence, and the open-files context builder.
 //
 // Uses a throwaway project dir + the real `initProject`. Pattern mirrors
@@ -8,18 +8,15 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { resolveChatConfig } from "@dissertator/shared";
 
 import {
   buildOpenFilesContext,
   createChat,
-  createProvider,
-  getSettings,
   initProject,
   insertChatMessage,
   listChatMessages,
-  saveSettings,
-} from "../db.ts";
+  getSettings,
+} from "../db";
 
 let dir: string;
 
@@ -36,55 +33,17 @@ afterAll(() => {
   }
 });
 
-test("selecting a chat provider resolves provider/apiUrl/model", () => {
-  // P6: the chat function points at a provider row; getSettings resolves the
-  // main provider/apiUrl/model block from it (so resolveChatConfig + the
-  // /chat endpoint + OCR vision all see the selected backend unchanged).
-  const zai = createProvider({
-    name: "My Z.ai",
-    kind: "chat",
-    type: "zai",
-  });
-  saveSettings({ chatProviderId: zai.id });
+test("the seeded chat binding resolves to a provider endpoint", () => {
+  // getSettings().resolved.chat is what the /chat route feeds to the adapter:
+  // the bound provider's apiUrl + type, plus the binding's model. With the
+  // default Z.ai seed, that endpoint is Z.ai's PaaS v4 URL.
   const s = getSettings();
-  expect(s.provider).toBe("zai");
-  expect(s.apiUrl).toBe("https://api.z.ai/api/paas/v4");
-  expect(s.model).toBe("glm-4.6");
-  expect(s.chatProviderId).toBe(zai.id);
-});
-
-test("resolveChatConfig falls back to main provider when no override", () => {
-  // Pure-function check: a Settings with no chatProvider override mirrors
-  // its main provider/apiUrl/model block (the path getSettings now feeds it).
-  const resolved = resolveChatConfig({
-    provider: "zai",
-    apiUrl: "https://api.z.ai/api/paas/v4",
-    model: "glm-4.6",
-    ocrStrategy: "tesseract",
-    embedding: getSettings().embedding,
-    contactEmail: "",
-  });
-  expect(resolved.provider).toBe("zai");
-  expect(resolved.model).toBe("glm-4.6");
-});
-
-test("resolveChatConfig fills override gaps from PROVIDER_DEFAULTS", () => {
-  // The chatProvider override path is retained for direct callers; getSettings
-  // no longer populates it, but resolveChatConfig must still honor a caller-
-  // supplied override and fill gaps from PROVIDER_DEFAULTS.
-  const resolved = resolveChatConfig({
-    provider: "zai",
-    apiUrl: "https://api.z.ai/api/paas/v4",
-    model: "glm-4.6",
-    ocrStrategy: "tesseract",
-    embedding: getSettings().embedding,
-    contactEmail: "",
-    chatProvider: "openai",
-    // chatApiUrl + chatModel omitted → defaults filled in.
-  });
-  expect(resolved.provider).toBe("openai");
-  expect(resolved.apiUrl).toBe("https://api.openai.com/v1");
-  expect(resolved.model).toBe("gpt-4o-mini");
+  expect(s.resolved).toBeDefined();
+  expect(s.resolved!.chat.type).toBe("zai");
+  expect(s.resolved!.chat.apiUrl).toBe("https://api.z.ai/api/paas/v4");
+  expect(s.resolved!.chat.model).toBeTruthy();
+  // chatProviderId mirrors the chat binding (legacy compat shim).
+  expect(s.chatProviderId).toBe(s.resolved!.chat.providerId);
 });
 
 test("chat messages persist and replay oldest-first", () => {
