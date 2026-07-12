@@ -13,21 +13,21 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import * as pdfjsLib from "pdfjs-dist";
-
-// Zoom levels are discrete steps so +/- buttons behave predictably and the
-// scale factor always snaps to a render-friendly value.
-const MIN_SCALE = 0.1;
-const MAX_SCALE = 4;
-const ZOOM_STEP = 0.25;
 import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 // `?url` is a Vite feature (types declared via `vite/client`): it returns the
 // resolved worker URL as a string, which pdf.js loads in a Web Worker.
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { BookOpen } from "@phosphor-icons/react";
-import { api } from "../lib/api";
 import type { NoteRect } from "@dissertator/shared";
-import { NotePopup } from "./NotePopup";
-import { ReferenceEditDialog } from "./ReferenceEditDialog";
+import { api } from "../../lib/api";
+import { NotePopup } from "../NotePopup";
+import { ReferenceEditDialog } from "../ReferenceEditDialog";
+import { PdfControls } from "./_PdfControls";
+import {
+  DEFAULT_SCALE,
+  MAX_SCALE,
+  MIN_SCALE,
+  ZOOM_STEP,
+} from "./_constants";
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
 
@@ -37,8 +37,6 @@ interface Props {
    *  search-hit navigation. */
   initialPage?: number;
 }
-
-const DEFAULT_SCALE = 1.5;
 
 export function PdfViewer({ sourceId, initialPage }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -321,71 +319,16 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
 
   return (
     <div className="pdf-viewer">
-      <div className="pdf-controls">
-        <button
-          className="btn ghost small-btn"
-          onClick={() => goto(page - 1)}
-          disabled={page <= 1}
-          title="Previous page"
-        >
-          ‹ Prev
-        </button>
-        <span className="pdf-page-indicator">
-          Page
-          <input
-            className="pdf-page-input"
-            type="number"
-            min={1}
-            max={total || 1}
-            value={page}
-            onChange={(e) => {
-              const n = parseInt(e.target.value, 10);
-              if (Number.isFinite(n)) goto(n);
-            }}
-          />
-          / {total}
-        </span>
-        <button
-          className="btn ghost small-btn"
-          onClick={() => goto(page + 1)}
-          disabled={page >= total}
-          title="Next page"
-        >
-          Next ›
-        </button>
-        <span className="pdf-controls-divider" />
-        <button
-          className="btn ghost small-btn"
-          onClick={zoomOut}
-          disabled={scale <= MIN_SCALE}
-          title="Zoom out"
-        >
-          −
-        </button>
-        <button
-          className="btn ghost small-btn pdf-zoom-reset"
-          onClick={zoomReset}
-          title="Reset zoom"
-        >
-          {Math.round(scale * 100)}%
-        </button>
-        <button
-          className="btn ghost small-btn"
-          onClick={zoomIn}
-          disabled={scale >= MAX_SCALE}
-          title="Zoom in"
-        >
-          +
-        </button>
-        <span className="pdf-controls-divider" />
-        <button
-          className="btn ghost small-btn"
-          onClick={() => setShowCitation(true)}
-          title="Edit the reference / citation linked to this source"
-        >
-          <BookOpen size={14} weight="bold" /> Citation
-        </button>
-      </div>
+      <PdfControls
+        page={page}
+        total={total}
+        scale={scale}
+        goto={goto}
+        zoomIn={zoomIn}
+        zoomOut={zoomOut}
+        zoomReset={zoomReset}
+        onOpenCitation={() => setShowCitation(true)}
+      />
       <div className="pdf-canvas-area" ref={areaRef}>
         {/* --scale-factor drives the TextLayer's per-span font-size calc. */}
         <div
