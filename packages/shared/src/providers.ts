@@ -69,6 +69,23 @@ export interface ProviderDef {
 
 /** Quick-start catalog for the Add-Provider modal. */
 export const PROVIDER_DEFS: ProviderDef[] = [
+  // Managed Dissertator Cloud endpoint (OpenAI-compatible reseller). Users
+  // only paste an API key — apiUrl + keychain slot are prefilled. Default
+  // models use the `sici/<function>` alias scheme exposed by the proxy.
+  {
+    id: "sici",
+    label: "Sici AI",
+    apiUrl: "https://aiprovider.sici.dev/v1",
+    keyUrl: "https://aiprovider.sici.dev/account",
+    keyUser: "sici_api_key",
+    defaults: {
+      chat: "sici/chat",
+      stt: "sici/stt",
+      vision_doc: "sici/vision_doc",
+      vision_image: "sici/vision_image",
+      embed: "sici/embed",
+    },
+  },
   {
     id: "zai",
     label: "Z.ai",
