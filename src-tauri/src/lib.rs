@@ -91,6 +91,58 @@ fn spawn_sidecar(app: &tauri::App) -> (watch::Receiver<Option<u16>>, Option<Chil
             return (rx, None);
         }
     };
+
+    // Release only: point the sidecar at Tauri's bundled native resources.
+    //   - LD_LIBRARY_PATH / PATH  → onnxruntime's (bun-extracted) .node finds
+    //     libonnxruntime.so.1 / onnxruntime.dll in the resource dir
+    //   - DISSERTATOR_GRANITE_DIR  → granite ONNX + tokenizer (sidecar local.ts)
+    //   - DISSERTATOR_VEC0_PATH    → sqlite-vec vec0 lib (sidecar project.ts)
+    // `bun build --compile` bundles JS but NOT native .so/.dll, so without
+    // this the release binary can't load onnxruntime or sqlite-vec. Dev is
+    // untouched — it resolves everything from node_modules.
+    #[cfg(not(debug_assertions))]
+    if let Some(rd) = resource_dir.as_deref() {
+        let native = rd.join("native");
+        cmd.env("DISSERTATOR_RESOURCE_DIR", rd);
+        cmd.env(
+            "DISSERTATOR_GRANITE_DIR",
+            rd.join("granite-embedding-97m-multilingual-r2"),
+        );
+        let vec_name = if cfg!(windows) {
+            "vec0.dll"
+        } else if cfg!(target_os = "macos") {
+            "vec0.dylib"
+        } else {
+            "vec0.so"
+        };
+        cmd.env("DISSERTATOR_VEC0_PATH", native.join(vec_name));
+        // Dynamic-linker search path so the .node resolves its native lib.
+        #[cfg(target_os = "windows")]
+        {
+            let prev = std::env::var("PATH").unwrap_or_default();
+            cmd.env(
+                "PATH",
+                if prev.is_empty() {
+                    native.display().to_string()
+                } else {
+                    format!("{};{}", native.display(), prev)
+                },
+            );
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let prev = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+            cmd.env(
+                "LD_LIBRARY_PATH",
+                if prev.is_empty() {
+                    native.display().to_string()
+                } else {
+                    format!("{}:{}", native.display(), prev)
+                },
+            );
+        }
+    }
+
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     let mut child = match cmd.spawn() {

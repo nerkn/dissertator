@@ -29,3 +29,10 @@ src-tauri/icons/ios/
 
 # Release build artifacts (downloaded by release skill)
 release-artifacts/
+
+# Staged native libs + granite model (built by sidecar/scripts/stage-resources.ts)
+src-tauri/resources/
+
+# Granite ONNX model (~94 MB) — fetched by sidecar/scripts/fetch-granite-model.ts,
+# never committed. Present locally; CI downloads it at build time.
+sidecar/models/

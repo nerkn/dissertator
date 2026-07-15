@@ -1,6 +1,10 @@
 name: release
 
-# NOTE: GitHub Actions is currently disabled for our account. We reach out to GitHub Support for assistance.
+# NOTE: GitHub Actions is DISABLED for this account. AppVeyor (appveyor.yml) is
+# the PRIMARY CI: it builds the Windows installers and publishes them to GitHub
+# Releases on every `v*` tag. This workflow is kept ONLY as a reference /
+# fallback for Linux + macOS builds, in case Actions is ever restored. Do not
+# rely on it until GitHub Support re-enables Actions.
 #
 # Build Dissertator desktop apps (Linux, macOS x64 + arm64, Windows) on git tag,
 # then publish all installers to a GitHub Release.

@@ -6,19 +6,24 @@ import type { AiFunction } from "./functions";
  * only `type==="google"` uses the google adapter; every other type
  * (openai/zai/deepseek/openrouter/custom/…) is OpenAI-compatible.
  */
-export type EmbedEngine = "openai" | "google";
+export type EmbedEngine = "openai" | "google" | "local";
 
 /** Pick the embedding wire format from a provider `type`. */
 export function adapterFromType(type: string): EmbedEngine {
-  return type === "google" ? "google" : "openai";
+  if (type === "google") return "google";
+  if (type === GRANITE_EMBED_TYPE) return "local";
+  return "openai";
 }
 
 /** Provider type that means "keyless local OCR" (the only non-LLM type). */
 export const TESSERACT_TYPE = "tesseract";
 
+/** Provider type that means "keyless local embeddings" (granite ONNX). */
+export const GRANITE_EMBED_TYPE = "local-granite";
+
 /** True for keyless local providers (no API key, no remote call). */
 export function isKeylessProviderType(type: string): boolean {
-  return type === TESSERACT_TYPE;
+  return type === TESSERACT_TYPE || type === GRANITE_EMBED_TYPE;
 }
 
 /**
@@ -176,6 +181,26 @@ export const TESSERACT_PROVIDER: {
   id: "local-tesseract",
   name: "Local Tesseract",
   type: TESSERACT_TYPE,
+  apiUrl: "",
+  keyUser: "",
+  isDefault: false,
+};
+
+/**
+ * Built-in keyless local embedding provider (granite-embedding-97m onnx).
+ * Seeded into the pool as an embed binding; runs fully offline, no API key.
+ */
+export const GRANITE_EMBED_PROVIDER: {
+  id: string;
+  name: string;
+  type: string;
+  apiUrl: string;
+  keyUser: string;
+  isDefault: boolean;
+} = {
+  id: "local-granite",
+  name: "Local Granite Embeddings",
+  type: GRANITE_EMBED_TYPE,
   apiUrl: "",
   keyUser: "",
   isDefault: false,

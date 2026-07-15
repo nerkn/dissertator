@@ -1,16 +1,29 @@
-# AppVeyor build config for Dissertator (Windows .msi + .exe).
-# Used while GitHub Actions is unavailable. Public project → free Windows images.
+# =============================================================================
+# AppVeyor — PRIMARY CI for Dissertator (Windows .msi + .exe → GitHub Release).
+# =============================================================================
+# GitHub Actions is DISABLED for this account (see .github/workflows/release.yml,
+# kept only as a reference/fallback for Linux + macOS). AppVeyor is the SOLE CI:
+#   • every push to `main`  → builds Windows installers (smoke / artifact tab)
+#   • every tag `v*`        → builds Windows installers AND publishes them to
+#                             the matching GitHub Release (needs GH_TOKEN — see
+#                             the `on_success` step below).
 #
-# Mirrors the linux/macos logic in .github/workflows/release.yml but on a
-# single Windows runner: install Rust + Bun, build the sidecar natively (so
-# sqlite-vec + tesseract native bits are correct), place it at the target-triple
-# path Tauri's externalBin expects, then `tauri build`.
+# Flow: install Rust + Bun → build sidecar natively (sqlite-vec + tesseract +
+# onnxruntime native bits) → fetch the granite ONNX model (not in git, ~94 MB)
+# → place sidecar at the target-triple path Tauri's externalBin expects →
+# `tauri build` (whose beforeBuildCommand runs `stage:resources` to bundle the
+# native libs + model) → upload .msi/.exe to GitHub on tag builds.
+#
+# The Linux .deb is NOT built here — it's built locally and uploaded to the same
+# GitHub Release with `gh release upload --clobber`.
 
 image: Visual Studio 2022
 
 branches:
   only:
     - main
+    # Tag pushes whose commit is on `main` also build (APPVEYOR_REPO_TAG=true).
+    # The `on_success` step is gated on that flag, so ONLY tags publish to GitHub.
 
 environment:
   matrix:
@@ -46,6 +59,10 @@ build_script:
       bun --filter sidecar build
       if ($LASTEXITCODE -ne 0) { throw "sidecar build failed" }
 
+      Write-Host "=== fetch granite ONNX model (Hugging Face, ~94 MB) ==="
+      bun run sidecar/scripts/fetch-granite-model.ts
+      if ($LASTEXITCODE -ne 0) { throw "granite model fetch failed" }
+
       Write-Host "=== place sidecar at externalBin target-triple path ==="
       New-Item -ItemType Directory -Force -Path "src-tauri\binaries" | Out-Null
       Copy-Item "sidecar\dist\dissertator-sidecar.exe" `
@@ -72,6 +89,68 @@ build_script:
       }
       Write-Host "Bundles OK: $($msi.Name) / $($nsis.Name)"
 
+# -----------------------------------------------------------------------------
+# GitHub release upload — runs after a successful build, but ONLY on tag builds
+# (APPVEYOR_REPO_TAG=true). Requires GH_TOKEN: a GitHub PAT with `repo` scope
+# (or fine-grained "Contents: read+write" for this repo), set as a SECURE env
+# var in AppVeyor project settings (UI → Settings → Environment → Add variable
+# → tick "encrypted"). Without GH_TOKEN the step is skipped (artifacts remain
+# downloadable from the build's "Artifacts" tab) and the build still succeeds.
+#
+# The Linux .deb is uploaded to the same release separately, from a Linux host,
+# via `gh release upload v<tag> <deb> --clobber`.
+# -----------------------------------------------------------------------------
+on_success:
+  - ps: |
+      if ($env:APPVEYOR_REPO_TAG -ne "true") {
+        Write-Host "Not a tag build (APPVEYOR_REPO_TAG='$env:APPVEYOR_REPO_TAG') — skip GitHub release upload."
+      } elseif (-not $env:GH_TOKEN) {
+        Write-Host "GH_TOKEN not set — skip GitHub release upload. Set it (secure) in AppVeyor project settings to publish."
+      } else {
+        $owner = "nerkn"; $repo = "dissertator"; $tag = $env:APPVEYOR_REPO_TAG_NAME
+        $h = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json"; "X-GitHub-Api-Version" = "2022-11-28" }
+
+        # 1. find or create the release for this tag
+        $rel = $null
+        try {
+          $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/releases/tags/$tag" -Headers $h -ErrorAction Stop
+          Write-Host "Release for $tag exists (id $($rel.id))."
+        } catch {
+          Write-Host "No release for $tag — creating..."
+          $body = @{ tag_name = $tag; name = "Dissertator $tag"; target_commitish = "main"; generate_release_notes = $true } | ConvertTo-Json
+          $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/releases" -Headers $h -Method Post -Body $body -ErrorAction Stop
+          Write-Host "Created release id $($rel.id)."
+        }
+        # upload_url looks like ".../assets{?name,label}" — strip the template suffix.
+        $uploadBase = $rel.upload_url -replace '\{\?name,label\}$',''
+
+        # 2. upload each installer asset (create-or-replace via ?name= + clobber)
+        $assets = @(
+          "src-tauri\target\release\bundle\msi\*.msi",
+          "src-tauri\target\release\bundle\nsis\*.exe",
+          "src-tauri\target\release\dissertator.exe"
+        )
+        foreach ($pat in $assets) {
+          Get-ChildItem $pat -ErrorAction SilentlyContinue | ForEach-Object {
+            $f = $_
+            $name = [uri]::EscapeDataString($f.Name)
+            $url  = "${uploadBase}?name=$name"
+            Write-Host "  upload $($f.Name) ($([math]::Round($f.Length/1MB,1)) MB)"
+            # GitHub returns 422 if an asset with this name already exists; delete first.
+            try {
+              Invoke-RestMethod -Uri $url -Headers $h -Method Post -InFile $f.FullName -ContentType "application/octet-stream" -ErrorAction Stop | Out-Null
+            } catch {
+              Write-Host "    direct upload failed ($($_.Exception.Message)); retrying after deleting existing asset..."
+              $existing = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/releases/$($rel.id)/assets" -Headers $h -ErrorAction Stop | Where-Object { $_.name -eq $f.Name }
+              if ($existing) { Invoke-RestMethod -Uri $existing.url -Headers $h -Method Delete -ErrorAction SilentlyContinue | Out-Null }
+              Invoke-RestMethod -Uri $url -Headers $h -Method Post -InFile $f.FullName -ContentType "application/octet-stream" -ErrorAction Stop | Out-Null
+            }
+            Write-Host "    ok"
+          }
+        }
+        Write-Host "GitHub release upload done for $tag."
+      }
+
 test: off
 
 artifacts:
@@ -81,7 +160,3 @@ artifacts:
     name: Dissertator-nsis
   - path: 'src-tauri\target\release\dissertator.exe'
     name: Dissertator-raw-exe
-
-# Push installers into the build's "Artifacts" tab; download from the web UI.
-# (No GitHub Release wiring — once Actions is restored this appveyor.yml can be
-# deleted and the GH workflow takes over.)

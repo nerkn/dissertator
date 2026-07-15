@@ -1,7 +1,7 @@
 {
   "name": "dissertator",
   "private": true,
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "A cross-platform writing + research tool. Open a folder, build a grounded corpus, write dissertations and papers with an LLM agent.",
   "type": "module",
   "scripts": {
@@ -11,7 +11,8 @@
     "build": "tsc && vite build",
     "tauri": "tauri",
     "tauri:build": "tauri build",
-    "sidecar:build": "bun --filter sidecar build"
+    "sidecar:build": "bun --filter sidecar build",
+    "stage:resources": "bun run sidecar/scripts/stage-resources.ts"
   },
   "workspaces": [
     "packages/*",

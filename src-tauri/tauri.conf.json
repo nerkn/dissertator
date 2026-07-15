@@ -1,13 +1,13 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Dissertator",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "identifier": "com.dissertator.app",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
     "beforeDevCommand": "bun run dev:web",
-    "beforeBuildCommand": "bun run build"
+    "beforeBuildCommand": "bun run build && bun run stage:resources"
   },
   "app": {
     "windows": [
@@ -38,6 +38,10 @@
     ],
     "externalBin": [
       "binaries/dissertator-sidecar"
-    ]
+    ],
+    "resources": {
+      "resources/native": "native",
+      "resources/granite-embedding-97m-multilingual-r2": "granite-embedding-97m-multilingual-r2"
+    }
   }
 }

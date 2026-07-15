@@ -8,6 +8,7 @@
 import { Database } from "bun:sqlite";
 import { exists, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import { getLoadablePath } from "sqlite-vec";
 import {
   AI_FUNCTIONS,
@@ -33,6 +34,21 @@ import {
 } from "./_core.ts";
 import { setEmbeddingProviderId } from "./providers.ts";
 import { backfillSourceReferences } from "./references.ts";
+
+/**
+ * Resolve the sqlite-vec vec0 extension path.
+ *
+ * Release builds set `DISSERTATOR_VEC0_PATH` (Tauri resource dir) because
+ * `bun build --compile` does NOT bundle the native `.so`/`.dll`, so
+ * `getLoadablePath()`'s `import.meta.resolve(...)` fails against the
+ * compiled binary's virtual FS. Dev leaves the env unset and falls back to
+ * `getLoadablePath()`, which resolves the lib from `node_modules`.
+ */
+function vecExtensionPath(): string {
+  const env = process.env.DISSERTATOR_VEC0_PATH;
+  if (env && existsSync(env)) return env;
+  return getLoadablePath();
+}
 
 export function getCurrentProject(): ProjectState | null {
   return current;
@@ -83,7 +99,7 @@ export async function initProject(
   // will throw a clear error if invoked without the extension.
   let vecExtensionOk = false;
   try {
-    db.loadExtension(getLoadablePath());
+    db.loadExtension(vecExtensionPath());
     vecExtensionOk = true;
   } catch (e) {
     console.error(

@@ -6,6 +6,8 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import {
+  GRANITE_EMBED_PROVIDER,
+  GRANITE_EMBED_TYPE,
   PROVIDER_DEFS,
   TESSERACT_PROVIDER,
   TESSERACT_TYPE,
@@ -82,6 +84,17 @@ export function seedProviders(db: Database): void {
     TESSERACT_PROVIDER.id,
     TESSERACT_PROVIDER.name,
     TESSERACT_TYPE,
+    new Date().toISOString(),
+  );
+
+  // Keyless local embeddings pseudo-provider (granite ONNX, offline). Idempotent.
+  db.prepare(
+    "INSERT OR IGNORE INTO providers(id, name, type, api_url, key_user, is_default, created_at) " +
+      "VALUES (?, ?, ?, '', '', 0, ?)",
+  ).run(
+    GRANITE_EMBED_PROVIDER.id,
+    GRANITE_EMBED_PROVIDER.name,
+    GRANITE_EMBED_TYPE,
     new Date().toISOString(),
   );
 

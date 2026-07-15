@@ -15,9 +15,10 @@
 
 import { runOpenAIEmbed } from "./openai.ts";
 import { runGoogleEmbed } from "./google.ts";
+import { runLocalEmbed } from "./local.ts";
 
 /** Backend wire format. Resolved from `EMBEDDING_DEFAULTS[provider].adapter`. */
-export type EmbedEngine = "openai" | "google";
+export type EmbedEngine = "openai" | "google" | "local";
 
 export interface EmbedOptions {
   /**
@@ -56,6 +57,9 @@ export async function embedBatch(
     }
     if (engine === "google") {
       return await runGoogleEmbed(texts, opts);
+    }
+    if (engine === "local") {
+      return await runLocalEmbed(texts, opts);
     }
     throw new Error(`unknown embed engine: ${engine}`);
   } catch (e) {
