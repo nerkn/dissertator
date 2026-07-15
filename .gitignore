@@ -18,6 +18,9 @@ sidecar/dist/
 .DS_Store
 Thumbs.db
 
+# local agent state (pi)
+.pi/
+
 # local test data
 denemeFolder/
 
