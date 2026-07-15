@@ -11,8 +11,15 @@
 // `setChatProviderId`) that are referenced from more than one entity module.
 
 import type { Database } from "bun:sqlite";
-import { join } from "node:path";
 import { GRANITE_EMBED_PROVIDER, type AiFunction } from "@dissertator/shared";
+// schema.sql is embedded into the compiled binary at build time via the
+// `type:"text"` import attribute, so it never touches the filesystem at
+// runtime. Reading it via `import.meta.dir` broke under `bun build --compile`:
+// `import.meta.dir` resolves to Bun's virtual `/~BUN/` namespace, and
+// `path.join(import.meta.dir, "..", "schema.sql")` produced a drive-less path
+// that Windows re-rooted against the sidecar's CWD (the opened project), e.g.
+// `B:\~BUN\schema.sql` → ENOENT. Embedding the SQL fixes every drive.
+import schemaSql from "../schema.sql" with { type: "text" };
 import { seedProviders } from "./providers.ts";
 import { seedBindings, setBinding } from "./bindings.ts";
 import { seedLists } from "./lists.ts";
@@ -79,8 +86,9 @@ export function setCurrentProject(next: ProjectState | null): void {
 }
 
 export function readSchema(): Promise<string> {
-  // schema.sql lives one level up (src/schema.sql); this module is in src/db/.
-  return Bun.file(join(import.meta.dir, "..", "schema.sql")).text();
+  // schema.sql is embedded at compile time (see import above); the compiled
+  // sidecar never reads it from disk, so there's no path/drive to get wrong.
+  return Promise.resolve(schemaSql);
 }
 
 export function count(db: Database, table: string): number {
