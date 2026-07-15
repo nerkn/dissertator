@@ -127,9 +127,12 @@ on_success:
         # 2. upload each installer asset (create-or-replace via ?name= + clobber)
         $assets = @(
           "src-tauri\target\release\bundle\msi\*.msi",
-          "src-tauri\target\release\bundle\nsis\*.exe",
-          "src-tauri\target\release\dissertator.exe"
+          "src-tauri\target\release\bundle\nsis\*.exe"
         )
+        # NOTE: the raw dissertator.exe is intentionally NOT published. It has
+        # no bundled native resources (vec0.dll / onnxruntime.dll / granite
+        # model) alongside it, so it fails with "sqlite-vec not found" and
+        # disabled embeddings. Users must install via the .msi / NSIS .exe.
         foreach ($pat in $assets) {
           Get-ChildItem $pat -ErrorAction SilentlyContinue | ForEach-Object {
             $f = $_
@@ -158,5 +161,3 @@ artifacts:
     name: Dissertator-msi
   - path: 'src-tauri\target\release\bundle\nsis\*.exe'
     name: Dissertator-nsis
-  - path: 'src-tauri\target\release\dissertator.exe'
-    name: Dissertator-raw-exe

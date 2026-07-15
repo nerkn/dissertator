@@ -42,13 +42,41 @@ import { backfillSourceReferences } from "./references.ts";
  * Release builds set `DISSERTATOR_VEC0_PATH` (Tauri resource dir) because
  * `bun build --compile` does NOT bundle the native `.so`/`.dll`, so
  * `getLoadablePath()`'s `import.meta.resolve(...)` fails against the
- * compiled binary's virtual FS. Dev leaves the env unset and falls back to
- * `getLoadablePath()`, which resolves the lib from `node_modules`.
+ * compiled binary's virtual FS. We also fall back to
+ * `DISSERTATOR_RESOURCE_DIR/native/<lib>` in case only the resource root
+ * was exported. Dev leaves both unset and falls back to `getLoadablePath()`,
+ * which resolves the lib from `node_modules`.
  */
 function vecExtensionPath(): string {
+  const tried: string[] = [];
+  const name =
+    process.platform === "win32"
+      ? "vec0.dll"
+      : process.platform === "darwin"
+        ? "vec0.dylib"
+        : "vec0.so";
+
   const env = process.env.DISSERTATOR_VEC0_PATH;
-  if (env && existsSync(env)) return env;
-  return getLoadablePath();
+  if (env) {
+    if (existsSync(env)) return env;
+    tried.push(env);
+  }
+  const rd = process.env.DISSERTATOR_RESOURCE_DIR;
+  if (rd) {
+    const p = join(rd, "native", name);
+    if (existsSync(p)) return p;
+    tried.push(p);
+  }
+  try {
+    return getLoadablePath();
+  } catch (e) {
+    throw new Error(
+      `sqlite-vec vec0 extension not found. Tried: [${tried.join(", ")}]. ` +
+        `Ensure the native/vec0.* lib ships alongside the app ` +
+        `(DISSERTATOR_VEC0_PATH / DISSERTATOR_RESOURCE_DIR). ` +
+        `Underlying: ${(e as Error)?.message ?? String(e)}`,
+    );
+  }
 }
 
 export function getCurrentProject(): ProjectState | null {

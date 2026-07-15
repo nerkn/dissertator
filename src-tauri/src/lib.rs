@@ -75,6 +75,45 @@ fn sidecar_command(workspace_root: &Path, resource_dir: Option<&Path>) -> Option
     None
 }
 
+/// Best-effort path for the sidecar log, in a per-OS app/log dir. Returns
+/// None if no home/app-data dir is resolvable.
+fn sidecar_log_path() -> Option<PathBuf> {
+    let base = if cfg!(target_os = "windows") {
+        std::env::var_os("APPDATA").map(PathBuf::from)
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library").join("Logs"))
+    } else {
+        std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|h| PathBuf::from(h).join(".local").join("state"))
+            })
+    }?;
+    Some(base.join("Dissertator").join("sidecar.log"))
+}
+
+/// Open (append) the sidecar log file and write a launch header. None on any
+/// failure so the caller falls back to a piped stderr.
+fn sidecar_log_file() -> Option<std::fs::File> {
+    use std::io::Write;
+    let path = sidecar_log_path()?;
+    let parent = path.parent()?;
+    let _ = std::fs::create_dir_all(parent);
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()?;
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let _ = writeln!(f, "\n==== dissertator sidecar launch @ {secs} ====");
+    eprintln!("[dissertator] sidecar log file: {}", path.display());
+    Some(f)
+}
+
 /// Spawn the sidecar, wire its stdout into a port-discovery watch channel, and
 /// return the (receiver, child). On any failure, returns a dead channel so the
 /// frontend's health poll degrades to "down" rather than crashing the app.
@@ -93,21 +132,23 @@ fn spawn_sidecar(app: &tauri::App) -> (watch::Receiver<Option<u16>>, Option<Chil
     };
 
     // Release only: point the sidecar at Tauri's bundled native resources.
-    //   - LD_LIBRARY_PATH / PATH  → onnxruntime's (bun-extracted) .node finds
+    //   - LD_LIBRARY_PATH / PATH  → onnxruntime's .node finds
     //     libonnxruntime.so.1 / onnxruntime.dll in the resource dir
     //   - DISSERTATOR_GRANITE_DIR  → granite ONNX + tokenizer (sidecar local.ts)
     //   - DISSERTATOR_VEC0_PATH    → sqlite-vec vec0 lib (sidecar project.ts)
     // `bun build --compile` bundles JS but NOT native .so/.dll, so without
     // this the release binary can't load onnxruntime or sqlite-vec. Dev is
     // untouched — it resolves everything from node_modules.
+    //
+    // We probe several `native/` roots (resource dir, exe dir, exe sibling)
+    // and only set an env var to a path that actually EXISTS. This covers
+    // installed apps, portable runs, and the case where Tauri's
+    // `resource_dir()` resolves to a different root than expected — and it
+    // stops the sidecar falling through to `getLoadablePath()`, which throws
+    // "sqlite-vec ... not found" inside a compiled binary (the bug that left
+    // embeddings silently disabled on Windows).
     #[cfg(not(debug_assertions))]
-    if let Some(rd) = resource_dir.as_deref() {
-        let native = rd.join("native");
-        cmd.env("DISSERTATOR_RESOURCE_DIR", rd);
-        cmd.env(
-            "DISSERTATOR_GRANITE_DIR",
-            rd.join("granite-embedding-97m-multilingual-r2"),
-        );
+    {
         let vec_name = if cfg!(windows) {
             "vec0.dll"
         } else if cfg!(target_os = "macos") {
@@ -115,35 +156,97 @@ fn spawn_sidecar(app: &tauri::App) -> (watch::Receiver<Option<u16>>, Option<Chil
         } else {
             "vec0.so"
         };
-        cmd.env("DISSERTATOR_VEC0_PATH", native.join(vec_name));
-        // Dynamic-linker search path so the .node resolves its native lib.
-        #[cfg(target_os = "windows")]
-        {
-            let prev = std::env::var("PATH").unwrap_or_default();
+
+        let mut native_dirs: Vec<PathBuf> = Vec::new();
+        // For each anchor (resource dir + exe dir) check the layouts Tauri
+        // actually uses across MSI/NSIS/AppImage: bare `native/`, and
+        // `resources/native/`. Probing all of them makes the search robust to
+        // whichever install layout the user ended up with.
+        let mut anchors: Vec<PathBuf> = Vec::new();
+        if let Some(rd) = resource_dir.as_deref() {
+            anchors.push(rd.to_path_buf());
+            cmd.env("DISSERTATOR_RESOURCE_DIR", rd);
             cmd.env(
-                "PATH",
-                if prev.is_empty() {
-                    native.display().to_string()
-                } else {
-                    format!("{};{}", native.display(), prev)
-                },
+                "DISSERTATOR_GRANITE_DIR",
+                rd.join("granite-embedding-97m-multilingual-r2"),
             );
         }
-        #[cfg(not(target_os = "windows"))]
-        {
-            let prev = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
-            cmd.env(
-                "LD_LIBRARY_PATH",
-                if prev.is_empty() {
-                    native.display().to_string()
-                } else {
-                    format!("{}:{}", native.display(), prev)
-                },
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                anchors.push(dir.to_path_buf());
+                anchors.push(dir.join("resources"));
+            }
+        }
+        for a in &anchors {
+            native_dirs.push(a.join("native"));
+            native_dirs.push(a.clone());
+        }
+
+        // vec0 lib: first native dir that actually contains it.
+        let mut vec_set = false;
+        for nd in &native_dirs {
+            let candidate = nd.join(vec_name);
+            if candidate.exists() {
+                cmd.env("DISSERTATOR_VEC0_PATH", &candidate);
+                vec_set = true;
+                break;
+            }
+        }
+        if !vec_set {
+            eprintln!(
+                "[dissertator] vec0 native lib '{vec_name}' not found in any \
+                 candidate dir; sqlite-vec (embeddings) will be unavailable. \
+                 Searched: {}",
+                native_dirs
+                    .iter()
+                    .map(|d| d.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             );
+        }
+
+        // Dynamic-linker search path so onnxruntime's .node resolves its lib.
+        // Include every existing native dir so a portable layout still works.
+        let existing: Vec<String> = native_dirs
+            .iter()
+            .filter(|d| d.exists())
+            .map(|d| d.display().to_string())
+            .collect();
+        #[cfg(target_os = "windows")]
+        if !existing.is_empty() {
+            let prev = std::env::var("PATH").unwrap_or_default();
+            let joined = existing.join(";");
+            cmd.env("PATH", if prev.is_empty() { joined } else { format!("{joined};{prev}") });
+        }
+        #[cfg(not(target_os = "windows"))]
+        if !existing.is_empty() {
+            let prev = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+            let joined = existing.join(":");
+            cmd.env("LD_LIBRARY_PATH", if prev.is_empty() { joined } else { format!("{joined}:{prev}") });
         }
     }
 
-    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    // Suppress the lingering black console window on Windows. The bundled
+    // sidecar is a console-subsystem binary (bun build --compile); without
+    // CREATE_NO_WINDOW Windows allocates a fresh console for the child, which
+    // is exactly the stray black cmd box users see on first run.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    cmd.stdout(Stdio::piped());
+    // Capture the sidecar's stderr to a log file. Its console is now hidden
+    // (CREATE_NO_WINDOW) and the parent is a GUI app with no console, so a
+    // piped stderr would vanish entirely — leaving sqlite-vec / onnxruntime
+    // load failures invisible. Best-effort: fall back to a pipe if the file
+    // can't be opened.
+    cmd.stderr(match sidecar_log_file() {
+        Some(f) => Stdio::from(f),
+        None => Stdio::piped(),
+    });
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -226,7 +329,11 @@ async fn sidecar_port(state: tauri::State<'_, SidecarState>) -> Result<Option<u1
     // trips the borrow checker here).
     let port = tokio::select! {
         res = rx.wait_for(|v| v.is_some()) => res.ok().and_then(|v| *v),
-        _ = tokio::time::sleep(Duration::from_secs(8)) => None,
+        // The compiled sidecar binary is large (~100 MB); its cold start on
+        // Windows (especially with AV scanning) can exceed the old 8s grace.
+        // 20s gives margin while the watch still returns immediately once the
+        // sidecar actually reports its port — this is only the ceiling.
+        _ = tokio::time::sleep(Duration::from_secs(20)) => None,
     };
     Ok(port)
 }

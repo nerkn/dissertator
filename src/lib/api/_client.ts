@@ -108,16 +108,44 @@ export function sidecarBase(): string {
  * caller-supplied headers are merged explicitly so a full `headers` object on
  * `opts` does NOT clobber `Content-Type` (required e.g. for the OCR vision
  * call, which also sends `Authorization`).
+ *
+ * Resilient to transient connection failures: if `fetch` rejects at the
+ * network layer (sidecar still cold-booting — the compiled binary is large —
+ * or it restarted on a shifted port), we drop the cached base, re-resolve the
+ * port, and retry a few times with backoff before surfacing a clear message
+ * instead of the webview's opaque "Failed to fetch". All `req()` bodies are
+ * already-serialized JSON strings, so replaying them across retries is safe.
  */
+const CONNECTION_RETRIES = 3;
+const RETRY_BACKOFF_MS = 700;
+
 export async function req<T>(path: string, opts?: RequestInit): Promise<T> {
   const { headers: callerHeaders, ...rest } = opts ?? {};
-  const res = await fetch(`${base()}${path}`, {
+  const init: RequestInit = {
     headers: { "Content-Type": "application/json", ...callerHeaders },
     ...rest,
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`${res.status} ${text}`.trim());
+  };
+  for (let attempt = 0; ; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(`${base()}${path}`, init);
+    } catch {
+      if (attempt >= CONNECTION_RETRIES) {
+        throw new Error(
+          "Can't reach the Dissertator backend — it may still be starting up. " +
+            "The app will keep retrying; if this persists, restart it.",
+        );
+      }
+      // Sidecar unreachable: rediscover its (possibly shifted) port, then retry.
+      resetSidecarBase();
+      await resolveSidecarBase();
+      await new Promise((r) => setTimeout(r, RETRY_BACKOFF_MS * (attempt + 1)));
+      continue;
+    }
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      throw new Error(`${res.status} ${text}`.trim());
+    }
+    return (await res.json()) as T;
   }
-  return (await res.json()) as T;
 }

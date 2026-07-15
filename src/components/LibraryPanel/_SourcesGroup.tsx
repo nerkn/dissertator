@@ -127,7 +127,7 @@ export function SourcesGroup({
   // a status fetch back; degrades to nothing rather than "0/0".
   const embedLine = (() => {
     if (!embed) return null;
-    if (!embed.vecLoaded) return "embeddings disabled on this platform";
+    if (!embed.vecLoaded) return "embeddings unavailable (sqlite-vec not loaded)";
     if (embed.total > 0) return `${embed.done}/${embed.total} embedded`;
     return null;
   })();
