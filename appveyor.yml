@@ -103,26 +103,54 @@ build_script:
 on_success:
   - ps: |
       # Publish when THIS commit is exactly at a release tag — detected
-      # independently of APPVEYOR_REPO_TAG. AppVeyor sometimes flags a tag
-      # build as a branch build (or de-dupes the tag push against a concurrent
-      # branch build of the same commit), so APPVEYOR_REPO_TAG can be 'false'
-      # even when we're sitting on v*. Falling back to `git describe` makes the
-      # release deterministic regardless of which trigger fired the build.
+      # DETERMINISTICALLY via the GitHub API ("which v* tag points at this
+      # commit?") using GH_TOKEN, NOT via APPVEYOR_REPO_TAG. AppVeyor often
+      # flags a tag build as a branch build, or de-dupes a tag push against a
+      # concurrent branch build of the same commit, so APPVEYOR_REPO_TAG can be
+      # 'false' even on v*; and the branch-build checkout is created before the
+      # tag exists, so `git fetch --tags`/`git describe` don't reliably recover
+      # it. Asking GitHub directly is correct regardless of trigger or timing.
+      $owner = "nerkn"; $repo = "dissertator"
+      $h = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json"; "X-GitHub-Api-Version" = "2022-11-28" }
       $tag = $null
-      if ($env:APPVEYOR_REPO_TAG -eq "true" -and $env:APPVEYOR_REPO_TAG_NAME) {
-        $tag = $env:APPVEYOR_REPO_TAG_NAME
-      } else {
-        git fetch --tags --quiet 2>$null
-        $exact = (git describe --tags --exact-match HEAD 2>$null)
-        if ($exact -and $exact -match '^v\d') { $tag = $exact }
-      }
-      if (-not $tag) {
-        Write-Host "Not a release-tagged commit (APPVEYOR_REPO_TAG='$env:APPVEYOR_REPO_TAG', HEAD not at a v* tag) — skip GitHub release upload."
-      } elseif (-not $env:GH_TOKEN) {
+      if (-not $env:GH_TOKEN) {
         Write-Host "GH_TOKEN not set — skip GitHub release upload. Set it (secure) in AppVeyor project settings to publish."
       } else {
-        $owner = "nerkn"; $repo = "dissertator"
-        $h = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json"; "X-GitHub-Api-Version" = "2022-11-28" }
+        # Primary detection: list repo tags, pick the v* tag whose commit SHA
+        # equals this build's commit. per_page=100 covers all tags so far.
+        try {
+          $tags = Invoke-RestMethod -Uri "https://api.github.com/repos/$owner/$repo/tags?per_page=100" -Headers $h -ErrorAction Stop
+          $hit = $tags | Where-Object { $_.commit.sha -eq $env:APPVEYOR_REPO_COMMIT } | Select-Object -First 1
+          if ($hit -and $hit.name -match '^v\d') { $tag = $hit.name }
+        } catch {
+          Write-Host "GitHub tag lookup failed ($($_.Exception.Message)); falling back to APPVEYOR_REPO_TAG."
+        }
+        # Secondary signal (covers an API hiccup / private setup).
+        if (-not $tag -and $env:APPVEYOR_REPO_TAG -eq "true" -and $env:APPVEYOR_REPO_TAG_NAME -match '^v\d') {
+          $tag = $env:APPVEYOR_REPO_TAG_NAME
+        }
+        if (-not $tag) {
+          Write-Host "No v* tag points at commit $env:APPVEYOR_REPO_COMMIT — skip GitHub release upload."
+        } elseif ($tag -match '^v(\d+)\.(\d+)\.(\d+)') {
+          # Odd/even publish gate: ODD patch = public release (auto-publish);
+          # EVEN patch = internal/CI build (build + archive, skip the public
+          # Releases page). Lets us cut throwaway even builds — e.g. v0.6.2 —
+          # without spamming Releases. To publish an even build anyway, run
+          # `gh release create` by hand (bypasses this gate entirely).
+          $patch = [int]$Matches[3]
+          if ($patch % 2 -eq 0) {
+            Write-Host "$tag is an EVEN patch (internal build) — skipping GitHub publish. Artifacts stay in this build's Artifacts tab."
+            $tag = $null
+          } else {
+            Write-Host "$tag is an ODD patch (public release) — publishing to GitHub."
+          }
+        } else {
+          Write-Host "$tag is not semver — skip GitHub release upload."
+          $tag = $null
+        }
+      }
+
+      if ($tag) {
 
         # 1. find or create the release for this tag
         $rel = $null
