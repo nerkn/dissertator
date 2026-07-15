@@ -102,12 +102,26 @@ build_script:
 # -----------------------------------------------------------------------------
 on_success:
   - ps: |
-      if ($env:APPVEYOR_REPO_TAG -ne "true") {
-        Write-Host "Not a tag build (APPVEYOR_REPO_TAG='$env:APPVEYOR_REPO_TAG') — skip GitHub release upload."
+      # Publish when THIS commit is exactly at a release tag — detected
+      # independently of APPVEYOR_REPO_TAG. AppVeyor sometimes flags a tag
+      # build as a branch build (or de-dupes the tag push against a concurrent
+      # branch build of the same commit), so APPVEYOR_REPO_TAG can be 'false'
+      # even when we're sitting on v*. Falling back to `git describe` makes the
+      # release deterministic regardless of which trigger fired the build.
+      $tag = $null
+      if ($env:APPVEYOR_REPO_TAG -eq "true" -and $env:APPVEYOR_REPO_TAG_NAME) {
+        $tag = $env:APPVEYOR_REPO_TAG_NAME
+      } else {
+        git fetch --tags --quiet 2>$null
+        $exact = (git describe --tags --exact-match HEAD 2>$null)
+        if ($exact -and $exact -match '^v\d') { $tag = $exact }
+      }
+      if (-not $tag) {
+        Write-Host "Not a release-tagged commit (APPVEYOR_REPO_TAG='$env:APPVEYOR_REPO_TAG', HEAD not at a v* tag) — skip GitHub release upload."
       } elseif (-not $env:GH_TOKEN) {
         Write-Host "GH_TOKEN not set — skip GitHub release upload. Set it (secure) in AppVeyor project settings to publish."
       } else {
-        $owner = "nerkn"; $repo = "dissertator"; $tag = $env:APPVEYOR_REPO_TAG_NAME
+        $owner = "nerkn"; $repo = "dissertator"
         $h = @{ Authorization = "Bearer $env:GH_TOKEN"; Accept = "application/vnd.github+json"; "X-GitHub-Api-Version" = "2022-11-28" }
 
         # 1. find or create the release for this tag
