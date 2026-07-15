@@ -12,6 +12,7 @@
 import type { Database } from "bun:sqlite";
 import {
   AI_FUNCTIONS,
+  GRANITE_EMBED_PROVIDER,
   type AiFunction,
   type Bindings,
   type BindingPatch,
@@ -56,7 +57,8 @@ export function seedBindings(db: Database): void {
       value?: string;
     } | null)?.value;
   const chatId = getSetting("chat_provider_id") ?? "default-chat";
-  const embId = getSetting("embedding_provider_id") ?? "default-embedding";
+  const embId =
+    getSetting("embedding_provider_id") ?? GRANITE_EMBED_PROVIDER.id;
 
   const now = Date.now();
   const ins = db.prepare(
@@ -66,13 +68,19 @@ export function seedBindings(db: Database): void {
     if (bindingExists(db, fn)) return;
     ins.run(fn, providerId, model, now);
   };
-  // Default models match the seeded providers: Z.ai (chat/vision glm-4.6,
-  // whisper-1 for stt) + OpenAI (embed text-embedding-3-small).
+  // Default models: Z.ai for chat/stt/vision (glm-4.6, whisper-1); the keyless
+  // local granite embedder for embed. The embed model is informational —
+  // local.ts uses a fixed ONNX file — but a non-empty value satisfies the
+  // binding guard and records what produced the vectors.
+  const embModel =
+    embId === GRANITE_EMBED_PROVIDER.id
+      ? "granite-embedding-97m-multilingual-r2"
+      : "text-embedding-3-small";
   seed("chat", chatId, "glm-4.6");
   seed("stt", chatId, "whisper-1");
   seed("vision_doc", chatId, "glm-4.6");
   seed("vision_image", chatId, "glm-4.6");
-  seed("embed", embId, "text-embedding-3-small");
+  seed("embed", embId, embModel);
 }
 
 /** All five bindings, keyed by function. null if no project is open. */

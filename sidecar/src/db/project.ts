@@ -12,6 +12,7 @@ import { existsSync } from "node:fs";
 import { getLoadablePath } from "sqlite-vec";
 import {
   AI_FUNCTIONS,
+  isKeylessProviderType,
   type Bindings,
   type EmbeddingStatus,
   type InitProjectResponse,
@@ -366,6 +367,7 @@ export function getEmbeddingStatus(): EmbeddingStatus {
       dimensions: 0,
       model: "",
       vecLoaded: false,
+      keyless: false,
     };
   }
   const rows = current.db
@@ -395,5 +397,6 @@ export function getEmbeddingStatus(): EmbeddingStatus {
     dimensions: s.embeddingDimensions ?? 0,
     model: s.resolved?.embed.model ?? "",
     vecLoaded: current.vecExtensionOk,
+    keyless: isKeylessProviderType(s.resolved?.embed.type ?? ""),
   };
 }

@@ -104,7 +104,9 @@ export function seedProviders(db: Database): void {
     "INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING",
   );
   upsertIfAbsent.run("chat_provider_id", "default-chat");
-  upsertIfAbsent.run("embedding_provider_id", "default-embedding");
+  // Default embed provider = keyless local granite (no API key, no setup).
+  // The OpenAI `default-embedding` row above remains available to select.
+  upsertIfAbsent.run("embedding_provider_id", GRANITE_EMBED_PROVIDER.id);
 }
 
 /** List all provider rows (the credential pool), oldest first. */

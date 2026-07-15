@@ -12,7 +12,7 @@
 
 import type { Database } from "bun:sqlite";
 import { join } from "node:path";
-import type { AiFunction } from "@dissertator/shared";
+import { GRANITE_EMBED_PROVIDER, type AiFunction } from "@dissertator/shared";
 import { seedProviders } from "./providers.ts";
 import { seedBindings, setBinding } from "./bindings.ts";
 import { seedLists } from "./lists.ts";
@@ -274,6 +274,36 @@ export function migrate(db: Database): void {
   // Multi-provider: seed the 5 function bindings, mirroring the legacy
   // chat/embedding provider pointers. Idempotent.
   seedBindings(db);
+
+  // One-time: projects seeded with the legacy OpenAI embed default
+  // (`default-embedding`) that never embedded (dimensions == 0) → switch to
+  // the keyless local granite embedder, so embeddings work with zero config.
+  // Idempotent — once switched, the provider is no longer `default-embedding`.
+  // Projects that already embedded (dimensions > 0) keep their working setup.
+  const embProv = (
+    db.prepare("SELECT value FROM settings WHERE key = 'embedding_provider_id'").get() as
+      | { value?: string }
+      | null
+  )?.value;
+  const embDimRaw = (
+    db.prepare("SELECT value FROM settings WHERE key = 'embedding_dimensions'").get() as
+      | { value?: string }
+      | null
+  )?.value;
+  if (embProv === "default-embedding" && Number(embDimRaw ?? 0) === 0) {
+    db.prepare(
+      "INSERT INTO settings(key, value) VALUES ('embedding_provider_id', ?) " +
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    ).run(GRANITE_EMBED_PROVIDER.id);
+    db.prepare(
+      "INSERT INTO function_bindings(function, provider_id, model, updated_at) VALUES ('embed', ?, ?, ?) " +
+        "ON CONFLICT(function) DO UPDATE SET provider_id = excluded.provider_id, " +
+        "model = excluded.model, updated_at = excluded.updated_at",
+    ).run(GRANITE_EMBED_PROVIDER.id, "granite-embedding-97m-multilingual-r2", Date.now());
+    console.log(
+      "[db] migrate: switched unconfigured embed default → local granite (keyless)",
+    );
+  }
 
   // Lists & notes (collect-while-reading). Seeds the 4 built-in lists
   // (system=1) idempotently — `INSERT OR IGNORE` by id so a deliberately

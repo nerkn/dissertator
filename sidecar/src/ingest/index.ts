@@ -684,16 +684,21 @@ export async function embedPending(
   const { db } = project;
 
   // Resolve the embed binding (single source of truth): engine is derived
-  // from the provider `type` (google → google adapter; else openai).
+  // from the provider `type` (local-granite → local; google → google; else
+  // openai). Local embeddings are keyless — they need no apiUrl/model.
   const cfg = getSettings().resolved?.embed;
-  if (!cfg?.apiUrl || !cfg?.model) {
+  if (!cfg?.type) {
+    throw new Error("no embed provider bound — set one in Settings → Functions");
+  }
+  const engine: EmbedEngine = adapterFromType(cfg.type);
+  if (engine !== "local" && (!cfg.apiUrl || !cfg.model)) {
     throw new Error(
       "no embed provider/model bound — set one in Settings → Functions",
     );
   }
-  const engine: EmbedEngine = adapterFromType(cfg.type);
   const apiUrl = cfg.apiUrl;
-  const model = cfg.model;
+  const model =
+    engine === "local" ? (cfg.model || "granite-embedding-97m-multilingual-r2") : cfg.model;
 
   // Pull the backlog (bounded). `text != ''` skips degenerate chunks.
   const pending = db

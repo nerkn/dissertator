@@ -88,4 +88,7 @@ export interface EmbeddingStatus {
   model: string;
   /** sqlite-vec extension loaded? False → embeddings disabled. */
   vecLoaded: boolean;
+  /** True if the embed provider is keyless (local granite) — no API key
+   *  needed, so "Embed now" is always available. */
+  keyless: boolean;
 }

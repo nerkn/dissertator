@@ -32,8 +32,8 @@ interface Props {
   onRescan?: () => void;
   /** While a rescan / OCR call is in flight, disable the rescan button. */
   busy?: boolean;
-  /** Embedding API key. When set + there are pending chunks, the "Embed now"
-   *  action is offered. */
+  /** Embedding API key for a REMOTE embed provider. Not required when the
+   *  bound embed provider is keyless (local granite) — see embedStatus.keyless. */
   embeddingApiKey?: string;
   /** Click-to-open a source in the CenterPane viewer. */
   onOpen?: (src: SourceFile) => void;
@@ -82,7 +82,7 @@ export function SourcesGroup({
   // actionable message; adapter errors (auth/network) surface inline.
   const runEmbed = useCallback(async () => {
     setEmbedError(null);
-    if (!embeddingApiKey) {
+    if (!embed?.keyless && !embeddingApiKey) {
       setEmbedError(
         "No embedding provider assigned. Open ⚙ Settings → Functions and pick one that has a key.",
       );
@@ -98,7 +98,7 @@ export function SourcesGroup({
     } finally {
       setEmbedBusy(false);
     }
-  }, [embeddingApiKey]);
+  }, [embeddingApiKey, embed]);
 
   // Sorted + filtered source list (substring on filename + relPath).
   const filtered = useMemo(() => {
@@ -136,7 +136,9 @@ export function SourcesGroup({
     !!embed && embed.vecLoaded && embed.total > 0 &&
     embed.pending === 0 && embed.failed === 0;
   const embedHasPending = !!embed && embed.vecLoaded && embed.pending > 0;
-  const embedHasKey = !!embeddingApiKey;
+  // "Embed now" is available when the provider is keyless (local granite) OR
+  // a remote key is set — local embeddings need no setup.
+  const embedCanRun = !!embed?.keyless || !!embeddingApiKey;
 
   return (
     <div className="group blue">
@@ -197,9 +199,9 @@ export function SourcesGroup({
             <button
               className="btn ghost tiny-btn embed-btn"
               onClick={runEmbed}
-              disabled={embedBusy || !embedHasKey}
+              disabled={embedBusy || !embedCanRun}
               title={
-                embedHasKey
+                embedCanRun
                   ? "Embed all pending chunks now"
                   : "Assign an embedding provider with a key in Settings → Functions"
               }
@@ -207,7 +209,7 @@ export function SourcesGroup({
               <ArrowsClockwise size={13} weight="bold" />
               {embedBusy ? "embedding…" : "Embed now"}
             </button>
-            {!embedHasKey && onOpenSettings && (
+            {!embedCanRun && onOpenSettings && (
               <button
                 className="btn ghost tiny-btn"
                 onClick={onOpenSettings}
@@ -221,7 +223,7 @@ export function SourcesGroup({
           <div className="embed-box-sub muted small">
             {embed.pending > 0 && `${embed.pending} pending · `}
             {embed.failed > 0 && `${embed.failed} failed · `}
-            {!embedHasKey
+            {!embedCanRun
               ? "no embedding provider assigned — set one in Settings → Functions"
               : embedHasPending
                 ? "extraction is done, but vectors aren't built yet"
