@@ -38,6 +38,14 @@ function ProvidersTab({ providers, keys, onChange, onKeyChange }: ProvidersTabPr
     }
   };
 
+  // The credential POOL: real (keyed) providers only. The keyless local
+  // providers (Tesseract OCR, Granite embeddings) are internal to the
+  // Functions tab and don't belong here. Newest first so a just-added
+  // provider lands on top.
+  const rows = providers
+    .filter((p) => !isKeylessProviderType(p.type))
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+
   return (
     <div className="providers-tab">
       <div className="provider-group">
@@ -55,7 +63,7 @@ function ProvidersTab({ providers, keys, onChange, onKeyChange }: ProvidersTabPr
           Credentials the Functions tab can assign. One key serves many
           functions — model is picked per function, not here.
         </div>
-        {providers.map((p) => (
+        {rows.map((p) => (
           <ProviderRow
             key={p.id}
             provider={p}
@@ -88,6 +96,11 @@ interface ProviderRowProps {
   onKeyChange: (keyUser: string, value: string) => Promise<void>;
 }
 
+/**
+ * A pool row. Only the NAME is editable here — a provider's type and endpoint
+ * are fixed at creation (the Add dialog). The API key is the one real
+ * credential, stored in the OS keychain under the row's slot.
+ */
 function ProviderRow({
   provider,
   keyValue,
@@ -99,10 +112,8 @@ function ProviderRow({
   const def: ProviderDef | undefined = PROVIDER_DEFS.find(
     (d) => d.id === provider.type,
   );
-  // Local draft for the editable scalar fields; committed via Save.
+
   const [name, setName] = useState(provider.name);
-  const [type, setType] = useState<string>(provider.type);
-  const [apiUrl, setApiUrl] = useState(provider.apiUrl);
   const [key, setKey] = useState(keyValue);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -111,15 +122,13 @@ function ProviderRow({
   // Test-connection state (probes the provider's /models with its key).
   const [testing, setTesting] = useState(false);
   const [test, setTest] = useState<
-    { ok: boolean; latencyMs?: number; sample?: string; n?: number; error?: string } | null
+    { ok: boolean; n?: number; error?: string } | null
   >(null);
 
   useEffect(() => {
     setName(provider.name);
-    setType(provider.type);
-    setApiUrl(provider.apiUrl);
     setDirty(false);
-  }, [provider.id, provider.name, provider.type, provider.apiUrl]);
+  }, [provider.id, provider.name]);
   useEffect(() => {
     setKey(keyValue);
   }, [keyValue]);
@@ -127,7 +136,8 @@ function ProviderRow({
   const save = async () => {
     setSaving(true);
     try {
-      await api.updateProvider(provider.id, { name, type, apiUrl });
+      // Only the name is user-editable on a saved row.
+      await api.updateProvider(provider.id, { name });
       await onKeyChange(provider.keyUser, key.trim());
       setDirty(false);
       await onChange();
@@ -173,36 +183,8 @@ function ProviderRow({
       <div className="provider-row-grid">
         <label className="field">
           <span>Type</span>
-          {keyless ? (
-            <input value={def?.label ?? provider.type} disabled />
-          ) : (
-            <select
-              value={type}
-              onChange={(e) => {
-                setType(e.target.value);
-                setDirty(true);
-              }}
-            >
-              {PROVIDER_DEFS.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.label}
-                </option>
-              ))}
-              {!def && <option value={type}>{type}</option>}
-            </select>
-          )}
-        </label>
-        <label className="field field-wide">
-          <span>API URL</span>
-          <input
-            value={apiUrl}
-            onChange={(e) => {
-              setApiUrl(e.target.value);
-              setDirty(true);
-            }}
-            placeholder={def?.apiUrl || "https://…"}
-            disabled={keyless}
-          />
+          {/* Fixed at creation — read-only identity, not a picker. */}
+          <input value={def?.label ?? provider.type} disabled />
         </label>
         {!keyless && (
           <label className="field field-wide">
@@ -271,8 +253,9 @@ function ProviderRow({
   );
 }
 
-/** Add-provider modal: catalog quick-start prefills name/apiUrl + a get-key
- *  link; the key is stored to the keychain on save. */
+/** Add-provider modal: a catalog quick-start prefills name/apiUrl + a get-key
+ *  link; the key is stored to the keychain on save. A Test button probes the
+ *  endpoint with the entered key before saving. */
 function AddProviderModal({
   onKeyChange,
   onDone,
@@ -291,11 +274,28 @@ function AddProviderModal({
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState("");
 
+  const [testing, setTesting] = useState(false);
+  const [test, setTest] = useState<{ ok: boolean; n?: number; error?: string } | null>(null);
+
   const pickDef = (id: string) => {
     const d = PROVIDER_DEFS.find((x) => x.id === id) ?? PROVIDER_DEFS[0];
     setDefId(d.id);
     setName(d.label);
     setApiUrl(d.apiUrl);
+    setTest(null);
+  };
+
+  const runTest = async () => {
+    setTesting(true);
+    setTest(null);
+    try {
+      const r = await api.testProviderConnection(apiUrl.trim(), key.trim());
+      setTest({ ok: true, n: r.models.length });
+    } catch (e) {
+      setTest({ ok: false, error: (e as Error)?.message ?? String(e) });
+    } finally {
+      setTesting(false);
+    }
   };
 
   const save = async () => {
@@ -329,7 +329,7 @@ function AddProviderModal({
           <label className="field">
             <span>Quick start</span>
             <select value={defId} onChange={(e) => pickDef(e.target.value)}>
-              {PROVIDER_DEFS.map((d) => (
+              {PROVIDER_DEFS.filter((d) => !d.local).map((d) => (
                 <option key={d.id} value={d.id}>
                   {d.label}
                 </option>
@@ -343,14 +343,22 @@ function AddProviderModal({
             <span>Name</span>
             <input value={name} onChange={(e) => setName(e.target.value)} />
           </label>
-          <label className="field">
-            <span>API URL</span>
-            <input
-              value={apiUrl}
-              onChange={(e) => setApiUrl(e.target.value)}
-              placeholder="https://…"
-            />
-          </label>
+          {/* Only show the URL field for the Custom escape hatch. Defined
+              cloud providers (those with a keyUrl) have a fixed endpoint —
+              the user only ever enters an API key. */}
+          {!def.keyUrl && (
+            <label className="field">
+              <span>API URL</span>
+              <input
+                value={apiUrl}
+                onChange={(e) => {
+                  setApiUrl(e.target.value);
+                  setTest(null);
+                }}
+                placeholder="https://…"
+              />
+            </label>
+          )}
           <label className="field">
             <span>
               API Key{" "}
@@ -382,11 +390,24 @@ function AddProviderModal({
               </button>
             </div>
           </label>
+          {test && (
+            <div className={`muted small test-badge ${test.ok ? "ok" : "err"}`}>
+              {test.ok ? `✓ ${test.n} models reachable` : `✗ ${test.error}`}
+            </div>
+          )}
           {err && <div className="muted small err">{err}</div>}
         </div>
         <div className="actions">
           <button className="btn ghost" onClick={onCancel}>
             Cancel
+          </button>
+          <button
+            className="btn ghost"
+            onClick={runTest}
+            disabled={testing || !apiUrl.trim()}
+            title="Probe /models with this key before saving"
+          >
+            {testing ? "testing…" : "Test"}
           </button>
           <button className="btn primary" onClick={save} disabled={saving}>
             {saving ? "saving…" : "Save"}

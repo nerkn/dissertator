@@ -13,40 +13,37 @@
 //
 // PROMPTS: edits the raw `Dissertator/prompts.md` (unchanged).
 //
-// The dialog mutates state via api + the App callbacks (onProvidersChange /
-// onSettingsChange / onKeyChange) so the derived per-function keys in App
-// recompute and the Library / Chat panels see new selections live.
+// The dialog mutates state via api + the provider store (providers/keys)
+// and the onSettingsChange callback (settings/prompts), so the derived
+// per-function keys in App recompute and the Library / Chat panels see new
+// selections live.
 
 import { useState } from "react";
 import { X } from "@phosphor-icons/react";
-import { type ProviderRow, type Settings } from "@dissertator/shared";
+import { type Settings } from "@dissertator/shared";
 import { ProvidersTab } from "./ProvidersTab";
 import { FunctionsTab } from "./FunctionsTab";
 import { PromptsTab } from "./PromptsTab";
+import { useProviderStore } from "../../lib/stores/providers";
 
 type TabId = "providers" | "functions" | "prompts";
 
 interface Props {
   settings: Settings;
-  providers: ProviderRow[];
-  /** keyUser → API key, for display in the eye-toggle key fields. */
-  keys: Record<string, string>;
-  onProvidersChange: () => Promise<void>;
   onSettingsChange: () => Promise<void>;
-  /** A key field changed: persist to keychain + update the in-memory map. */
-  onKeyChange: (keyUser: string, value: string) => Promise<void>;
   onClose: () => void;
 }
 
 export function SettingsDialog({
   settings,
-  providers,
-  keys,
-  onProvidersChange,
   onSettingsChange,
-  onKeyChange,
   onClose,
 }: Props) {
+  const providers = useProviderStore((s) => s.providers);
+  const keys = useProviderStore((s) => s.keys);
+  const refreshProviders = useProviderStore((s) => s.refreshProviders);
+  const onKeyChange = useProviderStore((s) => s.handleKeyChange);
+
   const [tab, setTab] = useState<TabId>("providers");
 
   return (
@@ -76,7 +73,7 @@ export function SettingsDialog({
             <ProvidersTab
               providers={providers}
               keys={keys}
-              onChange={onProvidersChange}
+              onChange={refreshProviders}
               onKeyChange={onKeyChange}
             />
           )}

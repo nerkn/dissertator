@@ -13,36 +13,29 @@ import { CitationPopup } from "../components/CitationPopup";
 import { WindowControls } from "../components/WindowControls";
 import { ResizeHandle } from "../components/ResizeHandle";
 import { useApp } from "./useApp";
+import { useSessionStore } from "../lib/stores/session";
 
 export default function App() {
+  const health = useSessionStore((s) => s.health);
+  const project = useSessionStore((s) => s.project);
+  const showSettings = useSessionStore((s) => s.showSettings);
+  const busy = useSessionStore((s) => s.busy);
+  const error = useSessionStore((s) => s.error);
+  const setShowSettings = useSessionStore((s) => s.setShowSettings);
+  const setError = useSessionStore((s) => s.setError);
+  const initialized = !!project?.initialized;
+
   const {
-    health,
-    project,
     settings,
-    sources,
-    showSettings,
-    busy,
-    error,
-    tabs,
-    activeTabId,
-    documents,
-    docRevisions,
-    providers,
-    keys,
     citationPopup,
     chatPanelRef,
-    initialized,
     configured,
     apiKey,
     embeddingApiKey,
     visionDocKey,
     visionImageKey,
     sttKey,
-    activeDocumentId,
-    setShowSettings,
-    setError,
     setCitationPopup,
-    setActiveTabId,
     onOpenFolder,
     handleRescan,
     handleNewDocument,
@@ -50,14 +43,11 @@ export default function App() {
     openDocument,
     openReferencesView,
     openSourceByIdAtPage,
-    closeTab,
     handleCitationClick,
     handleDocumentEdited,
     handleOpenSourceById,
     handleOpenDocumentById,
-    handleProvidersChange,
     handleSettingsChange,
-    handleKeyChange,
     refreshSources,
   } = useApp();
   return (
@@ -93,12 +83,8 @@ export default function App() {
 
       <main className="body">
         <LibraryPanel
-          project={project}
-          sources={sources}
-          documents={documents}
           onRescan={handleRescan}
           onAttentionResolved={refreshSources}
-          busy={busy}
           provider={settings?.resolved?.vision_doc?.type}
           ocrStrategy={settings?.ocrStrategy}
           visionDocKey={visionDocKey}
@@ -113,24 +99,13 @@ export default function App() {
           onOpenNote={openSourceByIdAtPage}
         />
         <CenterPane
-          initialized={initialized}
-          tabs={tabs}
-          activeTabId={activeTabId}
-          docRevisions={docRevisions}
-          sources={sources?.items ?? []}
-          onActivate={setActiveTabId}
-          onClose={closeTab}
-          onOpen={openSource}
           onNewDocument={handleNewDocument}
           onCitationClick={handleCitationClick}
         />
         <ChatPanel
           ref={chatPanelRef}
-          health={health}
           configured={configured}
           apiKey={apiKey}
-          sources={sources?.items ?? []}
-          activeDocumentId={activeDocumentId}
           embeddingApiKey={embeddingApiKey}
           onDocumentEdited={handleDocumentEdited}
           onOpenSource={handleOpenSourceById}
@@ -153,11 +128,7 @@ export default function App() {
       {showSettings && settings && (
         <SettingsDialog
           settings={settings}
-          providers={providers}
-          keys={keys}
-          onProvidersChange={handleProvidersChange}
           onSettingsChange={handleSettingsChange}
-          onKeyChange={handleKeyChange}
           onClose={() => setShowSettings(false)}
         />
       )}
@@ -166,7 +137,6 @@ export default function App() {
           citekey={citationPopup.citekey}
           page={citationPopup.page}
           rect={citationPopup.rect}
-          sources={sources?.items ?? []}
           onLinkOpen={openSourceByIdAtPage}
           onClose={() => setCitationPopup(null)}
         />

@@ -7,6 +7,9 @@ import { FloppyDisk } from "@phosphor-icons/react";
 import {
   AI_FUNCTIONS,
   FUNCTION_META,
+  GRANITE_EMBED_MODEL,
+  GRANITE_EMBED_TYPE,
+  TESSERACT_TYPE,
   isKeylessProviderType,
   type AiFunction,
   type FunctionBinding,
@@ -15,7 +18,17 @@ import {
   type Settings,
 } from "@dissertator/shared";
 import { api } from "../../lib/api";
+import { useModels } from "../../lib/stores/models";
 import { RevectorizeModal } from "./RevectorizeModal";
+
+/** Which keyless local provider types are selectable per function. Keyed
+ *  (cloud) providers are always available; this adds the one local specialty
+ *  each function supports — Tesseract OCR for vision_doc, Granite embeddings
+ *  for embed. Other functions have no local option. */
+const LOCAL_FOR_FN: Partial<Record<AiFunction, string[]>> = {
+  vision_doc: [TESSERACT_TYPE],
+  embed: [GRANITE_EMBED_TYPE],
+};
 
 interface FunctionsTabProps {
   settings: Settings;
@@ -69,7 +82,6 @@ function FunctionRow({
   onChanged,
 }: FunctionRowProps) {
   const meta = FUNCTION_META[fn];
-  const allowsTesseract = meta.allowsTesseract;
 
   // Draft (unsaved) provider + model; committed via Apply.
   const [draftProvider, setDraftProvider] = useState(binding.providerId);
@@ -79,33 +91,17 @@ function FunctionRow({
     setDraftModel(binding.model);
   }, [binding.providerId, binding.model]);
 
-  // Live model list for the draft provider (fetched with its key).
-  const [models, setModels] = useState<string[]>([]);
-  const [loadingModels, setLoadingModels] = useState(false);
+  // Live model list for the draft provider — sourced from the shared model
+  // store (cached + deduped across rows; see lib/stores/models). Keyless
+  // providers have no /models endpoint, so they're disabled.
   const draftProv = providers.find((p) => p.id === draftProvider);
+  const draftKeyless = isKeylessProviderType(draftProv?.type ?? "");
   const draftKey = draftProv ? keys[draftProv.keyUser] ?? "" : "";
-  useEffect(() => {
-    if (!draftProv || isKeylessProviderType(draftProv.type)) {
-      setModels([]);
-      return;
-    }
-    let stopped = false;
-    setLoadingModels(true);
-    api
-      .getProviderModels(draftProv.id, draftKey)
-      .then((r) => {
-        if (!stopped) setModels(r.models);
-      })
-      .catch(() => {
-        if (!stopped) setModels([]);
-      })
-      .finally(() => {
-        if (!stopped) setLoadingModels(false);
-      });
-    return () => {
-      stopped = true;
-    };
-  }, [draftProv, draftKey]);
+  const { models, loading: loadingModels } = useModels(
+    draftProvider,
+    draftKey,
+    !draftKeyless,
+  );
 
   // Connectivity test (runs against the SAVED binding).
   const [testing, setTesting] = useState(false);
@@ -118,7 +114,7 @@ function FunctionRow({
 
   const dirty =
     draftProvider !== binding.providerId || draftModel !== binding.model;
-  const confirmRevector = fn === "embed" && dirty;
+  const confirmRevector = meta.destructiveOnChange && dirty;
 
   const [confirming, setConfirming] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -156,8 +152,11 @@ function FunctionRow({
     }
   };
 
+  const localForFn = LOCAL_FOR_FN[fn] ?? [];
+  // All keyed providers are available; plus the one local specialty this
+  // function supports (Tesseract OCR / Granite embeddings).
   const availableProviders = providers.filter(
-    (p) => allowsTesseract || !isKeylessProviderType(p.type),
+    (p) => !isKeylessProviderType(p.type) || localForFn.includes(p.type),
   );
 
   return (
@@ -165,7 +164,7 @@ function FunctionRow({
       <div className="function-row-head">
         <div>
           <strong>{meta.label}</strong>
-          {fn === "embed" && (
+          {meta.destructiveOnChange && (
             <span className="muted small"> ⚠ changes re-vectorize everything</span>
           )}
         </div>
@@ -198,7 +197,18 @@ function FunctionRow({
           <span>Provider</span>
           <select
             value={draftProvider}
-            onChange={(e) => setDraftProvider(e.target.value)}
+            onChange={(e) => {
+              const newId = e.target.value;
+              setDraftProvider(newId);
+              // Local providers run a fixed model; preset it so the user
+              // doesn't have to type it (granite) or leave it blank (OCR).
+              const np = providers.find((p) => p.id === newId);
+              if (np && isKeylessProviderType(np.type)) {
+                setDraftModel(
+                  np.type === GRANITE_EMBED_TYPE ? GRANITE_EMBED_MODEL : "",
+                );
+              }
+            }}
           >
             {availableProviders.map((p) => (
               <option key={p.id} value={p.id}>
@@ -214,7 +224,8 @@ function FunctionRow({
             list={`models-${fn}`}
             value={draftModel}
             onChange={(e) => setDraftModel(e.target.value)}
-            placeholder="model id"
+            placeholder={draftKeyless ? "fixed by provider" : "model id"}
+            disabled={draftKeyless}
           />
           <datalist id={`models-${fn}`}>
             {models.map((m) => (

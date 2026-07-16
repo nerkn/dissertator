@@ -45,10 +45,12 @@ import type {
   GuiEvent,
   GuiOption,
   Prompt,
-  SourceFile,
 } from "@dissertator/shared";
 import { api, streamChat } from "../../lib/api";
 import type { DebugEvent } from "../../lib/api";
+import { useActiveDocumentId } from "../../lib/stores/tabs";
+import { useContentStore } from "../../lib/stores/content";
+import { useSessionStore } from "../../lib/stores/session";
 import {
   LiveAssistantBubble,
   MessageBubble,
@@ -57,12 +59,8 @@ import {
 import type { ToolBeat } from "./_bubbles";
 
 interface Props {
-  health: "checking" | "up" | "down";
   configured: boolean;
   apiKey: string;
-  sources: SourceFile[];
-  /** Document the user is editing (default p_* target; sent each turn). */
-  activeDocumentId?: string;
   /** Embedding key for the agent's corpus_* vector tools. */
   embeddingApiKey?: string;
   /** The agent wrote/changed a document — App refreshes its list + live-reloads. */
@@ -92,11 +90,8 @@ const NEW_DOCUMENT_PROMPT_FALLBACK =
 
 export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   {
-    health,
     configured,
     apiKey,
-    sources,
-    activeDocumentId,
     embeddingApiKey,
     onDocumentEdited,
     onOpenSource,
@@ -106,6 +101,11 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   ref,
 ) {
   // --- chats + active chat -------------------------------------------------
+  // The document the user is currently editing (active doc tab) is derived
+  // from the tabs store; sent each turn as the default p_* target.
+  const activeDocumentId = useActiveDocumentId();
+  const sources = useContentStore((s) => s.sources?.items ?? []);
+  const health = useSessionStore((s) => s.health);
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);

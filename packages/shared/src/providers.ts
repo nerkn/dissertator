@@ -21,6 +21,11 @@ export const TESSERACT_TYPE = "tesseract";
 /** Provider type that means "keyless local embeddings" (granite ONNX). */
 export const GRANITE_EMBED_TYPE = "local-granite";
 
+/** Fixed model id recorded on the embed binding for the keyless local embedder
+ *  (informational — `local.ts` loads a fixed ONNX file regardless, but the
+ *  binding notes what produced the vectors). Centralized to avoid drift. */
+export const GRANITE_EMBED_MODEL = "granite-embedding-97m-multilingual-r2";
+
 /** True for keyless local providers (no API key, no remote call). */
 export function isKeylessProviderType(type: string): boolean {
   return type === TESSERACT_TYPE || type === GRANITE_EMBED_TYPE;
@@ -64,8 +69,11 @@ export interface ProviderDef {
   id: string;
   label: string;
   apiUrl: string;
-  /** "Get an API key" link shown next to the key field. */
+  /** "Get an API key" link shown next to the key field. Also marks the
+   *  provider as a defined cloud endpoint (fixed apiUrl, key-only entry). */
   keyUrl?: string;
+  /** Local/offline catalog entry (Ollama, …) — hidden from Add/Type pickers. */
+  local?: boolean;
   /** Suggested keychain slot (legacy-compat: reuse an existing key if present). */
   keyUser: string;
   /** Suggested default model per function, where known. */
@@ -160,6 +168,7 @@ export const PROVIDER_DEFS: ProviderDef[] = [
     label: "Ollama (local)",
     apiUrl: "http://localhost:11434/v1",
     keyUser: "",
+    local: true,
   },
   {
     id: "custom",

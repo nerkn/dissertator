@@ -10,27 +10,21 @@ import { useState } from "react";
 import type {
   Document,
   OcrStrategy,
-  ProjectStatus,
   SourceFile,
-  SourcesResponse,
 } from "@dissertator/shared";
+import { useContentStore } from "../../lib/stores/content";
+import { useSessionStore } from "../../lib/stores/session";
 import { AttentionPanel } from "../AttentionPanel";
 import { SourcesGroup } from "./_SourcesGroup";
 import { ListsGroup } from "./_ListsGroup";
 import { ATTENTION_STATUSES } from "./_shared";
 
 interface Props {
-  project: ProjectStatus | null;
-  /** Live source list + counts from `/sources`. Optional; falls back to
-   *  `project.counts.sourceFiles` when absent (e.g. before first fetch). */
-  sources?: SourcesResponse | null;
   /** Click handler for the rescan button. */
   onRescan?: () => void;
   /** Fired when an attention item is resolved (OCR ran). Refreshes the
    *  source list. Defaults to `onRescan` when not supplied. */
   onAttentionResolved?: () => void;
-  /** While a rescan / OCR call is in flight, disable the rescan button. */
-  busy?: boolean;
   /** Provider + strategy forwarded to the AttentionPanel. */
   provider?: string;
   ocrStrategy?: OcrStrategy;
@@ -45,8 +39,6 @@ interface Props {
   embeddingApiKey?: string;
   /** Open a source in the CenterPane viewer (click-to-open). */
   onOpen?: (src: SourceFile) => void;
-  /** Manuscript documents for the 🟡 Documents group. */
-  documents?: Document[];
   /** Create + open a new document. */
   onNewDocument?: () => void;
   /** Open an existing document in the editor. */
@@ -62,11 +54,8 @@ interface Props {
 }
 
 export function LibraryPanel({
-  project,
-  sources,
   onRescan,
   onAttentionResolved,
-  busy,
   provider,
   ocrStrategy,
   visionDocKey,
@@ -74,7 +63,6 @@ export function LibraryPanel({
   sttKey,
   embeddingApiKey,
   onOpen,
-  documents,
   onNewDocument,
   onOpenDocument,
   onOpenSettings,
@@ -83,6 +71,11 @@ export function LibraryPanel({
 }: Props) {
   // Panel-level search query; currently filters the Sources group only.
   const [query, setQuery] = useState("");
+
+  const sources = useContentStore((s) => s.sources);
+  const documents = useContentStore((s) => s.documents);
+  const project = useSessionStore((s) => s.project);
+  const busy = useSessionStore((s) => s.busy);
 
   if (!project?.initialized) {
     return (

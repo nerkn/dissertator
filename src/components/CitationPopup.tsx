@@ -10,15 +10,13 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { X, BookOpen, Warning } from "@phosphor-icons/react";
 import type { Reference, SourceFile } from "@dissertator/shared";
 import { api } from "../lib/api";
+import { useContentStore } from "../lib/stores/content";
 import { SourceCombobox } from "./SourceCombobox";
 
 interface Props {
   citekey: string;
   page: number | null;
   rect: DOMRect;
-  /** All ingested source files — used to populate the "link to source"
-   *  picker for fileless references. */
-  sources: SourceFile[];
   onClose: () => void;
   /** Called after the user links a reference to a source: opens that PDF
    *  (at `page` if given) and closes the popup. */
@@ -33,7 +31,8 @@ function formatAuthors(authors: Reference["authors"]): string {
     .join(", ");
 }
 
-export function CitationPopup({ citekey, page, rect, sources, onClose, onLinkOpen }: Props) {
+export function CitationPopup({ citekey, page, rect, onClose, onLinkOpen }: Props) {
+  const sources = useContentStore((s) => s.sources?.items ?? []);
   const [ref, setRef] = useState<Reference | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [notFound, setNotFound] = useState<boolean>(false);

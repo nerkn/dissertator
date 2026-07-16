@@ -12,6 +12,7 @@
 import type { Database } from "bun:sqlite";
 import {
   AI_FUNCTIONS,
+  GRANITE_EMBED_MODEL,
   GRANITE_EMBED_PROVIDER,
   type AiFunction,
   type Bindings,
@@ -73,9 +74,7 @@ export function seedBindings(db: Database): void {
   // local.ts uses a fixed ONNX file — but a non-empty value satisfies the
   // binding guard and records what produced the vectors.
   const embModel =
-    embId === GRANITE_EMBED_PROVIDER.id
-      ? "granite-embedding-97m-multilingual-r2"
-      : "text-embedding-3-small";
+    embId === GRANITE_EMBED_PROVIDER.id ? GRANITE_EMBED_MODEL : "text-embedding-3-small";
   seed("chat", chatId, "glm-4.6");
   seed("stt", chatId, "whisper-1");
   seed("vision_doc", chatId, "glm-4.6");

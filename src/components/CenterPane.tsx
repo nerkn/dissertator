@@ -10,9 +10,10 @@
 // history survive — see the keep-alive block below.
 
 import { Sparkle } from "@phosphor-icons/react";
-import type { Tab } from "../lib/tabs";
+import { useTabsStore } from "../lib/stores/tabs";
 import { api } from "../lib/api";
-import type { SourceFile } from "@dissertator/shared";
+import { useContentStore } from "../lib/stores/content";
+import { useSessionStore } from "../lib/stores/session";
 import { PdfViewer } from "./PdfViewer";
 import { TextViewer } from "./TextViewer";
 import { ManuscriptEditor } from "./ManuscriptEditor";
@@ -20,19 +21,6 @@ import { ReferencesView } from "./ReferencesView";
 import type { CitationClickHandler } from "../lib/citationPlugin";
 
 interface Props {
-  initialized: boolean;
-  tabs: Tab[];
-  activeTabId: string | null;
-  /** P5: per-document revision counters. Bumping a doc's revision remounts
-   *  its editor with fresh server content (the agent just edited it). */
-  docRevisions?: Record<string, number>;
-  /** Ingested source files — needed by the References manager's link picker. */
-  sources?: SourceFile[];
-  onActivate: (sourceId: string) => void;
-  onClose: (sourceId: string) => void;
-  /** Used only for type-checking the open pipeline (the handler lives in App).
-   *  Kept on the props interface so the wiring is explicit. */
-  onOpen?: (src: SourceFile) => void;
   /** Create + open a new document. Replaces the disabled "Start Wizard"
    *  placeholder until the P4 wizard lands. */
   onNewDocument?: () => void;
@@ -41,17 +29,18 @@ interface Props {
 }
 
 export function CenterPane({
-  initialized,
-  tabs,
-  activeTabId,
-  docRevisions,
-  sources,
-  onActivate,
-  onClose,
-  onOpen,
   onNewDocument,
   onCitationClick,
 }: Props) {
+  const initialized = useSessionStore((s) => !!s.project?.initialized);
+  const tabs = useTabsStore((s) => s.tabs);
+  const activeTabId = useTabsStore((s) => s.activeTabId);
+  const onActivate = useTabsStore((s) => s.setActiveTabId);
+  const onClose = useTabsStore((s) => s.closeTab);
+  const openSource = useTabsStore((s) => s.openSource);
+  const sources = useContentStore((s) => s.sources?.items ?? []);
+  const docRevisions = useContentStore((s) => s.docRevisions);
+
   const active = tabs.find((t) => t.sourceId === activeTabId) ?? null;
   const hasTabs = tabs.length > 0;
 
@@ -145,7 +134,7 @@ export function CenterPane({
           <ReferencesView
             key={active.sourceId}
             sources={sources ?? []}
-            onOpenSource={onOpen}
+            onOpenSource={openSource}
           />
         )}
 

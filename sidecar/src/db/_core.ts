@@ -11,7 +11,7 @@
 // `setChatProviderId`) that are referenced from more than one entity module.
 
 import type { Database } from "bun:sqlite";
-import { GRANITE_EMBED_PROVIDER, type AiFunction } from "@dissertator/shared";
+import { GRANITE_EMBED_MODEL, GRANITE_EMBED_PROVIDER, type AiFunction } from "@dissertator/shared";
 // schema.sql is embedded into the compiled binary at build time via the
 // `type:"text"` import attribute, so it never touches the filesystem at
 // runtime. Reading it via `import.meta.dir` broke under `bun build --compile`:
@@ -307,9 +307,38 @@ export function migrate(db: Database): void {
       "INSERT INTO function_bindings(function, provider_id, model, updated_at) VALUES ('embed', ?, ?, ?) " +
         "ON CONFLICT(function) DO UPDATE SET provider_id = excluded.provider_id, " +
         "model = excluded.model, updated_at = excluded.updated_at",
-    ).run(GRANITE_EMBED_PROVIDER.id, "granite-embedding-97m-multilingual-r2", Date.now());
+    ).run(GRANITE_EMBED_PROVIDER.id, GRANITE_EMBED_MODEL, Date.now());
     console.log(
       "[db] migrate: switched unconfigured embed default → local granite (keyless)",
+    );
+  }
+
+  // One-time: repair a STALE embed binding — the local granite model sitting
+  // on a NON-local (chat) provider. That combo can never work (a local ONNX
+  // model can't run against a chat API), and is a leftover from an older
+  // seed. Only touches projects that never embedded (dimensions == 0), so a
+  // working embed setup is never disturbed.
+  const GRANITE_MODEL = GRANITE_EMBED_MODEL;
+  const embBinding = (
+    db.prepare(
+      "SELECT provider_id, model FROM function_bindings WHERE function = 'embed'",
+    ).get() as { provider_id?: string; model?: string } | null
+  );
+  const staleLocalOnRemote =
+    embBinding?.model === GRANITE_MODEL &&
+    embBinding?.provider_id !== GRANITE_EMBED_PROVIDER.id;
+  if (staleLocalOnRemote && Number(embDimRaw ?? 0) === 0) {
+    db.prepare(
+      "INSERT INTO settings(key, value) VALUES ('embedding_provider_id', ?) " +
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    ).run(GRANITE_EMBED_PROVIDER.id);
+    db.prepare(
+      "INSERT INTO function_bindings(function, provider_id, model, updated_at) VALUES ('embed', ?, ?, ?) " +
+        "ON CONFLICT(function) DO UPDATE SET provider_id = excluded.provider_id, " +
+        "model = excluded.model, updated_at = excluded.updated_at",
+    ).run(GRANITE_EMBED_PROVIDER.id, GRANITE_MODEL, Date.now());
+    console.log(
+      "[db] migrate: repaired stale embed binding (local model on remote provider) → local granite",
     );
   }
 

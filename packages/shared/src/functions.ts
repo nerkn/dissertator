@@ -40,8 +40,6 @@ export const FUNCTION_META: Record<
   {
     label: string;
     sublabel: string;
-    /** Whether the local-tesseract provider may be selected for this function. */
-    allowsTesseract: boolean;
     /** Whether changing the binding has a destructive side effect (re-vectorize). */
     destructiveOnChange: boolean;
   }
@@ -49,31 +47,26 @@ export const FUNCTION_META: Record<
   chat: {
     label: "Chat",
     sublabel: "Assistant chat",
-    allowsTesseract: false,
     destructiveOnChange: false,
   },
   stt: {
     label: "STT",
     sublabel: "Audio → text (transcribe)",
-    allowsTesseract: false,
     destructiveOnChange: false,
   },
   vision_doc: {
     label: "Vision · docs",
     sublabel: "OCR / understand PDF pages & scans",
-    allowsTesseract: true,
     destructiveOnChange: false,
   },
   vision_image: {
     label: "Vision · image",
     sublabel: "Understand a standalone image (jpg/png/webp)",
-    allowsTesseract: false,
     destructiveOnChange: false,
   },
   embed: {
     label: "Embed",
     sublabel: "Vectorize chunks",
-    allowsTesseract: false,
     destructiveOnChange: true,
   },
 };

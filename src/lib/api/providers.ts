@@ -64,6 +64,14 @@ export const providersApi = {
       headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
     }),
 
+  /** Probe an endpoint's /models WITHOUT saving — used by the Add-provider
+   *  dialog's Test button before a provider row exists. */
+  testProviderConnection: (apiUrl: string, apiKey?: string) =>
+    req<ModelsResponse>("/providers/test", {
+      method: "POST",
+      body: JSON.stringify({ apiUrl, apiKey: apiKey ?? "" }),
+    }),
+
   /** Per-function connectivity test (minimal real call). Bearer header. */
   testFunction: (fn: AiFunction, apiKey?: string) =>
     req<FunctionTestResult>(`/functions/${fn}/test`, {

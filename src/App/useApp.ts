@@ -1,55 +1,68 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, resolveSidecarBase, resetSidecarBase, sidecarBase } from "../lib/api";
-import { ipc } from "../ipc";
+import { useProviderStore } from "../lib/stores/providers";
 import type {
   AiFunction,
-  Document,
-  ProjectStatus,
-  ProviderRow,
   Reference,
-  Settings,
-  SourceFile,
-  SourcesResponse,
 } from "@dissertator/shared";
 import type { ChatPanelHandle } from "../components/ChatPanel";
-import { kindForSource, REFERENCES_TAB_ID } from "../lib/tabs";
 import type { Tab } from "../lib/tabs";
+import { useTabsStore } from "../lib/stores/tabs";
+import { useContentStore } from "../lib/stores/content";
+import { useSessionStore } from "../lib/stores/session";
 import type { CitationClickHandler } from "../lib/citationPlugin";
 
 // All application state + handlers live here; App() is a thin JSX shell.
 // Lifted verbatim from the original App() body — hook call order preserved.
-type Health = "checking" | "up" | "down";
 
 export function useApp() {
-  const [health, setHealth] = useState<Health>("checking");
-  const [project, setProject] = useState<ProjectStatus | null>(null);
-  const [settings, setSettings] = useState<Settings | null>(null);
-  const [sources, setSources] = useState<SourcesResponse | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const health = useSessionStore((s) => s.health);
+  const project = useSessionStore((s) => s.project);
+  const setHealth = useSessionStore((s) => s.setHealth);
+  const setProject = useSessionStore((s) => s.setProject);
+  const setError = useSessionStore((s) => s.setError);
+  const setBusy = useSessionStore((s) => s.setBusy);
 
   // --- Open-document tab model (P3 Workstream 2) ---------------------------
-  // One tab per source id; opening an already-open source just activates its
-  // existing tab. Closing the active tab falls through to the last remaining
-  // one (or null) so the pane never shows a stale viewer.
-  const [tabs, setTabs] = useState<Tab[]>([]);
-  const [activeTabId, setActiveTabId] = useState<string | null>(null);
-  // Manuscript documents (the writable output). Fetched alongside sources so
-  // the Library can list them and the editor can be opened from there.
-  const [documents, setDocuments] = useState<Document[]>([]);
-  // P5: per-document revision counters. Bumped whenever the agent edits a
-  // document so its editor live-reloads the new body. Keyed by document id.
-  const [docRevisions, setDocRevisions] = useState<Record<string, number>>({});
-  // P6: named provider rows (chat + embedding). The Functions tab assigns
-  // one chat-kind row to `chat` and one embedding-kind row to `vectorizer`.
-  const [providers, setProviders] = useState<ProviderRow[]>([]);
-  // P6: in-memory API-key store, keyed by a provider's `keyUser` slot. Loaded
-  // from the OS keychain on startup / when providers change; the Settings
-  // dialog writes here as the user edits key fields. apiKey / embeddingApiKey
-  // below are DERIVED from this + the selected provider ids.
-  const [keys, setKeys] = useState<Record<string, string>>({});
+  // The tab model (one tab per source/doc id) lives in the tabs store (split
+  // out of this hook). We subscribe to the data + actions here: the data is
+  // needed for working-set persistence below, and the open/close actions are
+  // returned to the shell + used by the composition handlers further down.
+  // CenterPane reads tabs/activeTabId + the navigation actions from the store
+  // directly; ChatPanel derives activeDocumentId via its own hook.
+  const tabs = useTabsStore((s) => s.tabs);
+  const activeTabId = useTabsStore((s) => s.activeTabId);
+  const setTabs = useTabsStore((s) => s.setTabs);
+  const setActiveTabId = useTabsStore((s) => s.setActiveTabId);
+  const openSource = useTabsStore((s) => s.openSource);
+  const openSourceAtPage = useTabsStore((s) => s.openSourceAtPage);
+  const openDocument = useTabsStore((s) => s.openDocument);
+  const openReferencesView = useTabsStore((s) => s.openReferencesView);
+  // The open project's content (settings/sources/documents + per-doc
+  // revision counters) lives in the content store (split out of this hook).
+  // We subscribe to the data + raw setters here; refreshSources /
+  // refreshDocuments stay in this orchestrator (they need the project guard
+  // + setError), and handleDocumentEdited / handleSettingsChange are store
+  // actions. The panels read sources/documents/docRevisions from the store
+  // directly; settings stays returned for the Settings dialog + provider chips.
+  const settings = useContentStore((s) => s.settings);
+  const sources = useContentStore((s) => s.sources);
+  const documents = useContentStore((s) => s.documents);
+  const setSettings = useContentStore((s) => s.setSettings);
+  const setSources = useContentStore((s) => s.setSources);
+  const setDocuments = useContentStore((s) => s.setDocuments);
+  const handleDocumentEdited = useContentStore((s) => s.handleDocumentEdited);
+  const handleSettingsChange = useContentStore((s) => s.handleSettingsChange);
+  // P6: provider rows + their API keys live in the provider store (split out
+  // of this hook). We subscribe to the data here so the derived per-function
+  // keys below recompute; the Settings dialog reads the store directly, and
+  // the lifecycle effects (refresh on project open, keychain load) call the
+  // store actions further down.
+  const providers = useProviderStore((s) => s.providers);
+  const keys = useProviderStore((s) => s.keys);
+  const refreshProviders = useProviderStore((s) => s.refreshProviders);
+  const loadKeysFromKeychain = useProviderStore((s) => s.loadKeysFromKeychain);
   // Citation card state: set when a manuscript chip is clicked but the
   // reference has no linked source file (fileless / unknown). Null otherwise.
   const [citationPopup, setCitationPopup] = useState<{
@@ -58,96 +71,6 @@ export function useApp() {
     rect: DOMRect;
   } | null>(null);
 
-  const openSource = useCallback((src: SourceFile) => {
-    setTabs((prev) => {
-      if (prev.some((t) => t.sourceId === src.id)) return prev;
-      return [
-        ...prev,
-        {
-          sourceId: src.id,
-          kind: kindForSource(src.kind),
-          title: src.filename,
-        },
-      ];
-    });
-    setActiveTabId(src.id);
-  }, []);
-
-  // Open (or focus) a source tab AND jump its viewer to a page. Used by
-  // citation clicks `[@citekey:page]`: if the tab already exists, its
-  // `initialPage` is bumped so the PdfViewer's nav effect fires; otherwise a
-  // new tab is created seeded with the page. A missing page leaves any
-  // existing initialPage untouched.
-  const openSourceAtPage = useCallback((src: SourceFile, page?: number) => {
-    setTabs((prev) => {
-      const existing = prev.find((t) => t.sourceId === src.id);
-      if (existing) {
-        return prev.map((t) =>
-          t.sourceId === src.id
-            ? { ...t, initialPage: page ?? t.initialPage }
-            : t,
-        );
-      }
-      return [
-        ...prev,
-        {
-          sourceId: src.id,
-          kind: kindForSource(src.kind),
-          title: src.filename,
-          initialPage: page,
-        } as Tab,
-      ];
-    });
-    setActiveTabId(src.id);
-  }, []);
-
-  // Open a manuscript document in a new editor tab (one tab per document id).
-  const openDocument = useCallback((doc: Document) => {
-    setTabs((prev) => {
-      if (prev.some((t) => t.sourceId === doc.id)) return prev;
-      return [
-        ...prev,
-        { sourceId: doc.id, kind: "doc" as const, title: doc.title },
-      ];
-    });
-    setActiveTabId(doc.id);
-  }, []);
-
-  // Open the bibliography manager as a singleton center-pane tab. Idempotent:
-  // clicking the References card again just re-activates the existing tab.
-  const openReferencesView = useCallback(() => {
-    setTabs((prev) =>
-      prev.some((t) => t.sourceId === REFERENCES_TAB_ID)
-        ? prev
-        : [
-            ...prev,
-            {
-              sourceId: REFERENCES_TAB_ID,
-              kind: "references" as const,
-              title: "References",
-            },
-          ],
-    );
-    setActiveTabId(REFERENCES_TAB_ID);
-  }, []);
-
-  const closeTab = useCallback(
-    (sourceId: string) => {
-      setTabs((prev) => prev.filter((t) => t.sourceId !== sourceId));
-      // Closing the active tab → activate the last remaining one (or null).
-      // `tabs` here is the render-time value, which matches the `prev` the
-      // setTabs updater starts from, so `remaining` is consistent with the
-      // filter applied above.
-      setActiveTabId((cur) => {
-        if (cur !== sourceId) return cur;
-        const remaining = tabs.filter((t) => t.sourceId !== sourceId);
-        return remaining.length > 0
-          ? remaining[remaining.length - 1].sourceId
-          : null;
-      });
-    },
-    [tabs],
-  );
 
   // --- Working-docs persistence (P6) --------------------------------------
   // Restore the user's open tabs + active tab when a project opens, then
@@ -241,7 +164,7 @@ export function useApp() {
       // Surface but don't block — the poll loop will retry health.
       setError((e as Error)?.message ?? String(e));
     }
-  }, [project?.initialized]);
+  }, [project?.initialized, setSources]);
 
   // Poll the sidecar until it's up (it may start after the frontend in dev),
   // then load project status + any stored API key.
@@ -327,63 +250,23 @@ export function useApp() {
     } catch {
       /* sidecar mid-restart; UI degrades to an empty list */
     }
-  }, [project?.initialized]);
+  }, [project?.initialized, setDocuments]);
   useEffect(() => {
     if (project?.initialized) refreshDocuments();
   }, [project?.initialized, project?.projectPath, refreshDocuments]);
 
-  // P6: load provider rows + their API keys whenever a project is open. Keys
-  // are read from the OS keychain by each provider's `keyUser` slot (legacy
-  // slots for seeded defaults, per-id slots for user-added rows). A missing
-  // keychain (e.g. no daemon on linux) degrades to empty strings — the
-  // in-memory map is the source of truth for the running session.
-  const refreshProviders = useCallback(async () => {
-    if (!project?.initialized) return;
-    try {
-      setProviders(await api.listProviders());
-    } catch {
-      /* sidecar mid-restart */
-    }
-  }, [project?.initialized]);
+  // P6: load provider rows when a project is open, then re-read their keys
+  // from the OS keychain. Both run in the provider store; this orchestrator
+  // only gates them on project lifecycle and re-runs the keychain load when
+  // the provider set changes.
   useEffect(() => {
-    if (project?.initialized) refreshProviders();
+    if (project?.initialized) void refreshProviders();
   }, [project?.initialized, project?.projectPath, refreshProviders]);
 
   useEffect(() => {
     if (providers.length === 0) return;
-    let stopped = false;
-    (async () => {
-      const fetched: Record<string, string> = {};
-      await Promise.all(
-        providers.map(async (p) => {
-          try {
-            const k = await ipc.getSecret(p.keyUser);
-            fetched[p.keyUser] = k ?? "";
-          } catch {
-            fetched[p.keyUser] = "";
-          }
-        }),
-      );
-      if (stopped) return;
-      // Merge, don't replace: the in-memory map is the source of truth for
-      // the running session. The OS keychain may be unavailable (no unlocked
-      // gnome-keyring/kwallet on Linux, or running under dev:web with no
-      // Tauri runtime), in which case the optimistic value the user just
-      // typed is the ONLY copy — a blind re-read would wipe it and the chat
-      // panel would flip back to "no provider". Keep any non-empty in-memory
-      // value; fill in the rest from the keychain.
-      setKeys((prev) => {
-        const merged = { ...fetched };
-        for (const [k, v] of Object.entries(prev)) {
-          if (v) merged[k] = v;
-        }
-        return merged;
-      });
-    })();
-    return () => {
-      stopped = true;
-    };
-  }, [providers]);
+    void loadKeysFromKeychain();
+  }, [providers, loadKeysFromKeychain]);
 
   // Derived: per-function API keys. Each function's binding points at a
   // provider whose `keyUser` slot holds its key. `apiKey`/`embeddingApiKey`
@@ -501,59 +384,8 @@ export function useApp() {
     }
   };
 
-  // P6: Settings dialog callbacks. The dialog persists provider rows +
-  // function selections + prompts itself via the api; these keep App's
-  // derived state in sync so apiKey/embeddingApiKey recompute and the
-  // Library / Chat panels see the new selections immediately.
-  const handleProvidersChange = useCallback(async () => {
-    try {
-      setProviders(await api.listProviders());
-    } catch {
-      /* sidecar mid-restart */
-    }
-  }, []);
-
-  const handleSettingsChange = useCallback(async () => {
-    try {
-      setSettings(await api.getSettings());
-    } catch {
-      /* sidecar mid-restart */
-    }
-  }, []);
-
-  // A key field changed in the dialog. Persist to the keychain (best-effort;
-  // a missing daemon must not break the session) and update the in-memory
-  // keys map so apiKey/embeddingApiKey recompute live.
-  const handleKeyChange = useCallback(
-    async (keyUser: string, value: string) => {
-      setKeys((prev) => ({ ...prev, [keyUser]: value }));
-      try {
-        if (value) await ipc.setSecret(keyUser, value);
-        else await ipc.deleteSecret(keyUser);
-      } catch (e) {
-        console.warn("[settings] key not persisted:", e);
-      }
-    },
-    [],
-  );
-
-  // P5 callbacks: the agent edited a document, or asked the UI to open a
-  // viewer/editor. Document edits bump the per-doc revision so its editor
-  // live-reloads; the Library list refreshes for title changes.
-  const handleDocumentEdited = useCallback(
-    (doc: Document) => {
-      setDocuments((prev) =>
-        prev.some((d) => d.id === doc.id)
-          ? prev.map((d) => (d.id === doc.id ? { ...d, ...doc } : d))
-          : [...prev, doc],
-      );
-      setDocRevisions((prev) => ({
-        ...prev,
-        [doc.id]: (prev[doc.id] ?? 0) + 1,
-      }));
-    },
-    [],
-  );
+  // Composition handlers below read sources/documents (content store) and
+  // the tab actions (tabs store) to open viewers/editors.
 
   const handleOpenSourceById = useCallback(
     (sourceId: string) => {
@@ -608,8 +440,10 @@ export function useApp() {
       void api
         .getDocument(documentId)
         .then((d) => {
-          setDocuments((prev) =>
-            prev.some((x) => x.id === d.id) ? prev : [...prev, d],
+          setDocuments(
+            documents.some((x) => x.id === d.id)
+              ? documents
+              : [...documents, d],
           );
           openDocument(d);
         })
@@ -620,49 +454,23 @@ export function useApp() {
     [documents, openDocument],
   );
 
-  // The document the user is currently editing (active doc tab), if any. Sent
-  // each chat turn as the default target for the agent's p_* tools.
-  const activeDocumentId = useMemo(() => {
-    if (!activeTabId) return undefined;
-    const tab = tabs.find((t) => t.sourceId === activeTabId);
-    return tab && tab.kind === "doc" ? tab.sourceId : undefined;
-  }, [activeTabId, tabs]);
-
-  const initialized = !!project?.initialized;
   const configured = !!settings && !!apiKey;
 
   return {
     // state
-    health,
-    project,
     settings,
-    sources,
-    showSettings,
-    busy,
-    error,
-    tabs,
-    activeTabId,
-    documents,
-    docRevisions,
-    providers,
-    keys,
     citationPopup,
     // refs
     chatPanelRef,
     // derived
-    initialized,
     configured,
     apiKey,
     embeddingApiKey,
     visionDocKey,
     visionImageKey,
     sttKey,
-    activeDocumentId,
     // setters used directly by the shell
-    setShowSettings,
-    setError,
     setCitationPopup,
-    setActiveTabId,
     // handlers
     onOpenFolder,
     handleRescan,
@@ -671,14 +479,11 @@ export function useApp() {
     openDocument,
     openReferencesView,
     openSourceByIdAtPage,
-    closeTab,
     handleCitationClick,
     handleDocumentEdited,
     handleOpenSourceById,
     handleOpenDocumentById,
-    handleProvidersChange,
     handleSettingsChange,
-    handleKeyChange,
     refreshSources,
   };
 }
