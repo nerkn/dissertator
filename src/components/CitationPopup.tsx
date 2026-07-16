@@ -10,7 +10,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { X, BookOpen, Warning } from "@phosphor-icons/react";
 import type { Reference, SourceFile } from "@dissertator/shared";
 import { api } from "../lib/api";
-import { useContentStore } from "../lib/stores/content";
+import { useSourceItems } from "../lib/stores/content";
 import { SourceCombobox } from "./SourceCombobox";
 
 interface Props {
@@ -32,7 +32,7 @@ function formatAuthors(authors: Reference["authors"]): string {
 }
 
 export function CitationPopup({ citekey, page, rect, onClose, onLinkOpen }: Props) {
-  const sources = useContentStore((s) => s.sources?.items ?? []);
+  const sources = useSourceItems();
   const [ref, setRef] = useState<Reference | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [notFound, setNotFound] = useState<boolean>(false);

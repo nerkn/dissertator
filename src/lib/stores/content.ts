@@ -11,8 +11,14 @@ import { api } from "../api";
 import type {
   Document,
   Settings,
+  SourceFile,
   SourcesResponse,
 } from "@dissertator/shared";
+
+// Stable fallback so selectors returning "sources or empty" don't mint a new
+// array each read (which would break useSyncExternalStore's snapshot cache
+// and loop React forever). See useSourceItems below.
+const EMPTY_SOURCES: SourceFile[] = [];
 
 interface ContentState {
   settings: Settings | null;
@@ -62,3 +68,12 @@ export const useContentStore = create<ContentState>((set) => ({
     }
   },
 }));
+
+/** The current project's source list, or a stable empty array when no
+ *  project is open. Prefer this over `useContentStore((s) => s.sources?.items
+ *  ?? [])` — the inline `[]` literal returns a fresh reference every snapshot
+ *  read and trips an infinite re-render loop in React 18's
+ *  useSyncExternalStore. */
+export function useSourceItems(): SourceFile[] {
+  return useContentStore((s) => s.sources?.items ?? EMPTY_SOURCES);
+}

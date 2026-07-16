@@ -49,7 +49,7 @@ import type {
 import { api, streamChat } from "../../lib/api";
 import type { DebugEvent } from "../../lib/api";
 import { useActiveDocumentId } from "../../lib/stores/tabs";
-import { useContentStore } from "../../lib/stores/content";
+import { useSourceItems } from "../../lib/stores/content";
 import { useSessionStore } from "../../lib/stores/session";
 import {
   LiveAssistantBubble,
@@ -104,7 +104,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   // The document the user is currently editing (active doc tab) is derived
   // from the tabs store; sent each turn as the default p_* target.
   const activeDocumentId = useActiveDocumentId();
-  const sources = useContentStore((s) => s.sources?.items ?? []);
+  const sources = useSourceItems();
   const health = useSessionStore((s) => s.health);
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);

@@ -12,7 +12,7 @@
 import { Sparkle } from "@phosphor-icons/react";
 import { useTabsStore } from "../lib/stores/tabs";
 import { api } from "../lib/api";
-import { useContentStore } from "../lib/stores/content";
+import { useContentStore, useSourceItems } from "../lib/stores/content";
 import { useSessionStore } from "../lib/stores/session";
 import { PdfViewer } from "./PdfViewer";
 import { TextViewer } from "./TextViewer";
@@ -38,7 +38,7 @@ export function CenterPane({
   const onActivate = useTabsStore((s) => s.setActiveTabId);
   const onClose = useTabsStore((s) => s.closeTab);
   const openSource = useTabsStore((s) => s.openSource);
-  const sources = useContentStore((s) => s.sources?.items ?? []);
+  const sources = useSourceItems();
   const docRevisions = useContentStore((s) => s.docRevisions);
 
   const active = tabs.find((t) => t.sourceId === activeTabId) ?? null;
