@@ -17,3 +17,19 @@ read the store directly instead of receiving props drilled through
 + `setError`) stays in `useApp` and calls store setters.
 
 `useApp` shrank 684 → 489 lines. Dependency added: `zustand@5`.
+
+## Bug-fix sweep (2026-07-16)
+
+- **Selector snapshots must return stable refs.** Inline `?? []` in a zustand
+  selector mints a new array per read → `useSyncExternalStore` infinite loop.
+  `useSourceItems()` uses a module-level `EMPTY_SOURCES` constant fallback.
+- **Partial-update spread clobbers siblings.** `handleDocumentEdited` merges
+  `{...d, ...doc}`; ChatPanel's agent-edit handler must preserve the existing
+  doc's structural fields (docType/thesis/RQ/focusPrompt/createdAt) since the
+  `EditEvent` only carries title/bodyMd. Reads via `useContentStore.getState()`.
+- **No side effects in setState updaters.** React 18 StrictMode double-invokes
+  them in dev → duplicate work (e.g. a second chat created on delete). Compute
+  derived state outside the updater.
+- **Path inputs need allowlists.** `POST /assets/import`'s `dest` is joined into
+  a filesystem path, so it's allowlisted to `images|audio|root` server-side
+  (the TS union isn't enforced across JSON).

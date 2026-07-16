@@ -49,7 +49,7 @@ import type {
 import { api, streamChat } from "../../lib/api";
 import type { DebugEvent } from "../../lib/api";
 import { useActiveDocumentId } from "../../lib/stores/tabs";
-import { useSourceItems } from "../../lib/stores/content";
+import { useContentStore, useSourceItems } from "../../lib/stores/content";
 import { useSessionStore } from "../../lib/stores/session";
 import {
   LiveAssistantBubble,
@@ -289,18 +289,22 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             ),
           ),
         onEdit: (e) => {
+          // The edit event only carries title/bodyMd — preserve the doc's
+          // structural fields from its in-memory row. The store merges with
+          // {...d, ...doc}, so fabricated nulls would clobber docType/thesis/
+          // researchQuestions/focusPrompt on every agent edit.
+          const existing = useContentStore
+            .getState()
+            .documents.find((d) => d.id === e.documentId);
           onDocumentEdited?.({
             id: e.documentId,
             title: e.title,
             bodyMd: e.bodyMd,
-            // The edit payload carries only id/title/bodyMd; the doc-type
-            // fields are not part of the live event. App keeps its existing
-            // record for those and only the body/title change in practice.
-            docType: null,
-            thesis: null,
-            researchQuestions: [],
-            focusPrompt: null,
-            createdAt: Date.now(),
+            docType: existing?.docType ?? null,
+            thesis: existing?.thesis ?? null,
+            researchQuestions: existing?.researchQuestions ?? [],
+            focusPrompt: existing?.focusPrompt ?? null,
+            createdAt: existing?.createdAt ?? Date.now(),
           });
         },
         onGui: (g: GuiEvent) => {
@@ -424,25 +428,29 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     const id = activeChat.id;
     try {
       await api.deleteChat(id);
-      setChats((prev) => {
-        const remaining = prev.filter((c) => c.id !== id);
-        // Fall through to the next chat, or auto-create if the last one was
-        // deleted (never leave the user with a blank panel).
-        if (remaining.length > 0) {
-          setActiveChatId(remaining[0].id);
-        } else {
-          setActiveChatId(null);
-          void api
-            .createChat()
-            .then((c) => setChats([c]))
-            .then(() => {});
+      // Compute the next list OUTSIDE the setChats updater — React 18
+      // StrictMode double-invokes updaters in dev, so a side effect
+      // (api.createChat) inside one would fire twice and create a duplicate.
+      const remaining = chats.filter((c) => c.id !== id);
+      setChats(remaining);
+      // Fall through to the next chat, or auto-create if the last one was
+      // deleted (never leave the user with a blank panel).
+      if (remaining.length > 0) {
+        setActiveChatId(remaining[0].id);
+      } else {
+        setActiveChatId(null);
+        try {
+          const created = await api.createChat();
+          setChats([created]);
+          setActiveChatId(created.id);
+        } catch {
+          /* ignore — user can retry via New */
         }
-        return remaining;
-      });
+      }
     } catch (e) {
       setError((e as Error)?.message ?? String(e));
     }
-  }, [activeChat]);
+  }, [activeChat, chats]);
 
   // --- context picker ------------------------------------------------------
   const [pickerOpen, setPickerOpen] = useState(false);

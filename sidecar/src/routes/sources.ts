@@ -105,6 +105,11 @@ export function registerSources(app: Hono): void {
     if (/[\\/]/.test(filename))
       return c.json({ error: "filename must not contain a path separator" }, 400);
     const dest = body.dest ?? "root";
+    // Allowlist dest: it's interpolated into a filesystem path (join(root,
+    // dest)), so an unchecked value like "../../x" would escape the project.
+    if (dest !== "images" && dest !== "audio" && dest !== "root") {
+      return c.json({ error: "invalid dest" }, 400);
+    }
     const root = project.projectPath;
     const destDir = dest === "root" ? root : join(root, dest);
 
