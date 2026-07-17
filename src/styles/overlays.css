@@ -393,3 +393,20 @@
 .ref-edit-dialog .reference-edit-row input {
   font-size: 13px;
 }
+
+/* === SystemDialog (in-app prompt/confirm/alert) ========================= */
+/* Reuses .overlay / .dialog / .field / .actions from settings.css. */
+.system-dialog .dialog-message {
+  margin: -4px 0 16px;
+  color: var(--text, #e2e8f0);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+.system-dialog .field {
+  margin-bottom: 16px;
+}
+.system-dialog .field input {
+  width: 100%;
+  box-sizing: border-box;
+}

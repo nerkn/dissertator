@@ -69,3 +69,29 @@ export function extractDois(text: string): string[] {
   }
   return out;
 }
+
+// Title-page scoping for DOI extraction. The own DOI almost always appears on
+// the title page; cited-works DOIs live in the bibliography (later pages). To
+// prevent a bibliography DOI from being mis-attributed to a source whose own
+// DOI is ABSENT (books, preprints, scans, chapters), DOI candidates are drawn
+// only from the title-page region computed here.
+
+/** Page-2 marker emitted by `getSourceText` (format `[p.<physicalPage>] `).
+ * The title page is everything before the first `[p.2]`. */
+const PAGE_2_MARK = "[p.2]";
+
+/** Max chars to scan when a source has no page markers (DOCX, transcripts,
+ * plain text) — enough for a title page, short of a bibliography. */
+const NO_PAGE_CAP = 2500;
+
+/**
+ * Return the title-page region of a page-tagged source text: everything
+ * before the first `[p.2]` marker, or — when the text carries no page markers
+ * at all — the first `NO_PAGE_CAP` chars. Pure & deterministic; the marker
+ * format is the one `getSourceText` emits (`[p.<n>] ` joined by `\n\n`).
+ */
+export function firstPageRegion(text: string): string {
+  const idx = text.indexOf(PAGE_2_MARK);
+  if (idx > 0) return text.slice(0, idx);
+  return text.slice(0, NO_PAGE_CAP);
+}

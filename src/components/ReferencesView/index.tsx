@@ -12,6 +12,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Reference, SourceFile } from "@dissertator/shared";
 import { api } from "../../lib/api";
+import { confirmDialog, alertDialog } from "../../lib/stores/dialogs";
+import { useContentStore } from "../../lib/stores/content";
+import { useProviderStore } from "../../lib/stores/providers";
 import {
   fmtAuthors,
   parseAuthors,
@@ -42,8 +45,26 @@ export function ReferencesView({ sources, onOpenSource }: Props) {
   // BibTeX import textarea toggle:
   const [showImport, setShowImport] = useState(false);
   const [bibText, setBibText] = useState("");
-  // Bulk auto-detect (Option A): scanning unlinked sources for DOIs.
+  // Bulk auto-detect: layered pipeline (DOI → Crossref; PDF /info metadata;
+  // LLM extract from the title page). The chat key enables the LLM stage.
   const [detecting, setDetecting] = useState(false);
+
+  // Chat key for the LLM stage of detect-reference (enriches books / scans /
+  // preprints that DOI + PDF-metadata miss). Mirrors useApp.keyFor("chat"):
+  // the chat binding's provider key, sourced from the keychain via the
+  // providers store. Absent key ⇒ LLM stage skipped server-side.
+  const chatKey = useMemo(() => {
+    const pid = useContentStore.getState().settings?.bindings?.chat?.providerId;
+    if (!pid) return undefined;
+    const provState = useProviderStore.getState();
+    const p = provState.providers.find((x) => x.id === pid);
+    return p ? provState.keys[p.keyUser] : undefined;
+  }, [
+    // Re-derive when bindings / providers / keys change.
+    useContentStore((s) => s.settings?.bindings?.chat?.providerId),
+    useProviderStore((s) => s.providers),
+    useProviderStore((s) => s.keys),
+  ]) as string | undefined;
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -100,7 +121,13 @@ export function ReferencesView({ sources, onOpenSource }: Props) {
   };
 
   const remove = async (id: string) => {
-    if (!confirm("Delete this reference? This cannot be undone.")) return;
+    const ok = await confirmDialog({
+      title: "Delete reference",
+      message: "Delete this reference? This cannot be undone.",
+      okLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await api.deleteReference(id);
       setRefs((rs) => rs.filter((x) => x.id !== id));
@@ -184,7 +211,10 @@ export function ReferencesView({ sources, onOpenSource }: Props) {
         await reload();
         setLookup("");
       } else {
-        alert("No matching reference found.");
+        await alertDialog({
+          title: "No match",
+          message: "No matching reference found.",
+        });
       }
     } catch {
       setStatus("error");
@@ -197,28 +227,50 @@ export function ReferencesView({ sources, onOpenSource }: Props) {
   // a reference, scan its extracted text for a DOI, resolve via Crossref, and
   // create + link the reference. Sources with no resolvable DOI (books,
   // preprints, scans) are skipped silently — that's not an error.
+  //
+  // Layered pipeline (cheapest first): DOI → Crossref, then PDF /info
+  // metadata, then LLM extract. Targets sources with NO reference AND sources
+  // whose linked reference is still a placeholder (no authors + no doi) — so
+  // re-running detect fills empty rows instead of skipping them.
   const detectAll = async () => {
-    const linked = new Set(
-      refs.map((r) => r.source_file_id).filter(Boolean) as string[],
-    );
-    const targets = sources.filter((s) => !linked.has(s.id));
+    const refBySrc = new Map<string, Reference>();
+    for (const r of refs) {
+      if (r.source_file_id) refBySrc.set(r.source_file_id, r);
+    }
+    const isPlaceholder = (r?: Reference) =>
+      !r || (r.authors.length === 0 && !r.doi);
+    const targets = sources.filter((s) => isPlaceholder(refBySrc.get(s.id)));
     if (targets.length === 0) {
-      alert("Nothing to detect \u2014 every source is already linked.");
+      await alertDialog({
+        title: "Nothing to detect",
+        message: "Nothing to detect — every source already has metadata.",
+      });
       return;
     }
     setDetecting(true);
-    let found = 0;
+    const counts: Record<string, number> = {};
+    const bump = (s: string) => {
+      counts[s] = (counts[s] ?? 0) + 1;
+    };
     try {
       for (const s of targets) {
-        const res = await api.detectReference(s.id);
-        if (res.found && !res.alreadyLinked) found++;
+        const res = await api.detectReference(s.id, chatKey);
+        if (res.found && !res.alreadyLinked && res.source !== "none") {
+          bump(res.source);
+        }
       }
       await reload();
-      alert(
-        found > 0
-          ? `Linked ${found} of ${targets.length} source(s) via DOI.`
-          : `No DOIs resolved from ${targets.length} source(s) \u2014 add those manually or by title.`,
-      );
+      const filled = Object.values(counts).reduce((a, b) => a + b, 0);
+      const breakdown = Object.entries(counts)
+        .map(([k, v]) => `${v} ${k}`)
+        .join(", ");
+      await alertDialog({
+        title: "Detection complete",
+        message:
+          filled > 0
+            ? `Filled ${filled} of ${targets.length} source(s) (${breakdown}).`
+            : `No metadata found for ${targets.length} source(s) — add those manually or by title.`,
+      });
     } catch {
       setStatus("error");
     } finally {

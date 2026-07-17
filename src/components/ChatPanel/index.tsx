@@ -36,6 +36,7 @@ import {
   Lightbulb,
   CaretDown,
   Gear,
+  ArrowClockwise,
 } from "@phosphor-icons/react";
 import type {
   Chat,
@@ -51,6 +52,7 @@ import type { DebugEvent } from "../../lib/api";
 import { useActiveDocumentId } from "../../lib/stores/tabs";
 import { useContentStore, useSourceItems } from "../../lib/stores/content";
 import { useSessionStore } from "../../lib/stores/session";
+import { promptDialog, confirmDialog } from "../../lib/stores/dialogs";
 import {
   LiveAssistantBubble,
   MessageBubble,
@@ -106,6 +108,9 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   const activeDocumentId = useActiveDocumentId();
   const sources = useSourceItems();
   const health = useSessionStore((s) => s.health);
+  // Project identity: chats live in the per-project DB, so the chat list
+  // must reload whenever the open project changes.
+  const projectPath = useSessionStore((s) => s.project?.projectPath ?? null);
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -171,6 +176,10 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   // so the user always lands on a writable surface.
   useEffect(() => {
     if (!configured) return;
+    // Project switched: drop the previous project's chat selection so
+    // stale messages don't linger while the new project's chats load.
+    setActiveChatId(null);
+    setMessages([]);
     let stopped = false;
     (async () => {
       setLoadingChats(true);
@@ -198,7 +207,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     return () => {
       stopped = true;
     };
-  }, [configured, refreshChats]);
+  }, [configured, projectPath, refreshChats]);
 
   // Reload messages when the active chat changes.
   useEffect(() => {
@@ -222,6 +231,9 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
   const [debugOpen, setDebugOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
+  // Last successfully-submitted text, so the Retry button can re-run a turn
+  // that errored without re-typing it.
+  const lastSentRef = useRef<string>("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -246,6 +258,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     async (overrideText?: string) => {
       const text = (overrideText ?? input).trim();
       if (!text || !activeChatId || streaming) return;
+      lastSentRef.current = text;
       setError(null);
       setInput("");
       // Stale quick-reply chips disappear the moment the user says anything else.
@@ -410,7 +423,12 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
 
   const renameChat = useCallback(async () => {
     if (!activeChat) return;
-    const title = window.prompt("Chat title", activeChat.title);
+    const title = await promptDialog({
+      title: "Rename chat",
+      label: "Chat title",
+      defaultValue: activeChat.title,
+      okLabel: "Save",
+    });
     if (title == null) return;
     const trimmed = title.trim();
     if (!trimmed) return;
@@ -424,7 +442,13 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
 
   const deleteChat = useCallback(async () => {
     if (!activeChat) return;
-    if (!window.confirm(`Delete chat "${activeChat.title}"?`)) return;
+    const ok = await confirmDialog({
+      title: "Delete chat",
+      message: `Delete chat “${activeChat.title}”?`,
+      okLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
     const id = activeChat.id;
     try {
       await api.deleteChat(id);
@@ -777,8 +801,19 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
           )}
 
           {error && (
-            <div className="warn small" onClick={() => setError(null)}>
-              {error}
+            <div className="warn small error-row">
+              <span className="error-text" onClick={() => setError(null)}>
+                {error}
+              </span>
+              <button
+                type="button"
+                className="btn retry"
+                onClick={() => send(lastSentRef.current)}
+                title="Re-run the last message"
+              >
+                <ArrowClockwise size={14} weight="bold" />
+                Retry
+              </button>
             </div>
           )}
 

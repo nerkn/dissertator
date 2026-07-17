@@ -5,7 +5,8 @@
 // lowercasing.
 
 import { describe, expect, test } from "bun:test";
-import { extractDois } from "./doi.ts";
+import { extractDois, firstPageRegion } from "./doi.ts";
+import { normTitle, titlesMatch } from "./titleMatch.ts";
 
 describe("extractDois", () => {
   test("extracts a plain DOI", () => {
@@ -83,5 +84,67 @@ describe("extractDois", () => {
     expect(extractDois("doi: 10.1038/nature123")).toEqual([
       "10.1038/nature123",
     ]);
+  });
+});
+
+describe("firstPageRegion", () => {
+  test("returns everything before the [p.2] marker (title page)", () => {
+    const text = "[p.1] Title page with DOI 10.1038/own\n\n[p.2] References cite 10.1016/cited";
+    expect(firstPageRegion(text)).toBe("[p.1] Title page with DOI 10.1038/own\n\n");
+    // A bibliography DOI on page 2 is excluded from the scope.
+    expect(extractDois(firstPageRegion(text))).toEqual(["10.1038/own"]);
+  });
+
+  test("the user's scenario: own DOI absent, cited DOI on page 2 → scope is empty of DOIs", () => {
+    const text = "[p.1] A book chapter, no own DOI here\n\n[p.2] Refs: 10.1016/somecited";
+    expect(extractDois(firstPageRegion(text))).toEqual([]);
+  });
+
+  test("falls back to a char cap when there are no page markers (DOCX/transcript)", () => {
+    const long = "x".repeat(5000);
+    expect(firstPageRegion(long).length).toBe(2500);
+  });
+
+  test("single-page doc returns the whole text when short", () => {
+    expect(firstPageRegion("[p.1] only page")).toBe("[p.1] only page");
+  });
+});
+
+describe("titlesMatch", () => {
+  test("exact match after normalization (case/punct)", () => {
+    expect(titlesMatch("On the Electrodynamics of Moving Bodies!", "on the electrodynamics of moving bodies")).toBe(true);
+  });
+
+  test("one title is a prefix of the other (subtitle / truncation)", () => {
+    expect(titlesMatch("STEM: Semantic Target Search", "STEM: Semantic Target Search and Exploration using MAVs")).toBe(true);
+  });
+
+  test("high token overlap counts as a match (≥0.6 Jaccard, non-substring)", () => {
+    // Same paper, reworded — no substring relation, but heavy token overlap.
+    expect(
+      titlesMatch(
+        "ImageNet Classification with Deep CNNs",
+        "Deep CNNs for ImageNet Classification",
+      ),
+    ).toBe(true);
+  });
+
+  test("borderline-low overlap is rejected (Jaccard < 0.6)", () => {
+    // 3 shared / 6 union = 0.5 — different enough to reject.
+    expect(titlesMatch("Deep Learning for Robotics", "Deep Learning in Robotics Applications")).toBe(false);
+  });
+
+  test("unrelated titles are rejected", () => {
+    expect(titlesMatch("A Survey of Reinforcement Learning", "Quantum Entanglement in Spin Chains")).toBe(false);
+  });
+
+  test("null / empty inputs never match", () => {
+    expect(titlesMatch(null, "x")).toBe(false);
+    expect(titlesMatch("x", undefined)).toBe(false);
+    expect(titlesMatch("", "")).toBe(false);
+  });
+
+  test("normTitle strips punctuation and collapses whitespace", () => {
+    expect(normTitle("  Hello, World!! ")).toBe("hello world");
   });
 });

@@ -23,7 +23,22 @@
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
+import { availableParallelism } from "node:os";
 import type { EmbedOptions, EmbedResult } from "./index.ts";
+
+/**
+ * Cap intra-op threads for the ONNX session. The runtime defaults to one
+ * thread per logical core, so on a 16-core box a single inference pins the
+ * whole machine (observed 800%+ CPU). Throughput on a 384-dim transformer is
+ * bound by total FLOPs, not thread count, once you're past ~4 threads, so
+ * capping keeps the system responsive without costing real speed. Override
+ * with the DISSERTATOR_ORT_THREADS env var.
+ */
+function ortThreads(): number {
+  const env = Number(process.env.DISSERTATOR_ORT_THREADS);
+  if (Number.isFinite(env) && env >= 1) return Math.floor(env);
+  return Math.max(1, Math.min(4, availableParallelism()));
+}
 
 /** Native output dimension (granite hidden_size). Matches the vec0 dim lock. */
 export const GRANITE_DIM = 384;
@@ -49,6 +64,62 @@ interface Loaded {
 
 let cached: Loaded | null = null;
 let loading: Promise<Loaded> | null = null;
+
+/**
+ * Idle-release: the int8 ONNX session holds ~90 MB resident for the process
+ * lifetime once loaded. Both bulk embedding AND corpus search reuse this one
+ * session, so we can't hard-unload after a bulk run (that would cold-reload
+ * ~94 MB on the next search query). Instead, re-arm a timer on every call —
+ * if nothing embeds/searches for `IDLE_MS`, release the native session (next
+ * use reloads it). Tunable via `DISSERTATOR_ORT_IDLE_MS`; 0 disables.
+ */
+const ORT_IDLE_MS = (() => {
+  const env = Number(process.env.DISSERTATOR_ORT_IDLE_MS);
+  return Number.isFinite(env) && env >= 0 ? env : 5 * 60 * 1000;
+})();
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Re-arm the idle-unload timer. Call on every local embed (bulk + search). */
+function rearmIdleTimer(): void {
+  if (ORT_IDLE_MS <= 0) return;
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    unloadLocalEmbed();
+  }, ORT_IDLE_MS);
+  // Don't keep the event loop alive solely for this timer.
+  if (typeof idleTimer?.unref === "function") idleTimer.unref();
+}
+
+/**
+ * Release the cached ONNX session + tokenizer so their native memory is
+ * reclaimed. Safe to call when nothing is loaded (no-op). The next
+ * `runLocalEmbed` reloads lazily. Exported so the ingest drain can hint an
+ * immediate re-arm after a bulk run completes.
+ */
+export function unloadLocalEmbed(): void {
+  if (!cached) return;
+  try {
+    cached.session?.release?.();
+  } catch {
+    /* release is best-effort; native handle may already be gone */
+  }
+  cached = null;
+  loading = null;
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
+}
+
+/**
+ * Re-arm the idle-unload timer from outside (e.g. the ingest drain's finally
+ * step), so the session is released shortly after a bulk run if no search
+ * follows. No-op if the local engine was never loaded.
+ */
+export function scheduleLocalEmbedIdleUnload(): void {
+  if (cached) rearmIdleTimer();
+}
 
 /** Resolve the model directory (see header for precedence). */
 function modelDir(): string {
@@ -82,6 +153,9 @@ async function load(): Promise<Loaded> {
 
     const session = await ort.InferenceSession.create(onnxPath, {
       graphOptimizationLevel: "all",
+      intraOpNumThreads: ortThreads(),
+      interOpNumThreads: 1,
+      executionMode: "sequential",
     });
     // @huggingface/tokenizers@0.1.x is pure-JS with no static fromFile; the
     // Tokenizer ctor takes (tokenizer.json, tokenizer_config.json) objects.
@@ -122,6 +196,8 @@ export async function runLocalEmbed(
   if (texts.length === 0) return { vectors: [], dimensions: GRANITE_DIM };
   try {
     const { ort, session, tokenizer, inputNames, outputName } = await load();
+    // We're actively using the session — push out the idle-unload deadline.
+    rearmIdleTimer();
 
     // Tokenize (special tokens ON by default). Manual pad/truncate so we don't
     // depend on setPadding/setTruncation API shape across tokenizers versions.

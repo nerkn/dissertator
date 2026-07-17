@@ -38,6 +38,7 @@ import {
   Paperclip,
 } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
+import { promptDialog } from "../../lib/stores/dialogs";
 import { SavePip } from "./StatusBar";
 import type { SaveState } from "./_shared";
 
@@ -81,8 +82,13 @@ export function Toolbar({
     ed.action(callCommand(...args));
   };
 
-  const insertLink = () => {
-    const url = window.prompt("Link URL");
+  const insertLink = async () => {
+    const url = await promptDialog({
+      title: "Insert link",
+      label: "URL",
+      placeholder: "https://…",
+      okLabel: "Insert",
+    });
     if (url) run(toggleLinkCommand.key, { href: url });
   };
 

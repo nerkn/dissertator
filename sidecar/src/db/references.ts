@@ -3,14 +3,15 @@
 // The `references` table is the citation index. A citekey is FROZEN after
 // first assignment (DESIGN.md §8 decision #9): `upsertReference` regenerates
 // it ONLY when an incoming reference has none, and never overwrites an
-// existing one. Collisions (`smith2020` twice) are resolved by appending
-// `-2`, `-3`, ... at insert time — the DB UNIQUE constraint is authoritative.
+// existing one. Collisions (`smith2020` twice) are resolved by appending a
+// BibTeX-style alpha suffix (`b`, `c`, …; the bare key plays the role of
+// `a`) at insert time — the DB UNIQUE constraint is authoritative.
 // No LEFT JOIN to `source_files` is needed: the only FK is `source_file_id`,
 // filtered directly when requested.
 
 import { randomUUID } from "node:crypto";
 import { type Author, type Reference } from "@dissertator/shared";
-import { generateCitekey } from "../cite/citekey.ts";
+import { alphaSuffix, generateCitekey } from "../cite/citekey.ts";
 import { current } from "./_core.ts";
 
 /**
@@ -55,13 +56,21 @@ function citekeyTaken(citekey: string, exceptId: string): boolean {
 }
 
 /**
- * Pick a free citekey by appending `-2`, `-3`, ... on collision.
+ * Pick a free citekey by appending a BibTeX-style alpha suffix on collision.
  *
  * Starts from `base` (already generated / caller-supplied). If `base` is free
- * (excluding `exceptId`), returns it as-is. Otherwise appends `-N` for
- * N=2..CITEKEY_MAX_ATTEMPTS until a free slot is found. Throws
+ * (excluding `exceptId`), returns it as-is. Otherwise appends `b`, `c`, …
+ * (via {@link alphaSuffix}) for up to CITEKEY_MAX_ATTEMPTS attempts until a
+ * free slot is found. The bare `base` plays the role of `a` — the FIRST
+ * reference of a surname+year group keeps the unsuffixed key, so the scheme
+ * is APPEND-ONLY: existing citekeys are never renamed and the FROZEN
+ * invariant (docs/citekey.md §5) holds. Throws
  * `Error("citekey collision: ...")` if all attempts are taken — extremely
  * unlikely in practice (would need 20 near-identical refs).
+ *
+ *   resolve("Tek2025", …) → "Tek2025"   (free)
+ *   resolve("Tek2025", …) → "Tek2025b"  (1st collision)
+ *   resolve("Tek2025", …) → "Tek2025c"  (2nd collision)
  */
 function resolveCitekey(
   base: string,
@@ -73,8 +82,8 @@ function resolveCitekey(
     base = `ref-${exceptId.slice(0, 8)}`;
   }
   if (!citekeyTaken(base, exceptId)) return base;
-  for (let n = 2; n <= CITEKEY_MAX_ATTEMPTS; n++) {
-    const candidate = `${base}-${n}`;
+  for (let i = 0; i < CITEKEY_MAX_ATTEMPTS; i++) {
+    const candidate = `${base}${alphaSuffix(i)}`;
     if (!citekeyTaken(candidate, exceptId)) return candidate;
   }
   throw new Error(

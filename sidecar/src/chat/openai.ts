@@ -257,6 +257,42 @@ export async function streamOpenAIChat(
   return finalize(toolCallsByIndex, finishReason);
 }
 
+export interface CompleteChatOptions {
+  apiKey: string;
+  config: ChatEndpointConfig;
+  messages: LoopMessage[];
+  signal?: AbortSignal;
+  maxTokens?: number;
+  temperature?: number;
+}
+
+export async function completeChat(opts: CompleteChatOptions): Promise<string> {
+  const { apiKey, config, messages, signal, maxTokens, temperature } = opts;
+  if (!apiKey) throw new Error("chat adapter requires an api key");
+  const apiUrl = config.apiUrl.replace(/\/+$/, "");
+  const url = `${apiUrl}/chat/completions`;
+  const body: Record<string, unknown> = { model: config.model, messages };
+  if (maxTokens && maxTokens > 0) body.max_tokens = maxTokens;
+  if (typeof temperature === "number") body.temperature = temperature;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    throw new Error(`chat adapter failed: ${res.status} ${truncate(errBody)}`);
+  }
+  const json = (await res.json()) as {
+    choices?: Array<{ message?: { content?: string } }>;
+  };
+  return json.choices?.[0]?.message?.content ?? "";
+}
+
 /** Emit accumulated tool calls in index order (stable across fragmentation). */
 function finalize(
   byIndex: Map<number, ToolCall>,

@@ -241,6 +241,19 @@ export function migrate(db: Database): void {
     }
   }
 
+  // chat_messages.tool_calls column (additive): persisted agent tool-call
+  // narration for assistant turns. Old DBs predate the column.
+  if (!cmHave.has("tool_calls")) {
+    try {
+      db.exec("ALTER TABLE chat_messages ADD COLUMN tool_calls TEXT");
+    } catch (e) {
+      console.warn(
+        "[db] migrate: could not add column tool_calls:",
+        (e as Error)?.message
+      );
+    }
+  }
+
   // Backfill: any pre-existing rows (single-global-chat era) get attached to
   // a deterministic "General" chat so the transcript survives the migration.
   // Uses INSERT ... ON CONFLICT DO NOTHING so re-running migrate is safe.

@@ -91,4 +91,6 @@ export interface EmbeddingStatus {
   /** True if the embed provider is keyless (local granite) — no API key
    *  needed, so "Embed now" is always available. */
   keyless: boolean;
+  /** True while a background full-corpus drain is in progress. */
+  running: boolean;
 }

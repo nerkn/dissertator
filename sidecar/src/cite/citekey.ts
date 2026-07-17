@@ -22,9 +22,9 @@
 // biber/biblatex accept Unicode keys.)
 //
 // Collisions (two `Smith2020`) are NOT resolved here — the DB UNIQUE
-// constraint is the source of truth, and the caller appends `-2`, `-3`, ...
-// until free. Keeping this module pure (no DB access) makes it trivially
-// testable offline.
+// constraint is the source of truth, and the caller appends a BibTeX-style
+// alpha suffix (`b`, `c`, …; see `alphaSuffix` below) until free. Keeping
+// this module pure (no DB access) makes it trivially testable offline.
 
 /**
  * Strip every non-alphanumeric character from `s`, preserving case AND Unicode
@@ -90,7 +90,8 @@ export interface CitekeyInput {
  * since a DB UNIQUE NOT NULL column rejects `""`).
  *
  * Collisions are NOT handled here — the DB UNIQUE constraint is authoritative;
- * the caller appends `-2`, `-3`, ... on conflict.
+ * the caller appends a BibTeX-style alpha suffix (`b`, `c`, …; see {@link
+ * alphaSuffix}) on conflict.
  */
 export function generateCitekey(input: CitekeyInput): string {
   let family = "";
@@ -117,4 +118,38 @@ export function generateCitekey(input: CitekeyInput): string {
     }
   }
   return family;
+}
+
+/**
+ * Disambiguation suffix for a colliding citekey: `0` → `b`, `1` → `c`, …,
+ * `24` → `z`, `25` → `aa`, `26` → `ab`, … (bijective base-26, like Excel
+ * column letters).
+ *
+ * BibTeX-style alphabetic suffixing, with one deliberate twist: it SKIPS
+ * `a`. The bare citekey (e.g. `Tek2025`) plays the role of `a` for the FIRST
+ * reference of a surname+year group; only the SECOND and later colliding
+ * refs get a suffix (`Tek2025b`, `Tek2025c`, …). This keeps the scheme
+ * APPEND-ONLY — existing citekeys are never renamed, so the FROZEN invariant
+ * (docs/citekey.md §5) holds and no `[@citekey]` token ever needs rewriting
+ * when a new collision appears.
+ *
+ * `n` is the 0-based collision index (0 = first collision → `b`).
+ *
+ *   alphaSuffix(0)  → "b"
+ *   alphaSuffix(1)  → "c"
+ *   alphaSuffix(24) → "z"
+ *   alphaSuffix(25) → "aa"
+ *   alphaSuffix(26) → "ab"
+ */
+export function alphaSuffix(n: number): string {
+  // Shift by 2 so index 0 maps to 'b' (skipping 'a'), then encode in
+  // bijective base-26 (a=1..z=26, aa=27…). 'a'.charCodeAt(0) === 97.
+  let m = n + 2;
+  let s = "";
+  while (m > 0) {
+    m -= 1;
+    s = String.fromCharCode(97 + (m % 26)) + s;
+    m = Math.floor(m / 26);
+  }
+  return s;
 }

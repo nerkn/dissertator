@@ -16,7 +16,9 @@ import {
 } from "@phosphor-icons/react";
 import type { List, Note, SourcesResponse } from "@dissertator/shared";
 import { api } from "../../lib/api";
+import { useSessionStore } from "../../lib/stores/session";
 import { notifyNotesChanged, insertCitation } from "../NotePopup";
+import { promptDialog, confirmDialog } from "../../lib/stores/dialogs";
 
 interface Props {
   /** Source list — used to label note rows with their source's filename. */
@@ -26,6 +28,8 @@ interface Props {
 }
 
 export function ListsGroup({ sources, onOpenNote }: Props) {
+  // Lists/notes live in the per-project DB; reload on project switch.
+  const projectPath = useSessionStore((s) => s.project?.projectPath ?? null);
   const [lists, setLists] = useState<List[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [openLists, setOpenLists] = useState<Set<number>>(() => new Set());
@@ -50,7 +54,7 @@ export function ListsGroup({ sources, onOpenNote }: Props) {
     window.addEventListener("dissertator:notes-changed", onChange);
     return () =>
       window.removeEventListener("dissertator:notes-changed", onChange);
-  }, [refreshListsNotes]);
+  }, [refreshListsNotes, projectPath]);
 
   // source id → filename, for labelling note rows (notes cascade-delete with
   // their source, so every note's source is present here).
@@ -67,7 +71,12 @@ export function ListsGroup({ sources, onOpenNote }: Props) {
     });
 
   const addList = async () => {
-    const label = window.prompt("New list name:");
+    const label = await promptDialog({
+      title: "New list",
+      label: "List name",
+      placeholder: "e.g. Methods",
+      okLabel: "Create",
+    });
     if (!label?.trim()) return;
     try {
       await api.createList({ label: label.trim() });
@@ -78,7 +87,13 @@ export function ListsGroup({ sources, onOpenNote }: Props) {
   };
 
   const removeList = async (id: number, label: string) => {
-    if (!window.confirm(`Delete list "${label}" and its notes?`)) return;
+    const ok = await confirmDialog({
+      title: "Delete list",
+      message: `Delete list “${label}” and its notes?`,
+      okLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
     try {
       await api.deleteList(id);
       notifyNotesChanged();

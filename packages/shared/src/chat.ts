@@ -20,6 +20,15 @@ export interface Chat {
 }
 
 /** Persisted chat message row (`chat_messages` table). */
+/** One persisted tool-call narration beat for an assistant turn. */
+export interface ToolTrace {
+  name: string;
+  args: unknown;
+  ok?: boolean;
+  summary?: string;
+  error?: string;
+}
+
 export interface ChatMessage {
   id: string;
   /** FK to the chat this message belongs to. */
@@ -28,6 +37,8 @@ export interface ChatMessage {
   content: string | null;
   /** Source-file ids the user had open when this message was sent. */
   openFiles: string[];
+  /** Tool calls the agent made during this assistant turn (narration). */
+  toolCalls?: ToolTrace[];
   /** LLM-reported token usage for this turn (assistant turns only). */
   costTokens: number | null;
   createdAt: number;

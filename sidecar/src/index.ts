@@ -10,6 +10,8 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { SIDECAR_PORT, SIDECAR_PORT_RANGE } from "@dissertator/shared";
 import { findFreePort } from "./lib/port.ts";
+import { ensureAgentFiles } from "./agent-files.ts";
+import { registerAgentFiles } from "./routes/agent-files.ts";
 import { registerBindings } from "./routes/bindings.ts";
 import { registerChats } from "./routes/chats.ts";
 import { registerDocuments } from "./routes/documents.ts";
@@ -49,6 +51,7 @@ registerNotes(app);
 registerDocuments(app);
 registerChats(app);
 registerPrompts(app);
+registerAgentFiles(app);
 registerEvents(app);
 
 const port = await findFreePort(SIDECAR_PORT, SIDECAR_PORT_RANGE);

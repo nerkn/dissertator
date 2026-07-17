@@ -32,6 +32,7 @@ import {
 } from "../db";
 import { listSources } from "../ingest/index.ts";
 import { searchCorpus } from "../search.ts";
+import { appendPreference } from "../agent-files.ts";
 
 /** Per-run context handed to every tool. */
 export interface ToolContext {
@@ -286,6 +287,29 @@ export const TOOL_SPECS: ToolSpec[] = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "pref_add",
+      description:
+        "Record ONE durable user preference or correction as a single bullet in " +
+        "the project's preferences file (read into every future chat). Call ONLY " +
+        "when the user states a lasting preference (tone, format, citation style, " +
+        "workflow, hard constraint) — NEVER for one-off or transient requests. " +
+        "You cannot delete or rewrite; you only append. Keep `text` to one concise " +
+        "line.",
+      parameters: {
+        type: "object",
+        properties: {
+          text: {
+            type: "string",
+            description: "One concise preference bullet (no leading dash).",
+          },
+        },
+        required: ["text"],
+      },
+    },
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -406,6 +430,8 @@ export async function dispatchTool(
         return guiOptions(a, ctx);
       case "gui_action":
         return guiAction(a, ctx);
+      case "pref_add":
+        return await prefAdd(a);
       default:
         return { ok: false, summary: `Unknown tool: ${name}`, error: `unknown tool: ${name}` };
     }
@@ -686,4 +712,11 @@ function guiAction(args: Record<string, unknown>, ctx: ToolContext): ToolResult 
     return { ok: false, summary: "gui_action: bad action", error: `action must be warn|celebrate|info` };
   ctx.emitGui({ kind: "action", action, text });
   return { ok: true, summary: `${action === "celebrate" ? "🎉" : action === "warn" ? "⚠️" : "ℹ️"} ${text}`, data: { narrated: true } };
+}
+
+async function prefAdd(args: Record<string, unknown>): Promise<ToolResult> {
+  const text = typeof args.text === "string" ? args.text.trim() : "";
+  if (!text) return { ok: false, summary: "pref_add: text required", error: "text required" };
+  await appendPreference(text);
+  return { ok: true, summary: `📝 Noted preference`, data: { recorded: true } };
 }

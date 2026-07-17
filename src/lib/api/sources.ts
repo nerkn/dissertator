@@ -65,18 +65,23 @@ export const sourcesApi = {
       body: JSON.stringify({}),
     }),
 
-  /** Auto-detect a reference for a source from its extracted text (Option A:
-   *  DOI scan → Crossref → create + link). Idempotent: if the source already
-   *  has a linked reference, returns it without re-scanning. `found` is false
-   *  (not an error) when no DOI resolves — e.g. books / preprints / scans. */
-  detectReference: (id: string) =>
+  /** Auto-detect a reference for a source via a layered pipeline (DOI scan
+   *  → Crossref; PDF /info metadata; LLM extract from the title page). First
+   *  stage that yields a title or authors wins. A linked placeholder (no
+   *  authors + no doi) is enriched in place rather than skipped. `chatKey`
+   *  enables the LLM stage (Bearer header, never persisted); without it the
+   *  LLM stage is silently skipped. `source` reports the winning stage
+   *  ("doi" | "pdf-meta" | "llm" | "none"). */
+  detectReference: (id: string, chatKey?: string) =>
     req<{
       found: boolean;
       reference: Reference | null;
       doi: string | null;
       alreadyLinked: boolean;
+      source: "doi" | "pdf-meta" | "llm" | "none";
     }>(`/sources/${encodeURIComponent(id)}/detect-reference`, {
       method: "POST",
+      headers: chatKey ? { Authorization: `Bearer ${chatKey}` } : undefined,
     }),
 
   // --- Semantic search (P2 Track 2) ----------------------------------------
@@ -103,9 +108,11 @@ export const sourcesApi = {
   /** Locked embedding dimensionality + per-status counts. */
   embedStatus: () => req<EmbeddingStatus>("/embed/status"),
 
-  /** Embed all pending chunks. `apiKey` is the embedding key (Bearer header). */
+  /** Kick off a background drain of ALL pending chunks (fire-and-forget).
+   *  `apiKey` is the embedding key (Bearer header). Returns immediately;
+   *  progress is observable via embedStatus().running + pending/done. */
   embed: (apiKey?: string) =>
-    req<{ embedded: number; failed: number; remaining: number }>("/embed", {
+    req<{ started: boolean; running: boolean }>("/embed", {
       method: "POST",
       headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
     }),

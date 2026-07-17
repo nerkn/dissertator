@@ -367,4 +367,30 @@ code {
   font-size: 11px;
   cursor: pointer;
 }
+/* Error banner: dismissible text + a Retry action laid out in a row. */
+.error-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.error-row .error-text {
+  flex: 1;
+  min-width: 0;
+}
+.btn.retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 3px 8px;
+  font-size: 11px;
+  border: 1px solid var(--red, #ef4444);
+  color: var(--red, #ef4444);
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.btn.retry:hover {
+  background: rgba(239, 68, 68, 0.15);
+}
 

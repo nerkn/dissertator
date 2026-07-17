@@ -71,6 +71,14 @@ export interface RunAgentOptions {
   /** Step cap (default 12). One step = one model round-trip. */
   maxSteps?: number;
   /**
+   * No-activity watchdog per step (default 30000ms). If the provider emits
+   * nothing (no delta) for this long, the in-flight fetch is aborted and the
+   * step throws — surfacing a clear "timed out" instead of hanging forever.
+   * Resets on every token, so a slow-but-streaming reasoning model is never
+   * cut off; only a stalled connection trips it.
+   */
+  stepTimeoutMs?: number;
+  /**
    * Injectable streaming primitive (test seam). Defaults to the real
    * {@link streamOpenAIChat}; tests pass a fake that returns canned tool_calls
    * + text without touching the network.
@@ -101,6 +109,7 @@ export async function runAgentLoop(
 ): Promise<RunAgentResult> {
   const tools = opts.tools ?? TOOL_SPECS;
   const maxSteps = opts.maxSteps ?? 12;
+  const stepTimeoutMs = opts.stepTimeoutMs ?? 30_000;
   const stream = opts.streamFn ?? streamOpenAIChat;
   const messages: LoopMessage[] = [...opts.messages];
 
@@ -117,13 +126,31 @@ export async function runAgentLoop(
       break;
     }
     let stepText = "";
+    // No-activity watchdog: abort the provider fetch if it emits nothing for
+    // `stepTimeoutMs`. Catches the "model hangs before its first token"
+    // failure that previously surfaced as a silent empty reply. Resets on
+    // every delta, so a slow-but-streaming response is never cut off.
+    const stepCtl = new AbortController();
+    const onOuterAbort = () => stepCtl.abort();
+    opts.signal?.addEventListener("abort", onOuterAbort);
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    let timedOut = false;
+    const armWatchdog = () => {
+      clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        timedOut = true;
+        stepCtl.abort();
+      }, stepTimeoutMs);
+    };
+    armWatchdog();
     const res = await stream({
       apiKey: opts.apiKey,
       config: opts.config,
       messages,
       tools,
-      signal: opts.signal,
+      signal: stepCtl.signal,
       onDelta: async (d) => {
+        armWatchdog();
         stepText += d;
         content += d;
         await opts.onEvent({ type: "delta", text: d });
@@ -136,6 +163,13 @@ export async function runAgentLoop(
         aborted = true;
       },
     });
+    clearTimeout(watchdog);
+    opts.signal?.removeEventListener("abort", onOuterAbort);
+    if (timedOut) {
+      throw new Error(
+        `model step timed out after ${Math.round(stepTimeoutMs / 1000)}s with no output — provider ${opts.config.apiUrl} may be down or stalling`,
+      );
+    }
     if (aborted) break;
 
     if (res.toolCalls.length === 0) {

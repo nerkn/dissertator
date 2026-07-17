@@ -59,7 +59,10 @@ export function SourcesGroup({
 }: Props) {
   const [expanded, setExpanded] = useState(true);
   const [embed, setEmbed] = useState<EmbeddingStatus | null>(null);
-  const [embedBusy, setEmbedBusy] = useState(false);
+  // Optimistic flag covering the ≤5s gap between clicking "Embed now" and the
+  // poll reflecting `embed.running`. Cleared once the poll confirms running
+  // (or the drain already finished).
+  const [embedStarting, setEmbedStarting] = useState(false);
   const [embedError, setEmbedError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortKey>("name");
   const [refsById, setRefsById] = useState<Map<string, Reference>>(new Map());
@@ -100,9 +103,10 @@ export function SourcesGroup({
     void reloadRefs();
   }, [project.initialized, sources, reloadRefs]);
 
-  // "Embed now": push all pending chunks through the embedding provider.
-  // Requires the embedding key. A missing key is caught up front with an
-  // actionable message; adapter errors (auth/network) surface inline.
+  // "Embed now": start a background drain of ALL pending chunks. The POST
+  // returns immediately (fire-and-forget); live progress comes from the 5s
+  // poll via embed.running + pending/done. A missing key is caught up front
+  // with an actionable message.
   const runEmbed = useCallback(async () => {
     setEmbedError(null);
     if (!embed?.keyless && !embeddingApiKey) {
@@ -111,17 +115,27 @@ export function SourcesGroup({
       );
       return;
     }
-    setEmbedBusy(true);
+    setEmbedStarting(true);
     try {
       await api.embed(embeddingApiKey);
-      const e = await api.embedStatus();
-      setEmbed(e);
     } catch (e) {
       setEmbedError((e as Error)?.message ?? String(e));
-    } finally {
-      setEmbedBusy(false);
+      setEmbedStarting(false);
     }
+    // Don't clear embedStarting here — the poll's embed.running takes over
+    // within 5s. The effect below clears it once running flips true or the
+    // drain ends.
   }, [embeddingApiKey, embed]);
+
+  // Sync the optimistic flag with the polled `running` state.
+  const embedBusy = embedStarting || !!embed?.running;
+  useEffect(() => {
+    // Clear once the backend confirms the drain is running, or once it has
+    // finished (running false AND no pending left).
+    if (embed?.running || (embed && embed.pending === 0)) {
+      setEmbedStarting(false);
+    }
+  }, [embed?.running, embed?.pending]);
 
   // Sorted + filtered source list (substring on filename + relPath).
   const filtered = useMemo(() => {
@@ -257,7 +271,7 @@ export function SourcesGroup({
               }
             >
               <ArrowsClockwise size={13} weight="bold" />
-              {embedBusy ? "embedding…" : "Embed now"}
+              {embedBusy ? "digesting…" : "Embed now"}
             </button>
             {!embedCanRun && onOpenSettings && (
               <button

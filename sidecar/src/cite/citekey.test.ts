@@ -3,12 +3,12 @@
 // Pins the format contract (`Çengelköylü2022`: first-author family, VERBATIM —
 // case + accents preserved, non-alnum stripped — + 4-digit year), the
 // family→title fallback, the missing-year branch, accent/case preservation,
-// and alnumOnly's punctuation stripping. Collisions are deliberately NOT
-// tested here — they are resolved at the DB layer in `upsertReference`
-// (db.ts), not in this pure helper.
+// and alnumOnly's punctuation stripping. The DB-side collision LOOP is
+// tested at the db layer; only the pure `alphaSuffix` encoder (which suffix
+// to pick for the Nth collision) is pinned here.
 
 import { describe, expect, test } from "bun:test";
-import { alnumOnly, generateCitekey } from "./citekey.ts";
+import { alphaSuffix, alnumOnly, generateCitekey } from "./citekey.ts";
 
 describe("generateCitekey", () => {
   test("family + year → `Smith2020` (case preserved, alnum-only)", () => {
@@ -75,5 +75,34 @@ describe("alnumOnly", () => {
   test("empty string stays empty (no padding)", () => {
     expect(alnumOnly("")).toBe("");
     expect(alnumOnly("   ")).toBe("");
+  });
+});
+
+describe("alphaSuffix", () => {
+  test("skips 'a': 1st collision → 'b', 2nd → 'c'", () => {
+    // The bare citekey plays the role of 'a', so the first colliding ref
+    // gets 'b'. Append-only: existing keys never change (FROZEN).
+    expect(alphaSuffix(0)).toBe("b");
+    expect(alphaSuffix(1)).toBe("c");
+    expect(alphaSuffix(2)).toBe("d");
+  });
+
+  test("single letters up to 'z' (index 24)", () => {
+    expect(alphaSuffix(24)).toBe("z");
+  });
+
+  test("overflows past 'z' to spreadsheet-style 'aa', 'ab', …", () => {
+    expect(alphaSuffix(25)).toBe("aa");
+    expect(alphaSuffix(26)).toBe("ab");
+    expect(alphaSuffix(27)).toBe("ac");
+  });
+
+  test("end-to-end collision sequence for 'Tek2025'", () => {
+    // 1st paper (free) keeps 'Tek2025'; later collisions append b, c, d…
+    const base = "Tek2025";
+    expect(base).toBe("Tek2025");
+    expect(`${base}${alphaSuffix(0)}`).toBe("Tek2025b");
+    expect(`${base}${alphaSuffix(1)}`).toBe("Tek2025c");
+    expect(`${base}${alphaSuffix(2)}`).toBe("Tek2025d");
   });
 });

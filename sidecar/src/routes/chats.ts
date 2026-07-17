@@ -1,7 +1,7 @@
 import type { Hono } from "hono";
 import { join } from "node:path";
 import { streamSSE } from "hono/streaming";
-import type { ChatRequest } from "@dissertator/shared";
+import type { ChatRequest, ToolTrace } from "@dissertator/shared";
 import {
   buildOpenFilesContext,
   createChat,
@@ -15,6 +15,7 @@ import {
   listChats,
   updateChat,
 } from "../db";
+import { readPreferences } from "../agent-files.ts";
 import {
   runAgentLoop,
   type AgentStreamEvent,
@@ -185,10 +186,20 @@ export function registerChats(app: Hono): void {
         "- p_write({id?, oldtext, text}) REPLACES the first occurrence of `oldtext` (must exist verbatim) with `text`.",
         "- p_insert({id?, anchor, text}) INSERTs `text` right after the first occurrence of `anchor` (empty anchor = top of the body).",
         "- gui_doc_open / gui_p_open open things for the user; gui_options offers quick-reply choices (does NOT pause); gui_action narrates milestones.",
+        "- pref_add({ text }) records ONE durable user preference (tone, format, citation style, workflow, constraint) as a bullet. Use ONLY for lasting preferences — NEVER for one-off requests.",
         "",
         "Manuscript edits are CONTENT-ADDRESSED: pass the exact `oldtext`/`anchor` you got from p_read. If p_write/p_insert fails because the text wasn't found, p_read again — the user may have edited meanwhile.",
         "Cite sources inline as [@citekey] or [@citekey:42] (page). Prefer grounded claims; say plainly when the sources are insufficient.",
       ];
+      const prefs = await readPreferences();
+      if (prefs.trim()) {
+        systemParts.push(
+          "",
+          "# Known user preferences",
+          "(Durable preferences the user has stated across sessions. Respect them.)",
+          prefs.trim(),
+        );
+      }
       if (activeDocId) {
         const d = getDocument(activeDocId);
         systemParts.push(
@@ -227,12 +238,17 @@ export function registerChats(app: Hono): void {
 
       // P5: single SSE fan-in. Every beat (deltas, tool calls/results, live
       // edits, gui side-effects) flows through here as a named event.
+      // `toolTrace` mirrors the tool beats so the assistant turn's narration
+      // can be PERSISTED onto the message row (survives reload; visible even
+      // on a turn that errored before any text streamed).
+      const toolTrace: (ToolTrace & { id: string })[] = [];
       const onEvent = async (e: AgentStreamEvent): Promise<void> => {
         switch (e.type) {
           case "delta":
             await stream.writeSSE({ event: "delta", data: e.text });
             break;
           case "tool_call":
+            toolTrace.push({ id: e.id, name: e.name, args: e.args });
             await stream.writeSSE({
               event: "tool_call",
               data: JSON.stringify({
@@ -243,6 +259,13 @@ export function registerChats(app: Hono): void {
             });
             break;
           case "tool_result":
+            for (const b of toolTrace) {
+              if (b.id === e.id) {
+                b.ok = e.ok;
+                b.summary = e.summary;
+                if (e.error) b.error = e.error;
+              }
+            }
             await stream.writeSSE({
               event: "tool_result",
               data: JSON.stringify({
@@ -353,6 +376,7 @@ export function registerChats(app: Hono): void {
           signal: ac.signal,
           onEvent,
           streamFn: wrapStream,
+          stepTimeoutMs: Number(process.env.CHAT_STEP_TIMEOUT_MS) || 30_000,
         });
         content = res.content;
         usage = res.usage;
@@ -361,17 +385,45 @@ export function registerChats(app: Hono): void {
         aborted = aborted || res.aborted;
       } catch (e) {
         const errMsg = (e as Error)?.message ?? String(e);
+        // Dev debug: a throw or abort here leaves agent.log without a
+        // `[turn done]` line, which previously made failures look like the
+        // model simply stopped. Log the reason so it's grep-able.
+        if (debugToFile) {
+          try {
+            const project = getCurrentProject();
+            if (project) {
+              const logPath = join(project.dissertatorDir, "logs", "agent.log");
+              const stamp = new Date().toISOString();
+              const abortedNow = aborted || (e as Error)?.name === "AbortError";
+              const line =
+                `${stamp} [turn FAILED] steps=${debugStep} aborted=${abortedNow} ` +
+                `contentLen=${content.length}\n` +
+                `  error: ${JSON.stringify(errMsg)}\n`;
+              void import("node:fs/promises").then((fs) => fs.appendFile(logPath, line, "utf8")).catch(() => {});
+            }
+          } catch {
+            /* logging must never throw */
+          }
+        }
         // Surface the error but still persist whatever streamed before the
-        // failure, so the transcript isn't lost.
-        const partial = content
-          ? insertChatMessage({
-              chatId,
-              role: "assistant",
-              content,
-              openFiles,
-              costTokens: usage,
-            })
-          : null;
+        // failure, so the transcript isn't lost. If the model ran tools but
+        // produced no text (e.g. it died on the synthesis step), still record
+        // a turn carrying the tool narration + a short error note — otherwise
+        // the user sees the tools vanish and nothing else.
+        const traceForPersist = toolTrace.map(({ id: _id, ...rest }) => rest);
+        const partial =
+          content || traceForPersist.length
+            ? insertChatMessage({
+                chatId,
+                role: "assistant",
+                content:
+                  content ||
+                  "_(no reply — the model errored before answering; see the error below)_",
+                openFiles,
+                costTokens: usage,
+                toolCalls: traceForPersist,
+              })
+            : null;
         // Touch the chat's updated_at even on failure.
         updateChat(chatId, {});
         await stream.writeSSE({
@@ -392,6 +444,7 @@ export function registerChats(app: Hono): void {
         content: content || "",
         openFiles,
         costTokens: usage,
+        toolCalls: toolTrace.map(({ id: _id, ...rest }) => rest),
       });
       // Touch the chat's updated_at so it floats to the top of the sidebar.
       updateChat(chatId, {});

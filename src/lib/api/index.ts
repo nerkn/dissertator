@@ -1,4 +1,5 @@
 import { chatsApi } from "./chats";
+import { agentApi } from "./agent";
 import { documentsApi } from "./documents";
 import { listsApi } from "./lists";
 import { notesApi } from "./notes";
@@ -11,6 +12,7 @@ import { sourcesApi } from "./sources";
 
 export const api = {
   ...projectApi,
+  ...agentApi,
   ...settingsApi,
   ...providersApi,
   ...sourcesApi,

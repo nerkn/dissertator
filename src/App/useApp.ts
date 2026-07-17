@@ -11,6 +11,7 @@ import type { Tab } from "../lib/tabs";
 import { useTabsStore } from "../lib/stores/tabs";
 import { useContentStore } from "../lib/stores/content";
 import { useSessionStore } from "../lib/stores/session";
+import { promptDialog } from "../lib/stores/dialogs";
 import type { CitationClickHandler } from "../lib/citationPlugin";
 
 // All application state + handlers live here; App() is a thin JSX shell.
@@ -76,9 +77,23 @@ export function useApp() {
   // Restore the user's open tabs + active tab when a project opens, then
   // persist any change (debounced) so reopening lands on the same working
   // set. Tabs whose source/document no longer exists are dropped.
+  //
+  // On a project SWITCH: reset the restore guard and clear any tabs left
+  // from the previous project, then load the new project's saved working
+  // set. Without this, `uiTabsRestored` stays `true` (set on the first
+  // restore) so the new project never reloads, and old ManuscriptEditor
+  // instances stay mounted in the center pane.
   const uiTabsRestored = useRef(false);
+  const lastProjectPath = useRef<string | null>(null);
   useEffect(() => {
-    if (!project?.initialized || uiTabsRestored.current) return;
+    if (!project?.initialized) return;
+    if (lastProjectPath.current !== project?.projectPath) {
+      lastProjectPath.current = project?.projectPath ?? null;
+      uiTabsRestored.current = false;
+      setTabs([]);
+      setActiveTabId(null);
+    }
+    if (uiTabsRestored.current) return;
     uiTabsRestored.current = true;
     let stopped = false;
     (async () => {
@@ -98,15 +113,19 @@ export function useApp() {
         const restored = saved.tabs.filter((t) =>
           validIds.has(t.sourceId),
         ) as Tab[];
-        if (restored.length > 0) {
-          setTabs(restored);
-          const activeValid =
-            saved.activeTabId &&
-            restored.some((t) => t.sourceId === saved.activeTabId)
-              ? saved.activeTabId
-              : restored[restored.length - 1].sourceId;
-          setActiveTabId(activeValid);
-        }
+        // Always setTabs — even when empty — so a project with no saved
+        // working set clears the previous project's tabs instead of
+        // leaving them mounted.
+        setTabs(restored);
+        const activeValid =
+          restored.length > 0 &&
+          saved.activeTabId &&
+          restored.some((t) => t.sourceId === saved.activeTabId)
+            ? saved.activeTabId
+            : restored.length > 0
+              ? restored[restored.length - 1].sourceId
+              : null;
+        setActiveTabId(activeValid);
       } catch {
         /* sidecar mid-restart; allow a retry on next render */
         uiTabsRestored.current = false;
@@ -361,11 +380,16 @@ export function useApp() {
     }
   };
 
-  // Create a blank manuscript and open it. Title via prompt with a sensible
-  // default; empty/cancel aborts. Replaces the P4 wizard for now.
+  // Create a blank manuscript and open it. Title via the in-app prompt with
+  // a sensible default; empty/cancel aborts. Replaces the P4 wizard for now.
   const handleNewDocument = async () => {
     setError(null);
-    const title = window.prompt("Document title", "Untitled document");
+    const title = await promptDialog({
+      title: "New document",
+      label: "Document title",
+      defaultValue: "Untitled document",
+      okLabel: "Create",
+    });
     if (title == null) return; // cancelled
     const trimmed = title.trim();
     if (!trimmed) return;

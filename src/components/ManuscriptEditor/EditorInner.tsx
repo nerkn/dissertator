@@ -16,6 +16,7 @@ import type { MilkdownPlugin } from "@milkdown/kit/ctx";
 import { replaceAll, insert } from "@milkdown/kit/utils";
 import type { Document } from "@dissertator/shared";
 import { api } from "../../lib/api";
+import { promptDialog } from "../../lib/stores/dialogs";
 import {
   importAssetFromPath,
   importAssetFromBlob,
@@ -264,7 +265,12 @@ export function EditorInner({ document, initialMarkdown, onCitationClick }: Inne
       const ext = /^(png|jpe?g|webp|gif|bmp|svg)$/i.test(fromType) ? fromType : "png";
       const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
       const def = `image-${ts}.${ext}`;
-      const name = window.prompt("Name this image:", def);
+      const name = await promptDialog({
+        title: "Insert image",
+        label: "Filename",
+        defaultValue: def,
+        okLabel: "Insert",
+      });
       if (!name) return;
       try {
         const { relPath } = await importAssetFromBlob(file, name);

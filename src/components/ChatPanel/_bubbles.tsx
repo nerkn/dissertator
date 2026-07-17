@@ -13,7 +13,7 @@ interface ToolBeat {
 }
 
 /** Human label for a tool call: `p_write` → “editing manuscript”, etc. */
-function toolVerb(name: string): string {
+export function toolVerb(name: string): string {
   switch (name) {
     case "corpus_list":
       return "searching corpus";
@@ -94,6 +94,29 @@ export function MessageBubble({
   return (
     <div className={`msg ${isUser ? "msg-user" : "msg-assistant"}${live ? " live" : ""}`}>
       <div className="msg-role">{isUser ? "You" : "Agent"}</div>
+      {/* Persisted tool-call narration (assistant turns). Mirrors the live
+          beats so a reloaded transcript still shows what the agent did. */}
+      {!isUser && msg.toolCalls && msg.toolCalls.length > 0 && (
+        <div className="tool-beats">
+          {msg.toolCalls.map((b, i) => (
+            <div
+              key={i}
+              className={`tool-beat${
+                b.ok === undefined ? "" : b.ok ? " ok" : " err"
+              }`}
+            >
+              <span className="tool-beat-verb">{toolVerb(b.name)}</span>
+              {b.ok === false && b.error ? (
+                <span className="tool-beat-detail">— {b.error}</span>
+              ) : b.summary ? (
+                <span className="tool-beat-detail">— {b.summary}</span>
+              ) : (
+                <span className="tool-beat-detail muted">…</span>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
       <div className="msg-body">
         {msg.content || (live ? "…" : "")}
       </div>

@@ -195,6 +195,49 @@ test("loop: step cap stops a tool-only loop and flags capped", async () => {
   expect(events.filter((e) => e.type === "tool_result").length).toBe(2);
 });
 
+test("loop: no-activity watchdog aborts a stalled provider and throws a clear error", async () => {
+  // Fake provider that never emits a token: resolves only when aborted.
+  const hang = (opts: StreamChatOptions) =>
+    new Promise<StreamResult>((resolve) => {
+      opts.signal?.addEventListener("abort", () =>
+        resolve({ toolCalls: [], finishReason: "abort" }),
+      );
+    });
+  await expect(
+    runAgentLoop({
+      apiKey: "k",
+      config: CFG,
+      messages: [{ role: "user", content: "hi" }],
+      toolContext: ctxBase,
+      stepTimeoutMs: 40,
+      onEvent: () => {},
+      streamFn: hang,
+    }),
+  ).rejects.toThrow(/timed out after 0s/);
+});
+
+test("loop: watchdog does not trip while the provider is actively streaming", async () => {
+  // Streams a token every 5ms (well under the 200ms budget) → must finish.
+  const slow = async (opts: StreamChatOptions): Promise<StreamResult> => {
+    for (let i = 0; i < 4; i++) {
+      await new Promise((r) => setTimeout(r, 5));
+      opts.onDelta("x");
+    }
+    return { toolCalls: [], finishReason: "stop" };
+  };
+  const res = await runAgentLoop({
+    apiKey: "k",
+    config: CFG,
+    messages: [{ role: "user", content: "hi" }],
+    toolContext: ctxBase,
+    stepTimeoutMs: 200,
+    onEvent: () => {},
+    streamFn: slow,
+  });
+  expect(res.content).toBe("xxxx");
+  expect(res.aborted).toBe(false);
+});
+
 // --- dispatchTool unit tests (no loop, no network) -----------------------
 
 test("dispatchTool p_write replaces first occurrence and returns the new body", async () => {

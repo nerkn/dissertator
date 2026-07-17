@@ -12,6 +12,7 @@ import { SettingsDialog } from "../components/SettingsDialog";
 import { CitationPopup } from "../components/CitationPopup";
 import { WindowControls } from "../components/WindowControls";
 import { ResizeHandle } from "../components/ResizeHandle";
+import { SystemDialog } from "../components/SystemDialog";
 import { useApp } from "./useApp";
 import { useSessionStore } from "../lib/stores/session";
 
@@ -141,6 +142,9 @@ export default function App() {
           onClose={() => setCitationPopup(null)}
         />
       )}
+
+      {/* In-app prompt/confirm/alert renderer (replaces window.prompt etc.) */}
+      <SystemDialog />
     </div>
   );
 }

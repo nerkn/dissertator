@@ -18,15 +18,16 @@
 // per-function keys in App recompute and the Library / Chat panels see new
 // selections live.
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { X } from "@phosphor-icons/react";
 import { type Settings } from "@dissertator/shared";
 import { ProvidersTab } from "./ProvidersTab";
 import { FunctionsTab } from "./FunctionsTab";
 import { PromptsTab } from "./PromptsTab";
+import { AgentTab } from "./AgentTab";
 import { useProviderStore } from "../../lib/stores/providers";
 
-type TabId = "providers" | "functions" | "prompts";
+type TabId = "providers" | "functions" | "prompts" | "agent";
 
 interface Props {
   settings: Settings;
@@ -45,6 +46,13 @@ export function SettingsDialog({
   const onKeyChange = useProviderStore((s) => s.handleKeyChange);
 
   const [tab, setTab] = useState<TabId>("providers");
+
+  const apiKey = useMemo(() => {
+    const pid = settings?.bindings?.chat?.providerId;
+    if (!pid) return "";
+    const p = providers.find((x) => x.id === pid);
+    return p ? keys[p.keyUser] ?? "" : "";
+  }, [settings?.bindings?.chat, providers, keys]);
 
   return (
     <div className="overlay" onClick={onClose}>
@@ -66,6 +74,9 @@ export function SettingsDialog({
           <TabButton active={tab === "prompts"} onClick={() => setTab("prompts")}>
             Prompts
           </TabButton>
+          <TabButton active={tab === "agent"} onClick={() => setTab("agent")}>
+            Agent
+          </TabButton>
         </div>
 
         <div className="settings-tab-body">
@@ -86,6 +97,7 @@ export function SettingsDialog({
             />
           )}
           {tab === "prompts" && <PromptsTab />}
+          {tab === "agent" && <AgentTab apiKey={apiKey} />}
         </div>
 
         <div className="actions">

@@ -9,7 +9,7 @@
 // is unchanged — plain full-text injection from `chunks`.
 
 import { randomUUID } from "node:crypto";
-import { type Chat, type ChatMessage } from "@dissertator/shared";
+import { type Chat, type ChatMessage, type ToolTrace } from "@dissertator/shared";
 import { current } from "./_core.ts";
 
 /**
@@ -152,6 +152,7 @@ interface ChatMessageRow {
   role: string;
   content: string | null;
   open_files: string | null;
+  tool_calls: string | null;
   cost_tokens: number | null;
   created_at: number;
 }
@@ -164,12 +165,20 @@ function mapChatMessage(row: ChatMessageRow): ChatMessage {
   } catch {
     /* malformed JSON → empty */
   }
+  let toolCalls: ToolTrace[] | undefined;
+  try {
+    const parsed = row.tool_calls ? JSON.parse(row.tool_calls) : null;
+    if (Array.isArray(parsed)) toolCalls = parsed as ToolTrace[];
+  } catch {
+    /* malformed JSON → omit */
+  }
   return {
     id: row.id,
     chatId: row.chat_id!,
     role: row.role as ChatMessage["role"],
     content: row.content,
     openFiles,
+    ...(toolCalls ? { toolCalls } : {}),
     costTokens: row.cost_tokens,
     createdAt: row.created_at,
   };
@@ -186,16 +195,19 @@ export function insertChatMessage(msg: {
   role: ChatMessage["role"];
   content: string | null;
   openFiles?: string[];
+  toolCalls?: ToolTrace[];
   costTokens?: { prompt: number; completion: number } | null;
 }): ChatMessage {
   if (!current) throw new Error("no project initialized");
   const id = randomUUID();
   const createdAt = Date.now();
   const costTokens = msg.costTokens ? msg.costTokens.completion : null;
+  const toolCallsJson =
+    msg.toolCalls && msg.toolCalls.length ? JSON.stringify(msg.toolCalls) : null;
   current.db
     .prepare(
-      "INSERT INTO chat_messages(chat_id, id, role, content, open_files, cost_tokens, created_at) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?)"
+      "INSERT INTO chat_messages(chat_id, id, role, content, open_files, tool_calls, cost_tokens, created_at) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .run(
       msg.chatId,
@@ -203,8 +215,9 @@ export function insertChatMessage(msg: {
       msg.role,
       msg.content,
       JSON.stringify(msg.openFiles ?? []),
+      toolCallsJson,
       costTokens,
-      createdAt
+      createdAt,
     );
   return {
     id,
@@ -212,6 +225,7 @@ export function insertChatMessage(msg: {
     role: msg.role,
     content: msg.content,
     openFiles: msg.openFiles ?? [],
+    ...(msg.toolCalls && msg.toolCalls.length ? { toolCalls: msg.toolCalls } : {}),
     costTokens,
     createdAt,
   };

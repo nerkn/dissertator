@@ -35,6 +35,7 @@ import {
 } from "./_core.ts";
 import { setEmbeddingProviderId } from "./providers.ts";
 import { backfillSourceReferences } from "./references.ts";
+import { ensureAgentFiles } from "../agent-files.ts";
 
 /**
  * Resolve the sqlite-vec vec0 extension path.
@@ -191,6 +192,10 @@ export async function initProject(
   if (!(await exists(promptsPath))) {
     await writeFile(promptsPath, DEFAULT_PROMPTS_MD, "utf8");
   }
+
+  // agent/ — personality.md + rules.md (Settings → Agent tab). Seeded once;
+  // existing files are never overwritten so the user's edits win.
+  await ensureAgentFiles(dissertatorDir);
 
   setCurrentProject({ projectPath, dissertatorDir, dbPath, db, createdAt, vecExtensionOk });
 
@@ -396,6 +401,7 @@ export function getEmbeddingStatus(): EmbeddingStatus {
       model: "",
       vecLoaded: false,
       keyless: false,
+      running: false,
     };
   }
   const rows = current.db
@@ -426,5 +432,8 @@ export function getEmbeddingStatus(): EmbeddingStatus {
     model: s.resolved?.embed.model ?? "",
     vecLoaded: current.vecExtensionOk,
     keyless: isKeylessProviderType(s.resolved?.embed.type ?? ""),
+    // The live `running` flag is merged in by the route (it lives in the ingest
+    // module, which imports db — importing it back here would be circular).
+    running: false,
   };
 }

@@ -149,10 +149,16 @@ export async function streamChat(
       currentEvent = line === "" ? "message" : currentEvent;
     }
   }
-  return result as {
+  // The server's `error` event ships the message under `message` (not `error`).
+  // Normalize so callers can always read `.error`. The catch block in chats.ts
+  // emits `{ message }`; older paths used `{ error }` — accept both.
+  const out = result as {
     userMessageId?: string;
     assistantMessageId?: string;
     aborted?: boolean;
     error?: string;
+    message?: string;
   };
+  if (!out.error && out.message) out.error = out.message;
+  return out;
 }

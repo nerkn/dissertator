@@ -31,6 +31,7 @@ import {
   type TranscribeOptions,
 } from "../transcribe/index.ts";
 import { embedBatch, type EmbedEngine } from "../embed/index.ts";
+import { scheduleLocalEmbedIdleUnload } from "../embed/local.ts";
 import {
   ensureReferenceForSource,
   getCurrentProject,
@@ -648,7 +649,26 @@ const EMBED_MAX_CHUNKS_PER_RUN = 500;
  * Inputs per provider POST. OpenAI accepts up to 2048; Google's
  * `batchEmbedContents` accepts up to 100. 64 is a safe cross-provider cap.
  */
-const EMBED_BATCH_SIZE = 64;
+// Batch size for embedding. On CPU the total compute is fixed (N chunks →
+// N forward passes' worth of FLOPs); a bigger batch only amortizes per-call
+// overhead — at the cost of peak RAM, since transformer activations scale
+// linearly with batch. We keep it tiny: 4 sequences per inference keeps peak
+// residency minimal on ordinary laptops, and the cost is only ~125 ms-scale
+// session.run overheads across a 500-chunk run (vs ~8 at batch 64). Pair with
+// the thread cap in embed/local.ts.
+const EMBED_BATCH_SIZE = 4;
+
+/**
+ * Pause between consecutive inference batches during a drain. The local
+ * transformer is CPU-heavy (4 intra-op threads); a short gap lets the GC
+ * reclaim the previous batch's activations and keeps the desktop responsive
+ * instead of pinning all cores for the whole (potentially hour-long) run.
+ * Remote providers don't need it but pay only the idle. Tunable via env.
+ */
+const EMBED_INTER_BATCH_DELAY_MS = (() => {
+  const env = Number(process.env.DISSERTATOR_EMBED_BATCH_DELAY_MS);
+  return Number.isFinite(env) && env >= 0 ? env : 2000;
+})();
 
 /** Result of an `embedPending` run — chunks moved to `done` vs `failed`. */
 export interface EmbedPendingResult {
@@ -656,36 +676,22 @@ export interface EmbedPendingResult {
   failed: number;
 }
 
-/**
- * Embed every `pending` chunk (up to a soft cap of 500/call) and store its
- * vector in the sqlite-vec `embeddings` table. The embedding provider is
- * DECOUPLED from the chat provider — config is read from `settings.embedding`
- * (its own block), and the API key flows in ONLY via `opts.apiKey` (sourced
- * by the HTTP layer from the keychain at call time; never stored or logged).
- *
- * On the first successful batch `lockDimensions` creates the vec0 table with
- * the concrete dimensionality and stamps the lock; a later batch returning a
- * different dimensionality throws a mismatch error (no auto-reembed). Per-batch
- * adapter failures are caught: the affected chunks flip to `failed` (logged),
- * and the run continues with the next batch — the process never crashes. A
- * dimension-mismatch error aborts the run immediately (every subsequent
- * batch would fail identically).
- */
-export async function embedPending(
-  opts: { apiKey?: string } = {}
-): Promise<EmbedPendingResult> {
-  const project = getCurrentProject();
-  if (!project) throw new Error("no project initialized");
-  if (!project.vecExtensionOk) {
-    throw new Error(
-      "sqlite-vec extension not loaded; embeddings disabled on this platform"
-    );
-  }
-  const { db } = project;
+/** Per-page outcome; `drained` = no more pending expected, `fatal` = abort. */
+interface EmbedPageResult {
+  embedded: number;
+  failed: number;
+  /** true when this page was short of the cap → backlog is exhausted. */
+  drained: boolean;
+  /** true on a dimension-mismatch (permanent) → the whole drain must stop. */
+  fatal: boolean;
+}
 
-  // Resolve the embed binding (single source of truth): engine is derived
-  // from the provider `type` (local-granite → local; google → google; else
-  // openai). Local embeddings are keyless — they need no apiUrl/model.
+/** Resolve + validate the embed binding; throws an actionable error if unset. */
+function resolveEmbedBinding(): {
+  engine: EmbedEngine;
+  apiUrl: string | undefined;
+  model: string;
+} {
   const cfg = getSettings().resolved?.embed;
   if (!cfg?.type) {
     throw new Error("no embed provider bound — set one in Settings → Functions");
@@ -696,9 +702,33 @@ export async function embedPending(
       "no embed provider/model bound — set one in Settings → Functions",
     );
   }
-  const apiUrl = cfg.apiUrl;
   const model =
-    engine === "local" ? (cfg.model || "granite-embedding-97m-multilingual-r2") : cfg.model;
+    engine === "local"
+      ? cfg.model || "granite-embedding-97m-multilingual-r2"
+      : cfg.model;
+  return { engine, apiUrl: cfg.apiUrl, model };
+}
+
+const sleep = (ms: number): Promise<void> =>
+  new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Process one page (up to `EMBED_MAX_CHUNKS_PER_RUN` pending chunks) in
+ * sub-batches of `EMBED_BATCH_SIZE`, sleeping `EMBED_INTER_BATCH_DELAY_MS`
+ * between batches. On the first successful batch `lockDimensions` creates the
+ * vec0 table with the concrete dimensionality; a later batch returning a
+ * different dimensionality is a fatal, permanent lock conflict. Per-batch
+ * adapter failures are caught: the affected chunks flip to `failed` (logged)
+ * and the page continues with the next batch. The embedding key flows in ONLY
+ * via `opts.apiKey` (HTTP → keychain); never stored or logged.
+ */
+async function processEmbedPage(
+  opts: { apiKey?: string } = {}
+): Promise<EmbedPageResult> {
+  const project = getCurrentProject();
+  if (!project) throw new Error("no project initialized");
+  const { db } = project;
+  const { engine, apiUrl, model } = resolveEmbedBinding();
 
   // Pull the backlog (bounded). `text != ''` skips degenerate chunks.
   const pending = db
@@ -709,7 +739,9 @@ export async function embedPending(
     )
     .all(EMBED_MAX_CHUNKS_PER_RUN) as { id: string; text: string }[];
 
-  if (pending.length === 0) return { embedded: 0, failed: 0 };
+  if (pending.length === 0) {
+    return { embedded: 0, failed: 0, drained: true, fatal: false };
+  }
 
   const markEmbedding = db.prepare(
     "UPDATE chunks SET embedding_status = 'embedding' WHERE id = ?"
@@ -723,6 +755,7 @@ export async function embedPending(
 
   let embedded = 0;
   let failed = 0;
+  let fatal = false;
 
   for (let i = 0; i < pending.length; i += EMBED_BATCH_SIZE) {
     const slice = pending.slice(i, i + EMBED_BATCH_SIZE);
@@ -760,9 +793,113 @@ export async function embedPending(
       // remaining batch would fail identically. Other errors (auth, network)
       // are also typically permanent within one run, but we keep going so a
       // single transient blip doesn't poison the whole corpus.
-      if (/dimension mismatch/.test(msg)) break;
+      if (/dimension mismatch/.test(msg)) {
+        fatal = true;
+        break;
+      }
+    }
+
+    // Pace the drain: a brief gap between batches so the local transformer
+    // doesn't pin every core for the whole run and GC can reclaim. Skipped
+    // after the last batch of the page (nothing more to wait for here).
+    if (i + EMBED_BATCH_SIZE < pending.length && EMBED_INTER_BATCH_DELAY_MS > 0) {
+      await sleep(EMBED_INTER_BATCH_DELAY_MS);
     }
   }
 
-  return { embedded, failed };
+  return {
+    embedded,
+    failed,
+    drained: pending.length < EMBED_MAX_CHUNKS_PER_RUN,
+    fatal,
+  };
+}
+
+/**
+ * Embed a single bounded page (≤500 chunks). Kept as a programmatic
+ * one-shot entrypoint; the HTTP layer uses {@link embedAll} for the full
+ * background drain.
+ */
+export async function embedPending(
+  opts: { apiKey?: string } = {}
+): Promise<EmbedPendingResult> {
+  const r = await processEmbedPage(opts);
+  return { embedded: r.embedded, failed: r.failed };
+}
+
+// --- Background full-corpus drain -----------------------------------------
+
+/** True while a background drain is running (drives the `running` status flag). */
+let drainRunning = false;
+
+/** Is a background embed drain in progress? */
+export function isEmbedDraining(): boolean {
+  return drainRunning;
+}
+
+/**
+ * Kick off a background drain that embeds EVERY pending chunk, page by page,
+ * until the backlog is empty. Fire-and-forget: returns immediately so the
+ * HTTP request can't be killed by the socket idle timeout on a long corpus
+ * (a full drain can run for tens of minutes). Progress is observable via
+ * `GET /embed/status` (the existing 5s poll) — `pending`/`done` move live and
+ * `running` reflects this flag. A second call while draining is a no-op.
+ * On a fatal dimension mismatch the drain aborts (every page would fail
+ * identically); other per-batch failures are logged and skipped.
+ */
+export function embedAll(opts: { apiKey?: string } = {}): {
+  started: boolean;
+  running: boolean;
+} {
+  if (drainRunning) return { started: false, running: true };
+  // Validate project + vec up front so the caller gets an immediate error
+  // instead of a silently-never-starting background task.
+  const project = getCurrentProject();
+  if (!project) throw new Error("no project initialized");
+  if (!project.vecExtensionOk) {
+    throw new Error(
+      "sqlite-vec extension not loaded; embeddings disabled on this platform"
+    );
+  }
+  resolveEmbedBinding(); // throws if no provider bound
+
+  drainRunning = true;
+  void drainAll(opts);
+  return { started: true, running: true };
+}
+
+/** Internal: loop pages until drained or a fatal error. Never throws. */
+async function drainAll(opts: { apiKey?: string }): Promise<void> {
+  let totalEmbedded = 0;
+  let totalFailed = 0;
+  try {
+    for (;;) {
+      const r = await processEmbedPage(opts);
+      totalEmbedded += r.embedded;
+      totalFailed += r.failed;
+      if (r.fatal) {
+        await appendLog(
+          `[embed] drain aborted: dimension mismatch after ${totalEmbedded} embedded, ${totalFailed} failed`
+        );
+        break;
+      }
+      if (r.drained && r.embedded === 0 && r.failed === 0) break;
+      // A page that returned no work but wasn't drained shouldn't loop-spin;
+      // processEmbedPage returns drained=true on an empty pull, so we're safe.
+    }
+    await appendLog(
+      `[embed] drain complete: ${totalEmbedded} embedded, ${totalFailed} failed`
+    );
+  } catch (e) {
+    // processEmbedPage validates project/vec; a throw here is unexpected.
+    await appendLog(
+      `[embed] drain aborted: ${(e as Error)?.message ?? String(e)}`
+    );
+  } finally {
+    drainRunning = false;
+    // Release the local ONNX session if it's been idle since the last batch.
+    // Idle-based (not a hard unload) because corpus search reuses the same
+    // session — a hard unload would cold-reload ~94 MB on the next query.
+    scheduleLocalEmbedIdleUnload();
+  }
 }
