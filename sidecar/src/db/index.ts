@@ -9,6 +9,7 @@
 // reaches into providers/references at init/save time.
 
 export * from "./_core.ts";
+export * from "./globalDb.ts";
 export * from "./project.ts";
 export * from "./providers.ts";
 export * from "./bindings.ts";

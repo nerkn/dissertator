@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { CheckCircle, FloppyDisk, Sparkle, Warning } from "@phosphor-icons/react";
 import { api } from "../../lib/api";
+import { DEFAULT_CHAT_FLOW } from "@dissertator/shared";
+import type { ChatFlowSettings } from "@dissertator/shared";
 import type {
   AgentPersona,
   ConsolidationResult,
@@ -30,19 +32,31 @@ function AgentTab({ apiKey }: Props) {
   const [prefsSavedAt, setPrefsSavedAt] = useState<number | null>(null);
   const prefsLastSavedRef = useRef<string>("");
 
+  // Chat-flow UX toggles (Settings → Agent). Loaded from project settings;
+  // saved via PUT /settings with a partial chatFlow patch (server merges).
+  const [chatFlow, setChatFlow] = useState<ChatFlowSettings>(DEFAULT_CHAT_FLOW);
+  const flowLastSavedRef = useRef<string>(JSON.stringify(DEFAULT_CHAT_FLOW));
+  const [flowSavedAt, setFlowSavedAt] = useState<number | null>(null);
+
   useEffect(() => {
     let stopped = false;
     (async () => {
       try {
-        const [p, pr] = await Promise.all([
+        const [p, pr, st] = await Promise.all([
           api.getAgentPersona(),
           api.getPreferences(),
+          api.getSettings(),
         ]);
         if (stopped) return;
         setPersona(p);
         lastSavedRef.current = JSON.stringify(p);
         setPrefs(pr.contents);
         prefsLastSavedRef.current = pr.contents;
+        const cf = st.chatFlow
+          ? { ...DEFAULT_CHAT_FLOW, ...st.chatFlow }
+          : DEFAULT_CHAT_FLOW;
+        setChatFlow(cf);
+        flowLastSavedRef.current = JSON.stringify(cf);
       } catch {
         /* ignore */
       } finally {
@@ -97,6 +111,21 @@ function AgentTab({ apiKey }: Props) {
 
   const personaDirty = JSON.stringify(persona) !== lastSavedRef.current;
   const prefsDirty = prefs !== prefsLastSavedRef.current;
+  const flowDirty = JSON.stringify(chatFlow) !== flowLastSavedRef.current;
+
+  const saveChatFlow = async () => {
+    try {
+      const st = await api.saveSettings({ chatFlow });
+      const cf = st.chatFlow
+        ? { ...DEFAULT_CHAT_FLOW, ...st.chatFlow }
+        : DEFAULT_CHAT_FLOW;
+      setChatFlow(cf);
+      flowLastSavedRef.current = JSON.stringify(cf);
+      setFlowSavedAt(Date.now());
+    } catch {
+      /* ignore */
+    }
+  };
 
   const savePersona = async () => {
     setSaving(true);
@@ -309,7 +338,99 @@ function AgentTab({ apiKey }: Props) {
           </div>
         </div>
       )}
+
+      <div className="agent-divider" />
+
+      <div className="agent-field">
+        <label className="agent-label">Chat flow</label>
+        <div className="muted small helper" style={{ marginBottom: 8 }}>
+          Default behaviors for new chats. Toggle off to disable.
+        </div>
+        <FlowToggle
+          label="Auto-greet new chats"
+          hint="Run an opener turn that greets and proposes next steps."
+          checked={chatFlow.autoGreet}
+          onChange={(v) => setChatFlow((f) => ({ ...f, autoGreet: v }))}
+        />
+        <FlowToggle
+          label="Inherit pinned sources"
+          hint="New chats carry over the previous chat's pinned sources."
+          checked={chatFlow.inheritPins}
+          onChange={(v) => setChatFlow((f) => ({ ...f, inheritPins: v }))}
+        />
+        <FlowToggle
+          label="Auto-title"
+          hint="Summarize a short title after the turn threshold below."
+          checked={chatFlow.autoTitle}
+          onChange={(v) => setChatFlow((f) => ({ ...f, autoTitle: v }))}
+        />
+        <div className="flow-row">
+          <label className="flow-label" htmlFor="flow-title-turns">
+            Auto-title turn threshold
+          </label>
+          <input
+            id="flow-title-turns"
+            type="number"
+            min={2}
+            max={20}
+            className="flow-number"
+            value={chatFlow.autoTitleTurns}
+            onChange={(e) =>
+              setChatFlow((f) => ({
+                ...f,
+                autoTitleTurns: Math.max(2, Number(e.target.value) || 4),
+              }))
+            }
+          />
+        </div>
+        <FlowToggle
+          label="Prompts open by default"
+          hint="Expand the Prompts section when a chat opens."
+          checked={chatFlow.promptsOpen}
+          onChange={(v) => setChatFlow((f) => ({ ...f, promptsOpen: v }))}
+        />
+        <div className="prompts-foot">
+          {flowSavedAt && !flowDirty && (
+            <span className="muted small">Saved.</span>
+          )}
+          <button
+            className="btn small primary"
+            onClick={saveChatFlow}
+            disabled={!flowDirty}
+            title="Save chat flow"
+          >
+            <FloppyDisk size={14} weight="bold" />
+            Save
+          </button>
+        </div>
+      </div>
     </div>
+  );
+}
+
+function FlowToggle({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <label className="flow-toggle">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+      <span className="flow-toggle-text">
+        <span className="flow-toggle-label">{label}</span>
+        <span className="muted small">{hint}</span>
+      </span>
+    </label>
   );
 }
 

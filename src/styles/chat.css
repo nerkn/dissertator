@@ -63,14 +63,132 @@ code {
   background: rgba(239, 68, 68, 0.15);
   color: var(--red);
 }
-.chat-select {
+.chat-switcher {
+  position: relative;
+}
+.chat-switcher-btn {
   width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
   padding: 6px 8px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--panel-2);
   color: var(--text);
   font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.chat-switcher-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.chat-switcher-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.chat-switcher-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-switcher-panel {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 40;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.chat-switcher-new {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--accent);
+  cursor: pointer;
+  font-size: 12px;
+}
+.chat-switcher-new:hover {
+  background: var(--panel-3);
+}
+.chat-switcher-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+.chat-switcher-item {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 6px;
+}
+.chat-switcher-item.active {
+  background: var(--panel-3);
+}
+.chat-switcher-row {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+.chat-switcher-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+.chat-switcher-time {
+  flex: none;
+  font-size: 10px;
+}
+.chat-switcher-actions {
+  display: none;
+  gap: 1px;
+  flex: none;
+  padding-right: 4px;
+}
+.chat-switcher-item:hover .chat-switcher-actions {
+  display: flex;
+}
+.chat-switcher-actions .tb {
+  padding: 3px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+}
+.chat-switcher-actions .tb:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
+.chat-switcher-actions .tb.danger:hover {
+  color: var(--red);
 }
 
 /* context picker */

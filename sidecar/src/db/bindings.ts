@@ -21,6 +21,7 @@ import {
   type ResolvedBindings,
 } from "@dissertator/shared";
 import { current, readBindingsJoined } from "./_core.ts";
+import { globalDb } from "./globalDb.ts";
 
 interface BindingRow {
   function: string;
@@ -69,22 +70,21 @@ export function seedBindings(db: Database): void {
     if (bindingExists(db, fn)) return;
     ins.run(fn, providerId, model, now);
   };
-  // Default models: Z.ai for chat/stt/vision (glm-4.6, whisper-1); the keyless
+  // Default models: Z.ai for chat/stt/vision (glm-5.2, whisper-1); the keyless
   // local granite embedder for embed. The embed model is informational —
   // local.ts uses a fixed ONNX file — but a non-empty value satisfies the
   // binding guard and records what produced the vectors.
   const embModel =
     embId === GRANITE_EMBED_PROVIDER.id ? GRANITE_EMBED_MODEL : "text-embedding-3-small";
-  seed("chat", chatId, "glm-4.6");
+  seed("chat", chatId, "glm-5.2");
   seed("stt", chatId, "whisper-1");
-  seed("vision_doc", chatId, "glm-4.6");
-  seed("vision_image", chatId, "glm-4.6");
+  seed("vision_doc", chatId, "glm-5.2");
+  seed("vision_image", chatId, "glm-5.2");
   seed("embed", embId, embModel);
 }
 
-/** All five bindings, keyed by function. null if no project is open. */
-export function getBindings(): Bindings | null {
-  if (!current) return null;
+/** All five bindings, keyed by function. */
+export function getBindings(): Bindings {
   const joined = readBindingsJoined();
   const out = {} as Bindings;
   for (const fn of AI_FUNCTIONS) {
@@ -100,8 +100,7 @@ export function getBindings(): Bindings | null {
 }
 
 /** All five bindings resolved with their provider's apiUrl/type. */
-export function getResolvedBindings(): ResolvedBindings | null {
-  if (!current) return null;
+export function getResolvedBindings(): ResolvedBindings {
   const joined = readBindingsJoined();
   const out = {} as ResolvedBindings;
   for (const fn of AI_FUNCTIONS) {
@@ -156,8 +155,7 @@ export function setBinding(
   fn: AiFunction,
   patch: BindingPatch,
 ): BindingSetResult {
-  if (!current) throw new Error("no project initialized");
-  const db = current.db;
+  const db = globalDb;
   const prov = db.prepare("SELECT id FROM providers WHERE id = ?").get(
     patch.providerId,
   ) as { id?: string } | null;
@@ -166,21 +164,31 @@ export function setBinding(
   const prev = db
     .prepare("SELECT provider_id, model FROM function_bindings WHERE function = ?")
     .get(fn) as { provider_id?: string; model?: string } | null;
-  const revectorized =
-    fn === "embed" &&
+  const modelChanged =
     !!prev &&
     (prev.provider_id !== patch.providerId || prev.model !== patch.model);
+  const revectorized = fn === "embed" && modelChanged && !!current;
 
   const now = Date.now();
-  const tx = db.transaction(() => {
-    if (revectorized) revectorizeAll(db);
-    db.prepare(
-      "INSERT INTO function_bindings(function, provider_id, model, updated_at) VALUES (?, ?, ?, ?) " +
-        "ON CONFLICT(function) DO UPDATE SET provider_id = excluded.provider_id, " +
-        "model = excluded.model, updated_at = excluded.updated_at",
-    ).run(fn, patch.providerId, patch.model, now);
-  });
-  tx();
+  const writeBinding = () =>
+    db
+      .prepare(
+        "INSERT INTO function_bindings(function, provider_id, model, updated_at) VALUES (?, ?, ?, ?) " +
+          "ON CONFLICT(function) DO UPDATE SET provider_id = excluded.provider_id, " +
+          "model = excluded.model, updated_at = excluded.updated_at",
+      )
+      .run(fn, patch.providerId, patch.model, now);
+
+  if (revectorized && current) {
+    const projDb = current.db;
+    const tx = projDb.transaction(() => {
+      revectorizeAll(projDb);
+      writeBinding();
+    });
+    tx();
+  } else {
+    writeBinding();
+  }
 
   return {
     binding: { fn, providerId: patch.providerId, model: patch.model, updatedAt: now },

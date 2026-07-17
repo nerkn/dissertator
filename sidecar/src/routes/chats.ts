@@ -13,6 +13,7 @@ import {
   insertChatMessage,
   listChatMessages,
   listChats,
+  listReferences,
   updateChat,
 } from "../db";
 import { readPreferences } from "../agent-files.ts";
@@ -20,8 +21,26 @@ import {
   runAgentLoop,
   type AgentStreamEvent,
 } from "../agent/loop.ts";
-import { streamOpenAIChat, type LoopMessage, type ToolSpec } from "../chat/openai.ts";
+import { completeChat, streamOpenAIChat, type LoopMessage, type ToolSpec } from "../chat/openai.ts";
 import type { ToolContext } from "../agent/tools.ts";
+
+/**
+ * Ephemeral opener instruction injected as the (unsent) user turn when a
+ * brand-new chat auto-greets. The system prompt already carries the whole
+ * corpus glimpse + other chat titles + the active manuscript, so this just
+ * asks for a short orientation + concrete next-step proposals (offered as
+ * one-tap gui_options). No user row is persisted for opener turns.
+ */
+const OPENER_INSTRUCTION =
+  "This is a brand-new chat and the user hasn't said anything yet. Greet them in ONE short sentence, then orient: you can already see the full corpus and the active manuscript above. Propose 2–3 concrete next steps (e.g. read a specific source, draft or revise a section, compare sources, fill a citation gap) and surface them as one-tap choices via gui_options. Keep it brief — do NOT read documents or run heavy tools yet; just propose and let the user pick.";
+
+/** Tighten a model-emitted title: strip quotes/punctuation, cap length. */
+function sanitizeTitle(raw: string): string {
+  let t = raw.trim().replace(/^["'`]+|["'`]+$/g, "").trim();
+  t = t.replace(/[.·:]\s*$/, "").trim();
+  if (t.length > 80) t = t.slice(0, 80).trim();
+  return t;
+}
 
 // ---------------------------------------------------------------------------
 // Chats (P4): freeform chat thread CRUD. A chat is NOT bound to a document;
@@ -93,6 +112,68 @@ export function registerChats(app: Hono): void {
     );
   });
 
+  // -----------------------------------------------------------------------
+  // Auto-title (non-blocking): summarize the transcript into a short title.
+  // Only honored while the title is still the default "New chat" — a manual
+  // rename (or a prior auto-title) opts the chat out. Reuses the configured
+  // chat provider/model; the API key travels as a Bearer header. The client
+  // fires this once after the configured turn threshold (Settings → Agent).
+  // -----------------------------------------------------------------------
+  app.post("/chats/:id/autotitle", async (c) => {
+    if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+    const id = c.req.param("id");
+    const chat = getChat(id);
+    if (!chat) return c.json({ error: "not found" }, 404);
+    if (chat.title !== "New chat") return c.json({ chat, updated: false });
+
+    const auth = c.req.header("Authorization") ?? "";
+    const apiKey = auth.startsWith("Bearer ") ? auth.slice(7) : undefined;
+    if (!apiKey) return c.json({ error: "chat api key required" }, 400);
+
+    const settings = getSettings();
+    const cfg = settings.resolved?.chat;
+    if (!cfg?.apiUrl || !cfg?.model) {
+      return c.json({ error: "no chat provider/model bound" }, 400);
+    }
+
+    const msgs = listChatMessages(id, 10).filter((m) => m.role !== "system");
+    if (msgs.length < 2) return c.json({ chat, updated: false });
+
+    const transcript = msgs
+      .map(
+        (m) =>
+          `${m.role === "assistant" ? "Assistant" : "User"}: ${(
+            m.content ?? ""
+          ).slice(0, 600)}`,
+      )
+      .join("\n");
+
+    try {
+      const raw = await completeChat({
+        apiKey,
+        config: { apiUrl: cfg.apiUrl, model: cfg.model },
+        messages: [
+          {
+            role: "system",
+            content:
+              "Summarize the conversation below into a concise chat title: at most 6 words, no surrounding quotes, no trailing period, title case. Reply with the title only.",
+          },
+          { role: "user", content: transcript },
+        ],
+        maxTokens: 24,
+        temperature: 0.3,
+      });
+      const title = sanitizeTitle(raw);
+      if (title && title !== "New chat") {
+        const updated = updateChat(id, { title });
+        return c.json({ chat: updated, updated: true });
+      }
+      return c.json({ chat, updated: false });
+    } catch (e) {
+      return c.json({ error: (e as Error)?.message ?? String(e) }, 500);
+    }
+  });
+
   // -------------------------------------------------------------------------
   // Chat (P3 Track E): streaming `POST /chat` with open-files context.
   //
@@ -138,9 +219,15 @@ export function registerChats(app: Hono): void {
     const chatId = (body.chatId ?? "").trim();
     if (!chatId) return c.json({ error: "chatId required" }, 400);
     if (!getChat(chatId)) return c.json({ error: "chat not found" }, 404);
+    const isOpener = body.opener === true;
     const message = (body.message ?? "").trim();
-    if (!message) return c.json({ error: "message required" }, 400);
+    if (!message && !isOpener) return c.json({ error: "message required" }, 400);
     const openFiles = Array.isArray(body.openFiles) ? body.openFiles : [];
+    // Opener only fires on an empty chat — defense against re-greeting a
+    // chat that already has turns (e.g. a stale frontend trigger).
+    if (isOpener && listChatMessages(chatId, 1).length > 0) {
+      return c.json({ error: "chat not empty" }, 400);
+    }
 
     // API key travels ONLY as a Bearer header (same discipline as /embed +
     // ocr/vision). Never logged.
@@ -167,12 +254,27 @@ export function registerChats(app: Hono): void {
 
     return streamSSE(c, async (stream) => {
       // Persist the user turn immediately (so an aborted stream still records it).
-      const userMsg = insertChatMessage({
-        chatId,
-        role: "user",
-        content: message,
-        openFiles,
-      });
+      // OPENER turns skip the user row entirely — only the assistant greeting
+      // is persisted (the opener instruction below is ephemeral).
+      const userMsg = isOpener
+        ? null
+        : insertChatMessage({
+            chatId,
+            role: "user",
+            content: message,
+            openFiles,
+          });
+
+      // Recent transcript (excluding system rows + the user turn just
+      // inserted). Reused for (a) detecting whether the pinned-source set
+      // CHANGED vs the previous turn — full text is injected only on change
+      // (pins-on-change design), and (b) replaying conversational continuity.
+      const recent = listChatMessages(chatId, 20).filter(
+        (m) => m.role !== "system" && (userMsg ? m.id !== userMsg.id : true),
+      );
+      const prevOpenFiles = recent.length
+        ? recent[recent.length - 1].openFiles ?? []
+        : [];
 
       // Build the system message: role + tool guidance + active-doc + context.
       const systemParts: string[] = [
@@ -206,27 +308,73 @@ export function registerChats(app: Hono): void {
           `The user is currently editing the manuscript "${d?.title ?? "(unknown)"}" (id: ${activeDocId}). p_* tools without an explicit \`id\` act on it.`
         );
       }
-      const ctx = buildOpenFilesContext(openFiles);
-      if (ctx) {
-        systemParts.push(
-          `\nThe user has the following source files open as grounding context:\n\n${ctx}`
+      // Whole-corpus glimpse: compact metadata for EVERY source (one TSV row
+      // each) so the model always knows what exists and can cite by citekey or
+      // resolve a source via corpus_list/doc_read for full text. Sent every
+      // turn — it's cheap metadata and underpins the pins-on-change design
+      // (unchanged pins fall back to this index instead of re-injected text).
+      const refs = listReferences();
+      if (refs.length) {
+        const refRows = refs.map((r) =>
+          [
+            r.citekey,
+            r.title ?? "",
+            typeof r.year === "number" ? String(r.year) : "",
+            (r.authors ?? [])
+              .map((a) => [a.given, a.family].filter(Boolean).join(" "))
+              .join("; "),
+          ].join("\t")
         );
+        systemParts.push(
+          "",
+          "# Corpus (entire library)",
+          "Every source in this project — TSV: citekey <TAB> title <TAB> year <TAB> authors. Cite inline as [@citekey]; call corpus_list({title}) or ({author}) to resolve a source id, then doc_read(id) for full text.",
+          "citekey\ttitle\tyear\tauthors",
+          ...refRows,
+        );
+      }
+      const otherChats = listChats().filter((c) => c.id !== chatId);
+      if (otherChats.length) {
+        systemParts.push(
+          "",
+          "# Other chats in this project",
+          "Recent threads (for continuity — don't repeat their content unless the user asks):",
+          ...otherChats.slice(0, 20).map((c) => `- ${c.title || "(untitled)"}`),
+        );
+      }
+      const ctx = buildOpenFilesContext(openFiles);
+      if (openFiles.length) {
+        const refBySrc = new Map(
+          refs.filter((r) => r.source_file_id).map((r) => [r.source_file_id!, r]),
+        );
+        const labelOf = (id: string): string => {
+          const r = refBySrc.get(id);
+          return r ? `${r.citekey}${r.title ? ` — ${r.title}` : ""}` : id;
+        };
+        const sameSet = (a: string[], b: string[]): boolean =>
+          a.length === b.length && a.every((x) => b.includes(x));
+        if (sameSet(prevOpenFiles, openFiles)) {
+          systemParts.push(
+            `\nPinned sources (UNCHANGED since last turn — full text already seen; call doc_read(id) to re-read): ${openFiles.map(labelOf).join("; ")}.`,
+          );
+        } else if (ctx) {
+          systemParts.push(
+            `\nThe user has pinned these source files (full text below) as grounding context:\n\n${ctx}`,
+          );
+        }
       }
       const messages: LoopMessage[] = [
         { role: "system", content: systemParts.join("\n") },
         // Replay THIS chat's recent turns for conversational continuity (omit
         // system rows; we synthesize our own above). Only text content is
         // replayed — the tool-call trace lives in the current run only.
-        ...listChatMessages(chatId, 20)
-          .filter((m) => m.role !== "system" && m.id !== userMsg.id)
-          .slice(-12)
-          .map(
-            (m): LoopMessage => ({
-              role: m.role === "assistant" ? "assistant" : "user",
-              content: m.content ?? "",
-            })
-          ),
-        { role: "user", content: message },
+        ...recent.slice(-12).map(
+          (m): LoopMessage => ({
+            role: m.role === "assistant" ? "assistant" : "user",
+            content: m.content ?? "",
+          }),
+        ),
+        { role: "user", content: isOpener ? OPENER_INSTRUCTION : message },
       ];
 
       const ac = new AbortController();
@@ -471,7 +619,7 @@ export function registerChats(app: Hono): void {
       await stream.writeSSE({
         event: "done",
         data: JSON.stringify({
-          userMessageId: userMsg.id,
+          userMessageId: userMsg?.id ?? null,
           assistantMessageId: assistantMsg.id,
           aborted,
           usage,

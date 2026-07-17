@@ -351,6 +351,7 @@ interface CorpusHit {
   /** Reference overlay (present only when a reference row exists): */
   referenceId?: string;
   citekey?: string;
+  title?: string;
   authors?: string[];
   year?: number;
 }
@@ -366,6 +367,7 @@ function hitFromSource(s: SourceFile, r?: Reference): CorpusHit {
   if (r) {
     h.referenceId = r.id;
     h.citekey = r.citekey;
+    if (typeof r.title === "string") h.title = r.title;
     h.authors = r.authors.map((a) =>
       [a.given, a.family].filter(Boolean).join(" ")
     );

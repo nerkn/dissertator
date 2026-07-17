@@ -37,6 +37,7 @@ interface Props {
   /** Embedding API key (separate slot from the chat key). When set + there are
    *  pending chunks, the Sources group offers an "Embed now" action. */
   embeddingApiKey?: string;
+  chatKey?: string;
   /** Open a source in the CenterPane viewer (click-to-open). */
   onOpen?: (src: SourceFile) => void;
   /** Create + open a new document. */
@@ -62,6 +63,7 @@ export function LibraryPanel({
   visionImageKey,
   sttKey,
   embeddingApiKey,
+  chatKey,
   onOpen,
   onNewDocument,
   onOpenDocument,
@@ -112,6 +114,7 @@ export function LibraryPanel({
         onRescan={onRescan}
         busy={busy}
         embeddingApiKey={embeddingApiKey}
+        chatKey={chatKey}
         onOpen={onOpen}
         onOpenSettings={onOpenSettings}
       />

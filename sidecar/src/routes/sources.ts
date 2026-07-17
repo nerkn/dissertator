@@ -1,19 +1,13 @@
 import type { Hono } from "hono";
 import { join } from "node:path";
-import { type Reference, TESSERACT_TYPE } from "@dissertator/shared";
+import { TESSERACT_TYPE } from "@dissertator/shared";
 import {
   getCurrentProject,
   getSettings,
   getSourceById,
   getSourceText,
-  listReferences,
-  upsertReference,
 } from "../db";
-import { crossrefByDoi } from "../cite/crossref.ts";
-import { extractDois, firstPageRegion } from "../cite/doi.ts";
-import { extractPdfMetadata } from "../cite/pdfmeta.ts";
-import { extractReferenceViaLLM } from "../cite/llmExtract.ts";
-import { titlesMatch } from "../cite/titleMatch.ts";
+import { detectReference } from "../cite/detect.ts";
 import {
   describeImageSource,
   getSourceCounts,
@@ -256,120 +250,21 @@ export function registerSources(app: Hono): void {
     }
   });
 
-  // Auto-detect a reference for a source via a LAYERED pipeline (cheapest /
-  // most authoritative first; LLM only as the catch-all):
-  //   0. PDF /info metadata   (free + deterministic; PDFs only) — read once,
-  //      used as a title ANCHOR for stage 1 AND as a standalone hit in stage 2
-  //   1. DOI scan → Crossref  (title-page scoped + anchor-verified; canonical
-  //      CSL JSON when the source has its own DOI)
-  //   2. PDF /info metadata   (the anchor itself, if it had enough data)
-  //   3. LLM extract           (title page → JSON; needs a chat binding + key)
-  // First stage that yields a title or authors wins and the rest are skipped,
-  // so a self-describing PDF never spends an LLM call. The DOI stage is
-  // SCOPED to the title page and (when a PDF-meta title anchor exists)
-  // VERIFIED against it, so a cited work's DOI from the bibliography can't be
-  // mis-attributed to a source whose own DOI is absent (books/preprints/
-  // scans). A linked reference is only treated as "done" if it already has
-  // authors OR a doi — a placeholder (citekey-from-filename only) is ENRICHED
-  // IN PLACE so re-running detect actually fills the empty rows instead of
-  // skipping them. `source` reports which stage produced the data
-  // ("doi" | "pdf-meta" | "llm" | "none"). The chat key for stage 3 comes ONLY
-  // from the Authorization header — never persisted; absent key ⇒ stage 3 is
-  // skipped silently.
+  // Auto-detect a reference for a source via a LAYERED pipeline (PDF /info →
+  // DOI → Crossref → LLM). Shared with the ingest auto-identifier
+  // (cite/detect.ts). The chat key prefers the request Authorization header
+  // (manual Identify), falling back to the globally-stored chat key so
+  // server-side ingest can run the LLM stage without a header.
   app.post("/sources/:id/detect-reference", async (c) => {
     if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
     const id = c.req.param("id");
-    const src = getSourceById(id);
-    if (!src) return c.json({ error: "not found" }, 404);
-
-    const linked = listReferences({ sourceFileId: id });
-    const linkedRef = linked[0] ?? null;
-    // "Complete" = has authors OR a doi → nothing to enrich; return as-is so
-    // user-curated rows are never clobbered by a re-scan.
-    if (linkedRef && (linkedRef.authors.length > 0 || linkedRef.doi)) {
-      return c.json({
-        found: true,
-        reference: linkedRef,
-        doi: null,
-        alreadyLinked: true,
-        source: "none",
-      });
-    }
-
-    const settings = getSettings();
-    const contactEmail = settings.contactEmail || undefined;
-    const { text } = getSourceText(id);
-
-    // Chat binding + key for stage 3 (LLM). Key is header-only; no binding/key
-    // ⇒ stage 3 silently skipped, not an error.
+    if (!getSourceById(id)) return c.json({ error: "not found" }, 404);
     const auth = c.req.header("Authorization") ?? "";
-    const chatKey = auth.startsWith("Bearer ") ? auth.slice(7) : undefined;
-    const cb = settings.resolved?.chat;
-    const chatConfig =
-      chatKey && cb?.apiUrl && cb?.model
-        ? { apiUrl: cb.apiUrl, model: cb.model }
-        : null;
-
-    // `base` is merged into every upsert so: (a) the source FK is set, and
-    // (b) if we're enriching a placeholder, its id pins the update to the
-    // existing row (citekey stays frozen).
-    const base: Partial<Reference> = { source_file_id: id };
-    if (linkedRef) base.id = linkedRef.id;
-    const upsert = (patch: Partial<Reference>) =>
-      upsertReference({ ...base, ...patch });
-    const alreadyLinked = !!linkedRef;
-
-    // Stage 0 (free, deterministic): PDF /info metadata, read ONCE and reused
-    // two ways — as a TITLE ANCHOR to verify DOI hits (stage 1), and as a
-    // standalone hit (stage 2) when the DOI stage finds nothing trustworthy.
-    let pdfMeta: Partial<Reference> | null = null;
-    if (src.ext.toLowerCase() === "pdf") {
-      try {
-        const bytes = await Bun.file(
-          join(getCurrentProject()!.projectPath, src.relPath),
-        ).arrayBuffer();
-        pdfMeta = await extractPdfMetadata(bytes);
-      } catch {
-        // unreadable/missing PDF — no anchor, no meta hit; fall through.
-        pdfMeta = null;
-      }
+    const headerKey = auth.startsWith("Bearer ") ? auth.slice(7) : undefined;
+    try {
+      return c.json(await detectReference(id, { chatKey: headerKey }));
+    } catch (e) {
+      return c.json({ error: (e as Error)?.message ?? String(e) }, 500);
     }
-    const anchorTitle = pdfMeta?.title ?? null;
-
-    // Stage 1: DOI scan → Crossref. Two guards against mis-attributing a
-    // CITED work's DOI to this source (the classic failure when the source's
-    // own DOI is absent — books/preprints/scans/chapters):
-    //   (a) SCOPE: only the title-page region (`firstPageRegion`) is scanned,
-    //       so a bibliography DOI on page 2+ is never even considered.
-    //   (b) VERIFY: when a PDF-meta title anchor exists, a candidate is
-    //       accepted only if its Crossref title matches the anchor — so even a
-    //       stray DOI on page 1 (e.g. cited in an abstract) is rejected.
-    for (const doi of extractDois(firstPageRegion(text)).slice(0, 5)) {
-      const ref = await crossrefByDoi(doi, { contactEmail });
-      if (!ref) continue;
-      if (anchorTitle && !titlesMatch(ref.title, anchorTitle)) continue;
-      const saved = upsert(ref);
-      return c.json({ found: true, reference: saved, doi, alreadyLinked, source: "doi" });
-    }
-
-    // Stage 2: PDF /info metadata (the anchor itself, if it had enough data).
-    if (
-      pdfMeta &&
-      (pdfMeta.title || (pdfMeta.authors && pdfMeta.authors.length > 0))
-    ) {
-      const saved = upsert(pdfMeta);
-      return c.json({ found: true, reference: saved, doi: null, alreadyLinked, source: "pdf-meta" });
-    }
-
-    // Stage 3: LLM extraction (catch-all; needs chat binding + key).
-    if (chatConfig && chatKey) {
-      const ref = await extractReferenceViaLLM(text, { apiKey: chatKey, config: chatConfig });
-      if (ref) {
-        const saved = upsert(ref);
-        return c.json({ found: true, reference: saved, doi: null, alreadyLinked, source: "llm" });
-      }
-    }
-
-    return c.json({ found: false, reference: linkedRef, doi: null, alreadyLinked, source: "none" });
   });
 }

@@ -6,11 +6,8 @@
 //     hand that port to the frontend over IPC. Tauri-ownership means each app
 //     instance gets its own sidecar on its own free port — so multi-instance
 //     ("open another project") just works, and the frontend never guesses.
-//   - OS keychain access for API keys (secrets never touch the visible
-//     Dissertator/ folder)
 //   - dialog + filesystem plugins
 
-use keyring::Entry;
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -19,8 +16,6 @@ use std::thread;
 use std::time::Duration;
 use tauri::{Manager, RunEvent};
 use tokio::sync::watch;
-
-const SERVICE: &str = "dissertator";
 
 /// Holds the spawned sidecar child plus a watch channel the frontend polls to
 /// learn the port. `port_rx` yields `None` until the sidecar prints its ready
@@ -290,34 +285,6 @@ fn spawn_sidecar(app: &tauri::App) -> (watch::Receiver<Option<u16>>, Option<Chil
     (rx, Some(child))
 }
 
-/// Read a secret from the OS keychain. Returns `null` if none is stored.
-#[tauri::command]
-fn get_secret(user: String) -> Result<Option<String>, String> {
-    match Entry::new(SERVICE, &user).and_then(|e| e.get_password()) {
-        Ok(value) => Ok(Some(value)),
-        Err(keyring::Error::NoEntry) => Ok(None),
-        Err(e) => Err(format!("keychain read failed: {e}")),
-    }
-}
-
-/// Store (or overwrite) a secret in the OS keychain.
-#[tauri::command]
-fn set_secret(user: String, value: String) -> Result<(), String> {
-    Entry::new(SERVICE, &user)
-        .and_then(|e| e.set_password(&value))
-        .map_err(|e| format!("keychain write failed: {e}"))
-}
-
-/// Delete a secret from the OS keychain (no error if it was absent).
-#[tauri::command]
-fn delete_secret(user: String) -> Result<(), String> {
-    match Entry::new(SERVICE, &user).and_then(|e| e.delete_credential()) {
-        Ok(_) => Ok(()),
-        Err(keyring::Error::NoEntry) => Ok(()),
-        Err(e) => Err(format!("keychain delete failed: {e}")),
-    }
-}
-
 /// The port the sidecar bound. Returns `null` if it hasn't reported (or failed
 /// to start) within a short grace window — the frontend then shows its usual
 /// "sidecar down" state and retries via its health poll.
@@ -352,9 +319,6 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            get_secret,
-            set_secret,
-            delete_secret,
             sidecar_port,
         ])
         .build(tauri::generate_context!())

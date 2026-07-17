@@ -47,6 +47,7 @@ import type {
   GuiOption,
   Prompt,
 } from "@dissertator/shared";
+import { DEFAULT_CHAT_FLOW } from "@dissertator/shared";
 import { api, streamChat } from "../../lib/api";
 import type { DebugEvent } from "../../lib/api";
 import { useActiveDocumentId } from "../../lib/stores/tabs";
@@ -111,6 +112,13 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   // Project identity: chats live in the per-project DB, so the chat list
   // must reload whenever the open project changes.
   const projectPath = useSessionStore((s) => s.project?.projectPath ?? null);
+  // Chat-flow UX toggles (Settings → Agent). Resolved onto defaults so the
+  // panel works before settings arrive; updates live when they do.
+  const settings = useContentStore((s) => s.settings);
+  const flow = useMemo(
+    () => ({ ...DEFAULT_CHAT_FLOW, ...(settings?.chatFlow ?? {}) }),
+    [settings?.chatFlow],
+  );
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -166,9 +174,12 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
 
   const loadMessages = useCallback(async (chatId: string) => {
     try {
-      setMessages(await api.listChatMessages(chatId));
+      const list = await api.listChatMessages(chatId);
+      setMessages(list);
+      return list;
     } catch {
       setMessages([]);
+      return [];
     }
   }, []);
 
@@ -234,6 +245,8 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   // Last successfully-submitted text, so the Retry button can re-run a turn
   // that errored without re-typing it.
   const lastSentRef = useRef<string>("");
+  // Chats we've already auto-greeted this session (opener fires once/chat).
+  const greetedRef = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -253,6 +266,119 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       behavior: "smooth",
     });
   }, [messages, liveAssistant, toolBeats, pendingOptions]);
+
+  // New chats inherit the previous (active) chat's pinned sources when the
+  // toggle is on — preserves the user's working context across "New chat".
+  const inheritSources = useCallback((): string[] | undefined => {
+    if (!flow.inheritPins) return undefined;
+    const pins = activeChat?.contextSources;
+    return pins && pins.length ? pins : undefined;
+  }, [flow.inheritPins, activeChat]);
+
+  // Auto-title (non-blocking): summarize a short title after the threshold
+  // turn. The server no-ops unless the title is still "New chat".
+  const maybeAutotitle = useCallback(
+    async (chatId: string) => {
+      try {
+        const { chat, updated } = await api.autotitle(chatId, apiKey);
+        if (updated)
+          setChats((prev) => prev.map((c) => (c.id === chat.id ? chat : c)));
+      } catch {
+        /* non-blocking */
+      }
+    },
+    [apiKey],
+  );
+
+  // OPENER: auto-greet a new/empty chat. The server injects an internal
+  // opener instruction; NO user row is persisted — only the greeting. Reuses
+  // the same streaming UI as a normal send (deltas, tool beats, gui events).
+  const runOpener = useCallback(
+    async (chatId: string) => {
+      if (!apiKey || streaming) return;
+      const ac = new AbortController();
+      abortRef.current = ac;
+      setStreaming(true);
+      setLiveAssistant("");
+      setToolBeats([]);
+      setDebugEvents([]);
+      const result = await streamChat(chatId, "", apiKey, {
+        opener: true,
+        openFiles: activeChat?.contextSources ?? [],
+        activeDocumentId,
+        embeddingApiKey,
+        onDelta: (d) => setLiveAssistant((prev) => prev + d),
+        onToolCall: (e) =>
+          setToolBeats((prev) => [
+            ...prev,
+            { id: e.id, name: e.name, args: e.args },
+          ]),
+        onToolResult: (e) =>
+          setToolBeats((prev) =>
+            prev.map((b) =>
+              b.id === e.id
+                ? { ...b, ok: e.ok, summary: e.summary, error: e.error }
+                : b,
+            ),
+          ),
+        onEdit: (e) => {
+          const existing = useContentStore
+            .getState()
+            .documents.find((d) => d.id === e.documentId);
+          onDocumentEdited?.({
+            id: e.documentId,
+            title: e.title,
+            bodyMd: e.bodyMd,
+            docType: existing?.docType ?? null,
+            thesis: existing?.thesis ?? null,
+            researchQuestions: existing?.researchQuestions ?? [],
+            focusPrompt: existing?.focusPrompt ?? null,
+            createdAt: existing?.createdAt ?? Date.now(),
+          });
+        },
+        onGui: (g: GuiEvent) => {
+          switch (g.kind) {
+            case "doc_open":
+              onOpenSource?.(g.sourceId);
+              break;
+            case "p_open":
+              onOpenDocument?.(g.documentId);
+              break;
+            case "options":
+              setPendingOptions(g.options);
+              break;
+            case "action":
+              pushToast(g.action, g.text);
+              break;
+          }
+        },
+        onDebug: (e) => setDebugEvents((prev) => [...prev, e]),
+        signal: ac.signal,
+      });
+      setStreaming(false);
+      setLiveAssistant("");
+      setToolBeats([]);
+      abortRef.current = null;
+      if (result.error && !result.aborted) {
+        setError(result.error);
+      } else if (result.capped) {
+        pushToast("warn", "Agent hit its step cap — it may not have finished.");
+      }
+      await loadMessages(chatId);
+    },
+    [
+      apiKey,
+      streaming,
+      activeChat,
+      activeDocumentId,
+      embeddingApiKey,
+      loadMessages,
+      onDocumentEdited,
+      onOpenSource,
+      onOpenDocument,
+      pushToast,
+    ],
+  );
 
   const send = useCallback(
     async (overrideText?: string) => {
@@ -351,7 +477,16 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
         pushToast("warn", "Agent hit its step cap — it may not have finished.");
       }
       // Reload canonical state (server persisted both turns, even on abort).
-      await loadMessages(activeChatId);
+      const list = await loadMessages(activeChatId);
+      // Auto-title once the transcript crosses the configured turn threshold
+      // (only while still the default title — a manual rename opts out).
+      if (
+        flow.autoTitle &&
+        activeChat?.title === "New chat" &&
+        list.length >= flow.autoTitleTurns
+      ) {
+        void maybeAutotitle(activeChatId);
+      }
     },
     [
       input,
@@ -366,6 +501,9 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       onOpenSource,
       onOpenDocument,
       pushToast,
+      maybeAutotitle,
+      flow.autoTitle,
+      flow.autoTitleTurns,
     ],
   );
 
@@ -382,15 +520,27 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     [streaming],
   );
 
+  // Fire the opener when a new/empty chat is shown — once per chat/session.
+  // Guards: toggle on, a chat is active, not mid-stream, truly empty, and not
+  // already greeted (so switching away and back doesn't re-spend tokens).
+  useEffect(() => {
+    if (!flow.autoGreet) return;
+    if (!activeChatId || streaming) return;
+    if (messages.length > 0) return;
+    if (greetedRef.current.has(activeChatId)) return;
+    greetedRef.current.add(activeChatId);
+    void runOpener(activeChatId);
+  }, [activeChatId, messages.length, streaming, flow.autoGreet, runOpener]);
+
   const newChat = useCallback(async () => {
     try {
-      const c = await api.createChat();
+      const c = await api.createChat({ contextSources: inheritSources() });
       setChats((prev) => [c, ...prev]);
       selectChat(c.id);
     } catch (e) {
       setError((e as Error)?.message ?? String(e));
     }
-  }, [selectChat]);
+  }, [selectChat, inheritSources]);
 
   /**
    * New Document flow (App → ChatPanel): create a fresh chat, switch to it,
@@ -402,7 +552,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
    */
   const startNewDocumentChat = useCallback(async () => {
     try {
-      const c = await api.createChat();
+      const c = await api.createChat({ contextSources: inheritSources() });
       setChats((prev) => [c, ...prev]);
       selectChat(c.id);
       const found = prompts.find(
@@ -414,73 +564,93 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     } catch (e) {
       setError((e as Error)?.message ?? String(e));
     }
-  }, [prompts, selectChat]);
+  }, [prompts, selectChat, inheritSources]);
 
   // Expose the imperative API to the parent (App's New Document button).
   useImperativeHandle(ref, () => ({ startNewDocumentChat }), [
     startNewDocumentChat,
   ]);
 
-  const renameChat = useCallback(async () => {
-    if (!activeChat) return;
+  const renameChatById = useCallback(async (chat: Chat) => {
     const title = await promptDialog({
       title: "Rename chat",
       label: "Chat title",
-      defaultValue: activeChat.title,
+      defaultValue: chat.title,
       okLabel: "Save",
     });
     if (title == null) return;
     const trimmed = title.trim();
     if (!trimmed) return;
     try {
-      const updated = await api.updateChat(activeChat.id, { title: trimmed });
+      const updated = await api.updateChat(chat.id, { title: trimmed });
       setChats((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
     } catch (e) {
       setError((e as Error)?.message ?? String(e));
     }
-  }, [activeChat]);
+  }, []);
 
-  const deleteChat = useCallback(async () => {
-    if (!activeChat) return;
+  const deleteChatById = useCallback(async (chat: Chat) => {
     const ok = await confirmDialog({
       title: "Delete chat",
-      message: `Delete chat “${activeChat.title}”?`,
+      message: `Delete chat “${chat.title}”?`,
       okLabel: "Delete",
       destructive: true,
     });
     if (!ok) return;
-    const id = activeChat.id;
     try {
-      await api.deleteChat(id);
+      await api.deleteChat(chat.id);
       // Compute the next list OUTSIDE the setChats updater — React 18
       // StrictMode double-invokes updaters in dev, so a side effect
       // (api.createChat) inside one would fire twice and create a duplicate.
-      const remaining = chats.filter((c) => c.id !== id);
+      const remaining = chats.filter((c) => c.id !== chat.id);
       setChats(remaining);
-      // Fall through to the next chat, or auto-create if the last one was
-      // deleted (never leave the user with a blank panel).
-      if (remaining.length > 0) {
-        setActiveChatId(remaining[0].id);
-      } else {
-        setActiveChatId(null);
-        try {
-          const created = await api.createChat();
-          setChats([created]);
-          setActiveChatId(created.id);
-        } catch {
-          /* ignore — user can retry via New */
+      // Only reshuffle selection if the ACTIVE chat was deleted. Deleting a
+      // non-active row (from the switcher) just removes it.
+      if (chat.id === activeChatId) {
+        if (remaining.length > 0) {
+          setActiveChatId(remaining[0].id);
+        } else {
+          setActiveChatId(null);
+          try {
+            const created = await api.createChat();
+            setChats([created]);
+            setActiveChatId(created.id);
+          } catch {
+            /* ignore — user can retry via New */
+          }
         }
       }
     } catch (e) {
       setError((e as Error)?.message ?? String(e));
     }
-  }, [activeChat, chats]);
+  }, [chats, activeChatId]);
 
   // --- context picker ------------------------------------------------------
   const [pickerOpen, setPickerOpen] = useState(false);
-  // Prompts section: collapsed by default so the composer stays the focus.
-  // Each click of the header toggles; selecting a prompt keeps it open.
-  const [promptsOpen, setPromptsOpen] = useState(false);
+  // Chat switcher anchored panel (replaces the <select>): open near the
+  // trigger button; closes on outside click.
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const switcherRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!switcherOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!switcherRef.current?.contains(e.target as Node))
+        setSwitcherOpen(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, [switcherOpen]);
+  // Prompts section: open by default (Settings → Agent). Honor the stored
+  // preference once settings arrive, then let the user toggle freely.
+  const [promptsOpen, setPromptsOpen] = useState(flow.promptsOpen);
+  const promptsInitedRef = useRef(false);
+  useEffect(() => {
+    if (promptsInitedRef.current) return;
+    if (settings?.chatFlow) {
+      promptsInitedRef.current = true;
+      setPromptsOpen(settings.chatFlow.promptsOpen);
+    }
+  }, [settings?.chatFlow]);
 
   const toggleSource = useCallback(
     async (sourceId: string) => {
@@ -581,7 +751,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             type="button"
             className="tb small"
             title="Rename chat"
-            onClick={renameChat}
+            onClick={() => activeChat && renameChatById(activeChat)}
             disabled={!activeChat}
           >
             <PencilSimpleLine size={14} weight="bold" />
@@ -590,7 +760,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             type="button"
             className="tb small danger"
             title="Delete chat"
-            onClick={deleteChat}
+            onClick={() => activeChat && deleteChatById(activeChat)}
             disabled={!activeChat}
           >
             <Trash size={14} weight="bold" />
@@ -605,17 +775,79 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
         <div className="muted small chat-empty">Loading…</div>
       ) : (
         <>
-          <select
-            className="chat-select"
-            value={activeChatId ?? ""}
-            onChange={(e) => selectChat(e.target.value)}
-          >
-            {chats.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.title}
-              </option>
-            ))}
-          </select>
+          <div className="chat-switcher" ref={switcherRef}>
+            <button
+              type="button"
+              className="chat-switcher-btn"
+              onClick={() => setSwitcherOpen((v) => !v)}
+              disabled={!activeChat}
+              title={activeChat?.title ?? "Select chat"}
+            >
+              <span className="chat-switcher-title">
+                {activeChat?.title ?? "No chat"}
+              </span>
+              <CaretDown size={12} weight="bold" />
+            </button>
+            {switcherOpen && (
+              <div className="chat-switcher-panel">
+                <button
+                  type="button"
+                  className="chat-switcher-new"
+                  onClick={() => {
+                    setSwitcherOpen(false);
+                    void newChat();
+                  }}
+                >
+                  <Plus size={12} weight="bold" />
+                  New chat
+                </button>
+                <ul className="chat-switcher-list">
+                  {chats.map((c) => (
+                    <li
+                      key={c.id}
+                      className={`chat-switcher-item${
+                        c.id === activeChatId ? " active" : ""
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        className="chat-switcher-row"
+                        onClick={() => {
+                          setSwitcherOpen(false);
+                          selectChat(c.id);
+                        }}
+                      >
+                        <span className="chat-switcher-name" title={c.title}>
+                          {c.title || "(untitled)"}
+                        </span>
+                        <span className="chat-switcher-time muted small">
+                          {relTime(c.updatedAt)}
+                        </span>
+                      </button>
+                      <span className="chat-switcher-actions">
+                        <button
+                          type="button"
+                          className="tb xs"
+                          title="Rename"
+                          onClick={() => void renameChatById(c)}
+                        >
+                          <PencilSimpleLine size={11} weight="bold" />
+                        </button>
+                        <button
+                          type="button"
+                          className="tb xs danger"
+                          title="Delete"
+                          onClick={() => void deleteChatById(c)}
+                        >
+                          <Trash size={11} weight="bold" />
+                        </button>
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
 
           {/* Context picker — the per-chat pinned source set. */}
           <div className="chat-context">
@@ -868,4 +1100,17 @@ interface ChatToast {
   id: string;
   kind: "warn" | "celebrate" | "info";
   text: string;
+}
+
+/** Compact relative timestamp for the chat switcher rows. */
+function relTime(ts: number): string {
+  const s = Math.max(1, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h`;
+  const d = Math.round(h / 24);
+  if (d < 7) return `${d}d`;
+  return new Date(ts).toISOString().slice(0, 10);
 }

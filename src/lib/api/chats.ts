@@ -38,4 +38,16 @@ export const chatsApi = {
       `/chats/${encodeURIComponent(chatId)}/messages` +
         (limit ? `?limit=${limit}` : ""),
     ),
+
+  /** Auto-title: summarize the transcript into a short title. Only applies
+   *  while the title is still "New chat". API key travels as Bearer header. */
+  autotitle: (chatId: string, apiKey: string) =>
+    req<{ chat: Chat; updated: boolean }>(
+      `/chats/${encodeURIComponent(chatId)}/autotitle`,
+      {
+        method: "POST",
+        headers: { Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({}),
+      },
+    ),
 };

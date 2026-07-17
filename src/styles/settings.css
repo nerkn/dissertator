@@ -498,3 +498,43 @@
   max-width: 80vw;
 }
 
+
+/* Chat-flow toggles (Agent tab). */
+.flow-toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 0;
+  cursor: pointer;
+}
+.flow-toggle input[type="checkbox"] {
+  margin-top: 2px;
+  flex: none;
+}
+.flow-toggle-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.flow-toggle-label {
+  font-size: 13px;
+}
+.flow-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+}
+.flow-label {
+  font-size: 13px;
+}
+.flow-number {
+  width: 64px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 13px;
+}

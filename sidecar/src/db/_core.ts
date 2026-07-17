@@ -11,7 +11,7 @@
 // `setChatProviderId`) that are referenced from more than one entity module.
 
 import type { Database } from "bun:sqlite";
-import { GRANITE_EMBED_MODEL, GRANITE_EMBED_PROVIDER, type AiFunction } from "@dissertator/shared";
+import { type AiFunction } from "@dissertator/shared";
 // schema.sql is embedded into the compiled binary at build time via the
 // `type:"text"` import attribute, so it never touches the filesystem at
 // runtime. Reading it via `import.meta.dir` broke under `bun build --compile`:
@@ -20,9 +20,9 @@ import { GRANITE_EMBED_MODEL, GRANITE_EMBED_PROVIDER, type AiFunction } from "@d
 // that Windows re-rooted against the sidecar's CWD (the opened project), e.g.
 // `B:\~BUN\schema.sql` → ENOENT. Embedding the SQL fixes every drive.
 import schemaSql from "../schema.sql" with { type: "text" };
-import { seedProviders } from "./providers.ts";
-import { seedBindings, setBinding } from "./bindings.ts";
+import { setBinding } from "./bindings.ts";
 import { seedLists } from "./lists.ts";
+import { globalDb, setGlobalSetting } from "./globalDb.ts";
 
 export const DISS_DIR_NAME = "Dissertator";
 
@@ -291,69 +291,8 @@ export function migrate(db: Database): void {
   // idempotent and keep the chat_provider_id / embedding_provider_id
   // settings stable across re-runs.
   // -----------------------------------------------------------------------
-  seedProviders(db);
   // Multi-provider: seed the 5 function bindings, mirroring the legacy
   // chat/embedding provider pointers. Idempotent.
-  seedBindings(db);
-
-  // One-time: projects seeded with the legacy OpenAI embed default
-  // (`default-embedding`) that never embedded (dimensions == 0) → switch to
-  // the keyless local granite embedder, so embeddings work with zero config.
-  // Idempotent — once switched, the provider is no longer `default-embedding`.
-  // Projects that already embedded (dimensions > 0) keep their working setup.
-  const embProv = (
-    db.prepare("SELECT value FROM settings WHERE key = 'embedding_provider_id'").get() as
-      | { value?: string }
-      | null
-  )?.value;
-  const embDimRaw = (
-    db.prepare("SELECT value FROM settings WHERE key = 'embedding_dimensions'").get() as
-      | { value?: string }
-      | null
-  )?.value;
-  if (embProv === "default-embedding" && Number(embDimRaw ?? 0) === 0) {
-    db.prepare(
-      "INSERT INTO settings(key, value) VALUES ('embedding_provider_id', ?) " +
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    ).run(GRANITE_EMBED_PROVIDER.id);
-    db.prepare(
-      "INSERT INTO function_bindings(function, provider_id, model, updated_at) VALUES ('embed', ?, ?, ?) " +
-        "ON CONFLICT(function) DO UPDATE SET provider_id = excluded.provider_id, " +
-        "model = excluded.model, updated_at = excluded.updated_at",
-    ).run(GRANITE_EMBED_PROVIDER.id, GRANITE_EMBED_MODEL, Date.now());
-    console.log(
-      "[db] migrate: switched unconfigured embed default → local granite (keyless)",
-    );
-  }
-
-  // One-time: repair a STALE embed binding — the local granite model sitting
-  // on a NON-local (chat) provider. That combo can never work (a local ONNX
-  // model can't run against a chat API), and is a leftover from an older
-  // seed. Only touches projects that never embedded (dimensions == 0), so a
-  // working embed setup is never disturbed.
-  const GRANITE_MODEL = GRANITE_EMBED_MODEL;
-  const embBinding = (
-    db.prepare(
-      "SELECT provider_id, model FROM function_bindings WHERE function = 'embed'",
-    ).get() as { provider_id?: string; model?: string } | null
-  );
-  const staleLocalOnRemote =
-    embBinding?.model === GRANITE_MODEL &&
-    embBinding?.provider_id !== GRANITE_EMBED_PROVIDER.id;
-  if (staleLocalOnRemote && Number(embDimRaw ?? 0) === 0) {
-    db.prepare(
-      "INSERT INTO settings(key, value) VALUES ('embedding_provider_id', ?) " +
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    ).run(GRANITE_EMBED_PROVIDER.id);
-    db.prepare(
-      "INSERT INTO function_bindings(function, provider_id, model, updated_at) VALUES ('embed', ?, ?, ?) " +
-        "ON CONFLICT(function) DO UPDATE SET provider_id = excluded.provider_id, " +
-        "model = excluded.model, updated_at = excluded.updated_at",
-    ).run(GRANITE_EMBED_PROVIDER.id, GRANITE_MODEL, Date.now());
-    console.log(
-      "[db] migrate: repaired stale embed binding (local model on remote provider) → local granite",
-    );
-  }
 
   // Lists & notes (collect-while-reading). Seeds the 4 built-in lists
   // (system=1) idempotently — `INSERT OR IGNORE` by id so a deliberately
@@ -380,8 +319,7 @@ export function readBindingsJoined(): Array<{
   apiUrl: string;
   type: string;
 }> {
-  if (!current) return [];
-  const rows = current.db
+  const rows = globalDb
     .prepare(
       "SELECT b.function AS fn, b.provider_id AS pid, b.model AS model, " +
         "b.updated_at AS ts, p.api_url AS url, p.type AS type " +
@@ -406,22 +344,12 @@ export function readBindingsJoined(): Array<{
 }
 
 /**
- * Set the chat function's provider. Writes the legacy settings pointer AND
- * mirrors it into the chat binding (the single source of truth), so the
- * legacy Functions dropdown and the new binding view stay in sync. Chat is
- * non-destructive, so this never re-vectorizes.
+ * Set the chat function's provider. Writes the global settings pointer AND
+ * mirrors it into the chat binding (the single source of truth).
  */
 export function setChatProviderId(id: string): void {
-  if (!current) return;
-  current.db
-    .prepare(
-      "INSERT INTO settings(key, value) VALUES ('chat_provider_id', ?) " +
-        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    )
-    .run(id);
-  // Mirror into the chat binding WITHOUT clobbering an existing model: keep
-  // the current binding model if set, else blank (the Functions UI fills it).
-  const prev = current.db
+  setGlobalSetting("chat_provider_id", id);
+  const prev = globalDb
     .prepare("SELECT model FROM function_bindings WHERE function = 'chat'")
     .get() as { model?: string } | null;
   setBinding("chat", { providerId: id, model: prev?.model ?? "" });

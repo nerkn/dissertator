@@ -99,7 +99,7 @@ interface ProviderRowProps {
 /**
  * A pool row. Only the NAME is editable here — a provider's type and endpoint
  * are fixed at creation (the Add dialog). The API key is the one real
- * credential, stored in the OS keychain under the row's slot.
+ * credential, stored in the sidecar's global app DB under the row's slot.
  */
 function ProviderRow({
   provider,
@@ -114,6 +114,7 @@ function ProviderRow({
   );
 
   const [name, setName] = useState(provider.name);
+  const [apiUrl, setApiUrl] = useState(provider.apiUrl);
   const [key, setKey] = useState(keyValue);
   const [showKey, setShowKey] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -127,8 +128,9 @@ function ProviderRow({
 
   useEffect(() => {
     setName(provider.name);
+    setApiUrl(provider.apiUrl);
     setDirty(false);
-  }, [provider.id, provider.name]);
+  }, [provider.id, provider.name, provider.apiUrl]);
   useEffect(() => {
     setKey(keyValue);
   }, [keyValue]);
@@ -136,8 +138,7 @@ function ProviderRow({
   const save = async () => {
     setSaving(true);
     try {
-      // Only the name is user-editable on a saved row.
-      await api.updateProvider(provider.id, { name });
+      await api.updateProvider(provider.id, { name, apiUrl });
       await onKeyChange(provider.keyUser, key.trim());
       setDirty(false);
       await onChange();
@@ -186,6 +187,19 @@ function ProviderRow({
           {/* Fixed at creation — read-only identity, not a picker. */}
           <input value={def?.label ?? provider.type} disabled />
         </label>
+        {!def?.keyUrl && (
+          <label className="field">
+            <span>API URL</span>
+            <input
+              value={apiUrl}
+              onChange={(e) => {
+                setApiUrl(e.target.value);
+                setDirty(true);
+              }}
+              placeholder="https://…"
+            />
+          </label>
+        )}
         {!keyless && (
           <label className="field field-wide">
             <span>API Key</span>
@@ -197,7 +211,7 @@ function ProviderRow({
                   setKey(e.target.value);
                   setDirty(true);
                 }}
-                placeholder="stored in OS keychain — never in your project folder"
+                placeholder="stored in the app DB (~/.dissertator)"
               />
               <button
                 type="button"
@@ -216,7 +230,7 @@ function ProviderRow({
         <span className="muted small">
           {keyless
             ? "local — no key needed"
-            : <>keychain slot: <code>{provider.keyUser}</code></>}
+            : <>app DB slot: <code>{provider.keyUser}</code></>}
         </span>
         <div className="provider-row-actions">
           {!keyless && (
@@ -254,7 +268,7 @@ function ProviderRow({
 }
 
 /** Add-provider modal: a catalog quick-start prefills name/apiUrl + a get-key
- *  link; the key is stored to the keychain on save. A Test button probes the
+ *  link; the key is stored to the app DB on save. A Test button probes the
  *  endpoint with the entered key before saving. */
 function AddProviderModal({
   onKeyChange,
@@ -378,7 +392,7 @@ function AddProviderModal({
                 type={showKey ? "text" : "password"}
                 value={key}
                 onChange={(e) => setKey(e.target.value)}
-                placeholder="stored in OS keychain"
+                placeholder="stored in the app DB"
               />
               <button
                 type="button"

@@ -12,6 +12,7 @@ import { existsSync } from "node:fs";
 import { getLoadablePath } from "sqlite-vec";
 import {
   AI_FUNCTIONS,
+  DEFAULT_CHAT_FLOW,
   isKeylessProviderType,
   type Bindings,
   type EmbeddingStatus,
@@ -20,6 +21,7 @@ import {
   type ResolvedBindings,
   type Settings,
   type SettingsPatch,
+  type ChatFlowSettings,
 } from "@dissertator/shared";
 import {
   count,
@@ -34,6 +36,7 @@ import {
   setCurrentProject,
 } from "./_core.ts";
 import { setEmbeddingProviderId } from "./providers.ts";
+import { getGlobalSetting, setGlobalSetting } from "./globalDb.ts";
 import { backfillSourceReferences } from "./references.ts";
 import { ensureAgentFiles } from "../agent-files.ts";
 
@@ -239,20 +242,6 @@ export function getProjectStatus(): ProjectStatus {
 }
 
 export function getSettings(): Settings {
-  if (!current) {
-    return {
-      ocrStrategy: "tesseract",
-      contactEmail: "",
-      embeddingDimensions: 0,
-    };
-  }
-  const rows = current.db
-    .query("SELECT key, value FROM settings")
-    .all() as { key: string; value: string }[];
-  const obj: Record<string, string> = {};
-  for (const r of rows) obj[r.key] = r.value;
-
-  // --- function bindings: the single source of truth ---
   const joined = readBindingsJoined();
   const bindings = {} as Bindings;
   const resolved = {} as ResolvedBindings;
@@ -273,48 +262,63 @@ export function getSettings(): Settings {
     };
   }
 
-  const dimensionsRaw = obj.embedding_dimensions;
-  const dimensions = dimensionsRaw ? parseInt(dimensionsRaw, 10) : 0;
+  let dimensions = 0;
+  if (current) {
+    const row = current.db
+      .query("SELECT value FROM settings WHERE key = 'embedding_dimensions'")
+      .get() as { value?: string } | null;
+    const d = row?.value ? parseInt(row.value, 10) : 0;
+    dimensions = Number.isFinite(d) && d > 0 ? d : 0;
+  }
 
   return {
-    ocrStrategy: (obj.ocrStrategy as Settings["ocrStrategy"]) ?? "tesseract",
-    contactEmail: obj.contactEmail ?? "",
-    chatProviderId: resolved.chat.providerId || obj.chat_provider_id || undefined,
-    embeddingProviderId:
-      resolved.embed.providerId || obj.embedding_provider_id || undefined,
-    embeddingDimensions:
-      Number.isFinite(dimensions) && dimensions > 0 ? dimensions : 0,
+    ocrStrategy:
+      (getGlobalSetting("ocrStrategy") as Settings["ocrStrategy"]) ??
+      "tesseract",
+    contactEmail: getGlobalSetting("contactEmail") ?? "",
+    chatProviderId: resolved.chat.providerId || undefined,
+    embeddingProviderId: resolved.embed.providerId || undefined,
+    embeddingDimensions: dimensions,
     bindings,
     resolved,
+    chatFlow: parseChatFlow(getGlobalSetting("chatFlow")),
   };
+}
+
+/** Parse + merge the stored `chatFlow` JSON blob onto defaults. */
+function parseChatFlow(raw: string | undefined): ChatFlowSettings {
+  if (!raw) return { ...DEFAULT_CHAT_FLOW };
+  try {
+    const parsed = JSON.parse(raw) as Partial<ChatFlowSettings>;
+    return { ...DEFAULT_CHAT_FLOW, ...parsed };
+  } catch {
+    return { ...DEFAULT_CHAT_FLOW };
+  }
 }
 
 /** {@link saveSettings} accepts this focused patch (re-exported from shared). */
 export type { SettingsPatch };
 
 export function saveSettings(patch: SettingsPatch): Settings {
-  if (!current) throw new Error("no project initialized");
-  const upsert = current.db.prepare(
-    "INSERT INTO settings(key, value) VALUES (?, ?) " +
-      "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
-  );
-  if (patch.ocrStrategy !== undefined) upsert.run("ocrStrategy", patch.ocrStrategy);
-  // Crossref polite-pool contact email. Not a keychain slot — a public
-  // contact address stored in the project DB.
-  if (patch.contactEmail !== undefined) {
-    upsert.run("contactEmail", patch.contactEmail);
-  }
-  // Function selections → pointers into the providers table.
+  if (patch.ocrStrategy !== undefined)
+    setGlobalSetting("ocrStrategy", patch.ocrStrategy);
+  if (patch.contactEmail !== undefined)
+    setGlobalSetting("contactEmail", patch.contactEmail);
   if (patch.chatProviderId !== undefined) setChatProviderId(patch.chatProviderId);
   if (patch.embeddingProviderId !== undefined) {
     setEmbeddingProviderId(patch.embeddingProviderId);
   }
-  // Embedding dimension lock. Normally stamped by `lockDimensions` on the
-  // first successful embed; surfaced here so the UI can reset it when the
-  // user switches embedding provider (forces a fresh lock). Saving 0 does
-  // NOT drop an existing vec0 table (that lives in meta).
-  if (patch.embeddingDimensions !== undefined) {
-    upsert.run("embedding_dimensions", String(patch.embeddingDimensions));
+  if (patch.chatFlow) {
+    const merged = { ...getSettings().chatFlow, ...patch.chatFlow };
+    setGlobalSetting("chatFlow", JSON.stringify(merged));
+  }
+  if (patch.embeddingDimensions !== undefined && current) {
+    current.db
+      .prepare(
+        "INSERT INTO settings(key, value) VALUES ('embedding_dimensions', ?) " +
+          "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+      )
+      .run(String(patch.embeddingDimensions));
   }
   return getSettings();
 }

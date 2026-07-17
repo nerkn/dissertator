@@ -59,6 +59,14 @@ export interface ChatRequest {
    * manuscript it is co-authoring.
    */
   activeDocumentId?: string;
+  /**
+   * OPENER: auto-greet a new/empty chat. When true, `message` is ignored and
+   * no user row is persisted — the server injects an internal opener
+   * instruction (greet + propose next steps from the corpus glimpse) and
+   * persists only the assistant greeting. Only honored when the chat has no
+   * messages yet (defense against re-greeting).
+   */
+  opener?: boolean;
 }
 
 /**

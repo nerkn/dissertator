@@ -51,7 +51,7 @@ export function ReferencesView({ sources, onOpenSource }: Props) {
 
   // Chat key for the LLM stage of detect-reference (enriches books / scans /
   // preprints that DOI + PDF-metadata miss). Mirrors useApp.keyFor("chat"):
-  // the chat binding's provider key, sourced from the keychain via the
+  // the chat binding's provider key, sourced from the app DB via the
   // providers store. Absent key ⇒ LLM stage skipped server-side.
   const chatKey = useMemo(() => {
     const pid = useContentStore.getState().settings?.bindings?.chat?.providerId;

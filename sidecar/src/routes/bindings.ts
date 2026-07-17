@@ -1,7 +1,6 @@
 import type { Hono } from "hono";
 import { AI_FUNCTIONS, type AiFunction } from "@dissertator/shared";
 import {
-  getCurrentProject,
   getBindings,
   getResolvedBindings,
   setBinding,
@@ -10,12 +9,10 @@ import {
 // Multi-provider (P-multi): function↔provider bindings.
 export function registerBindings(app: Hono): void {
   app.get("/bindings", (c) => {
-    if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
     return c.json({ bindings: getBindings(), resolved: getResolvedBindings() });
   });
 
   app.put("/bindings/:fn", async (c) => {
-    if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
     const fn = c.req.param("fn") as AiFunction;
     if (!AI_FUNCTIONS.includes(fn)) {
       return c.json({ error: "unknown function" }, 400);

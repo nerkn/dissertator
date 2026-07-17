@@ -106,7 +106,7 @@ export const PROVIDER_DEFS: ProviderDef[] = [
     keyUrl: "https://z.ai/manage-apikey/apikey-list",
     keyUser: "zai_api_key",
     defaults: {
-      chat: "glm-4.6",
+      chat: "glm-5.2",
       stt: "whisper-1",
       vision_doc: "glm-4v",
       vision_image: "glm-4v",

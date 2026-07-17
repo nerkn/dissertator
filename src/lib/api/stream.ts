@@ -29,6 +29,8 @@ export async function streamChat(
     openFiles?: string[];
     /** Document the user is editing (default target for p_read/p_write/p_insert). */
     activeDocumentId?: string;
+    /** OPENER: auto-greet a new/empty chat (no user message persisted). */
+    opener?: boolean;
     /** Embedding key for the agent's corpus_* vector tools (`X-Embedding-Key`). */
     embeddingApiKey?: string;
     onDelta?: (text: string) => void;
@@ -62,6 +64,7 @@ export async function streamChat(
       message,
       openFiles: opts.openFiles ?? [],
       ...(opts.activeDocumentId ? { activeDocumentId: opts.activeDocumentId } : {}),
+      ...(opts.opener ? { opener: true } : {}),
     }),
     signal: opts.signal,
   });

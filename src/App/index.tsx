@@ -92,6 +92,7 @@ export default function App() {
           visionImageKey={visionImageKey}
           sttKey={sttKey}
           embeddingApiKey={embeddingApiKey}
+          chatKey={apiKey}
           onOpen={openSource}
           onNewDocument={handleNewDocument}
           onOpenDocument={openDocument}

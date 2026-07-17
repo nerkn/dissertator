@@ -12,6 +12,7 @@ import {
   CaretRight,
   Gear,
   PencilSimple,
+  Sparkle,
 } from "@phosphor-icons/react";
 import type {
   EmbeddingStatus,
@@ -21,6 +22,7 @@ import type {
   SourcesResponse,
 } from "@dissertator/shared";
 import { api } from "../../lib/api";
+import { alertDialog } from "../../lib/stores/dialogs";
 import { fmtAuthors } from "../ReferenceFields";
 import { ReferenceEditDialog } from "../ReferenceEditDialog";
 import { StatusBadge } from "../StatusBadge";
@@ -41,6 +43,7 @@ interface Props {
   /** Embedding API key for a REMOTE embed provider. Not required when the
    *  bound embed provider is keyless (local granite) — see embedStatus.keyless. */
   embeddingApiKey?: string;
+  chatKey?: string;
   /** Click-to-open a source in the CenterPane viewer. */
   onOpen?: (src: SourceFile) => void;
   /** Open the Settings dialog (used by the embedding no-key nudge). */
@@ -54,6 +57,7 @@ export function SourcesGroup({
   onRescan,
   busy,
   embeddingApiKey,
+  chatKey,
   onOpen,
   onOpenSettings,
 }: Props) {
@@ -102,6 +106,78 @@ export function SourcesGroup({
     if (!project.initialized) return;
     void reloadRefs();
   }, [project.initialized, sources, reloadRefs]);
+
+  const isPlaceholder = (s: SourceFile): boolean => {
+    const r = refsById.get(s.id);
+    return !r || (r.authors.length === 0 && !r.doi);
+  };
+
+  const [identifying, setIdentifying] = useState(false);
+  const [identifyProg, setIdentifyProg] = useState<{
+    done: number;
+    total: number;
+  } | null>(null);
+  const [oneBusy, setOneBusy] = useState<string | null>(null);
+
+  const identifyOne = useCallback(
+    async (id: string) => {
+      setOneBusy(id);
+      try {
+        await api.detectReference(id, chatKey);
+        await reloadRefs();
+      } catch {
+      } finally {
+        setOneBusy(null);
+      }
+    },
+    [chatKey, reloadRefs],
+  );
+
+  const identifyAll = useCallback(async () => {
+    const items = sources?.items ?? [];
+    const targets = items.filter(
+      (s) => s.textStatus === "done" && isPlaceholder(s),
+    );
+    if (targets.length === 0) {
+      await alertDialog({
+        title: "Nothing to identify",
+        message: "Every extracted source already has metadata.",
+      });
+      return;
+    }
+    setIdentifying(true);
+    setIdentifyProg({ done: 0, total: targets.length });
+    const counts: Record<string, number> = {};
+    let filled = 0;
+    try {
+      for (let i = 0; i < targets.length; i++) {
+        const s = targets[i];
+        try {
+          const res = await api.detectReference(s.id, chatKey);
+          if (res.found && !res.alreadyLinked && res.source !== "none") {
+            counts[res.source] = (counts[res.source] ?? 0) + 1;
+            filled++;
+          }
+        } catch {
+        }
+        setIdentifyProg({ done: i + 1, total: targets.length });
+      }
+      await reloadRefs();
+      const breakdown = Object.entries(counts)
+        .map(([k, v]) => `${v} ${k}`)
+        .join(", ");
+      await alertDialog({
+        title: "Identification complete",
+        message:
+          filled > 0
+            ? `Identified ${filled} of ${targets.length} source(s)${breakdown ? ` (${breakdown})` : ""}.`
+            : `No metadata found for ${targets.length} source(s).`,
+      });
+    } finally {
+      setIdentifying(false);
+      setIdentifyProg(null);
+    }
+  }, [sources, refsById, chatKey, reloadRefs]);
 
   // "Embed now": start a background drain of ALL pending chunks. The POST
   // returns immediately (fire-and-forget); live progress comes from the 5s
@@ -235,6 +311,20 @@ export function SourcesGroup({
             {busy ? "scanning…" : "Rescan"}
           </button>
         )}
+        <button
+          className="btn ghost tiny-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            void identifyAll();
+          }}
+          disabled={identifying || busy}
+          title="Detect title, authors, year via DOI, PDF metadata, then AI"
+        >
+          <Sparkle size={13} weight="bold" />
+          {identifying
+            ? `identifying ${identifyProg?.done ?? 0}/${identifyProg?.total ?? 0}`
+            : "Identify all"}
+        </button>
       </div>
       <div className="count">{sourceCount} files</div>
       {sc ? (
@@ -357,6 +447,20 @@ export function SourcesGroup({
                     </div>
                     <div className="source-card-actions">
                       <StatusBadge status={src.textStatus} />
+                      {isPlaceholder(src) && src.textStatus === "done" && (
+                        <button
+                          className="source-card-edit"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void identifyOne(src.id);
+                          }}
+                          disabled={oneBusy === src.id || identifying}
+                          title="Identify this source"
+                          aria-label="Identify this source"
+                        >
+                          <Sparkle size={12} weight="bold" />
+                        </button>
+                      )}
                       <button
                         className="source-card-edit"
                         onClick={(e) => {

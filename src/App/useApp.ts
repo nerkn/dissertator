@@ -58,12 +58,12 @@ export function useApp() {
   // P6: provider rows + their API keys live in the provider store (split out
   // of this hook). We subscribe to the data here so the derived per-function
   // keys below recompute; the Settings dialog reads the store directly, and
-  // the lifecycle effects (refresh on project open, keychain load) call the
+  // the lifecycle effects (refresh on project open, key load) call the
   // store actions further down.
   const providers = useProviderStore((s) => s.providers);
   const keys = useProviderStore((s) => s.keys);
   const refreshProviders = useProviderStore((s) => s.refreshProviders);
-  const loadKeysFromKeychain = useProviderStore((s) => s.loadKeysFromKeychain);
+  const loadKeys = useProviderStore((s) => s.loadKeys);
   // Citation card state: set when a manuscript chip is clicked but the
   // reference has no linked source file (fileless / unknown). Null otherwise.
   const [citationPopup, setCitationPopup] = useState<{
@@ -275,17 +275,17 @@ export function useApp() {
   }, [project?.initialized, project?.projectPath, refreshDocuments]);
 
   // P6: load provider rows when a project is open, then re-read their keys
-  // from the OS keychain. Both run in the provider store; this orchestrator
-  // only gates them on project lifecycle and re-runs the keychain load when
-  // the provider set changes.
+  // from the sidecar's global app DB. Both run in the provider store; this
+  // orchestrator only gates them on project lifecycle and re-runs the key
+  // load when the provider set changes.
   useEffect(() => {
     if (project?.initialized) void refreshProviders();
   }, [project?.initialized, project?.projectPath, refreshProviders]);
 
   useEffect(() => {
     if (providers.length === 0) return;
-    void loadKeysFromKeychain();
-  }, [providers, loadKeysFromKeychain]);
+    void loadKeys();
+  }, [providers, loadKeys]);
 
   // Derived: per-function API keys. Each function's binding points at a
   // provider whose `keyUser` slot holds its key. `apiKey`/`embeddingApiKey`

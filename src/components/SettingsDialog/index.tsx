@@ -4,7 +4,7 @@
 // `kind`, no `model` on a row — a provider is reusable across functions, and
 // `model` lives on the function binding. Add via a catalog quick-start
 // (PROVIDER_DEFS prefills apiUrl + a get-key link). Each row persists on Save
-// (PUT) and its key lives in the OS keychain under the row's `keyUser` slot.
+// (PUT) and its key lives in the sidecar's global app DB under the row's `keyUser` slot.
 //
 // FUNCTIONS: the wiring MATRIX — one row per AiFunction (chat/stt/vision_doc/
 // vision_image/embed). Each row picks a provider from the pool + a model

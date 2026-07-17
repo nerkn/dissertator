@@ -14,7 +14,8 @@ import {
   providerKeyUser,
   type ProviderRow,
 } from "@dissertator/shared";
-import { current, setChatProviderId } from "./_core.ts";
+import { setChatProviderId } from "./_core.ts";
+import { globalDb } from "./globalDb.ts";
 
 /** Snake_case shape of a `providers` DB row (no `kind`/`model` — those moved
  *  to function bindings). Mapped to the shared camelCase {@link ProviderRow}. */
@@ -111,8 +112,7 @@ export function seedProviders(db: Database): void {
 
 /** List all provider rows (the credential pool), oldest first. */
 export function listProviders(): ProviderRow[] {
-  if (!current) return [];
-  const rows = current.db
+  const rows = globalDb
     .prepare("SELECT * FROM providers ORDER BY created_at ASC")
     .all() as ProviderDbRow[];
   return rows.map(mapProvider);
@@ -120,8 +120,7 @@ export function listProviders(): ProviderRow[] {
 
 /** One provider row, or null. */
 export function getProvider(id: string): ProviderRow | null {
-  if (!current) return null;
-  const row = current.db
+  const row = globalDb
     .prepare("SELECT * FROM providers WHERE id = ?")
     .get(id) as ProviderDbRow | null;
   return row ? mapProvider(row) : null;
@@ -143,7 +142,6 @@ export interface ProviderInput {
 
 /** Create a provider row. Generates a uuid id + per-id keychain slot. */
 export function createProvider(input: ProviderInput): ProviderRow {
-  if (!current) throw new Error("no project initialized");
   const id = randomUUID();
   const def = PROVIDER_DEFS.find((p) => p.id === input.type);
   const row: ProviderDbRow = {
@@ -155,7 +153,7 @@ export function createProvider(input: ProviderInput): ProviderRow {
     is_default: 0,
     created_at: new Date().toISOString(),
   };
-  current.db
+  globalDb
     .prepare(
       "INSERT INTO providers(id, name, type, api_url, key_user, is_default, created_at) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
@@ -179,7 +177,6 @@ export function updateProvider(
   id: string,
   patch: Partial<Omit<ProviderInput, "keyUser">>,
 ): ProviderRow | null {
-  if (!current) return null;
   const existing = getProvider(id);
   if (!existing) return null;
   const next: ProviderDbRow = {
@@ -191,7 +188,7 @@ export function updateProvider(
     is_default: existing.isDefault ? 1 : 0,
     created_at: existing.createdAt,
   };
-  current.db
+  globalDb
     .prepare(
       "UPDATE providers SET name=?, type=?, api_url=?, is_default=? WHERE id=?",
     )
@@ -207,13 +204,12 @@ export function updateProvider(
  * provider is unbound, so no binding ever dangles.
  */
 export function deleteProvider(id: string): { ok: boolean; error?: string } {
-  if (!current) return { ok: false, error: "no project initialized" };
   const existing = getProvider(id);
   if (!existing) return { ok: false, error: "not found" };
   if (existing.type === TESSERACT_TYPE) {
     return { ok: false, error: "cannot delete the built-in Tesseract provider" };
   }
-  const bound = current.db
+  const bound = globalDb
     .prepare("SELECT 1 FROM function_bindings WHERE provider_id = ? LIMIT 1")
     .get(id);
   if (bound) {
@@ -222,7 +218,7 @@ export function deleteProvider(id: string): { ok: boolean; error?: string } {
       error: "rebind the function(s) using this provider before deleting it",
     };
   }
-  current.db.prepare("DELETE FROM providers WHERE id = ?").run(id);
+  globalDb.prepare("DELETE FROM providers WHERE id = ?").run(id);
   return { ok: true };
 }
 
@@ -233,20 +229,16 @@ export function deleteProvider(id: string): { ok: boolean; error?: string } {
  * provider/model change. Keeps the legacy dropdown and the binding in sync.
  */
 export function setEmbeddingProviderId(id: string): void {
-  if (!current) return;
-  current.db
+  globalDb
     .prepare(
       "INSERT INTO settings(key, value) VALUES ('embedding_provider_id', ?) " +
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
     )
     .run(id);
-  // Mirror into the embed binding WITHOUT re-vectorizing — this is the legacy
-  // UI path; the explicit setBinding path (Functions UI) re-vectorizes. Keep
-  // the current binding model if set, else blank.
-  const prev = current.db
+  const prev = globalDb
     .prepare("SELECT model FROM function_bindings WHERE function = 'embed'")
     .get() as { model?: string } | null;
-  current.db
+  globalDb
     .prepare(
       "INSERT INTO function_bindings(function, provider_id, model, updated_at) VALUES ('embed', ?, ?, ?) " +
         "ON CONFLICT(function) DO UPDATE SET provider_id = excluded.provider_id, " +

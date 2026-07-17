@@ -40,6 +40,7 @@ import {
   mapSourceFile,
   type SourceFileRow,
 } from "../db";
+import { detectReference } from "../cite/detect.ts";
 
 import { createQueue } from "./queue.ts";
 import { chunkExtracted, type ChunkOutput } from "./chunk.ts";
@@ -316,6 +317,19 @@ async function ingestFile(relPath: string): Promise<void> {
   // See docs/citekey.md §3.
   ensureReferenceForSource(id, refTitle(filename, ext));
   emit({ sourceFileId: id, status: "done" });
+
+  // Auto-identify (title/authors/year/DOI) in the background using the
+  // globally-stored chat key. Fire-and-forget so it never blocks the queue;
+  // the free stages (PDF /info + DOI/Crossref) run first, the LLM stage only
+  // for sources they miss. Documents only (pdf/docx/xlsx/text) — images
+  // aren't papers. Re-emit "done" on success so the UI refreshes the display.
+  if (kind !== "image") {
+    void detectReference(id)
+      .then((res) => {
+        if (res.found) emit({ sourceFileId: id, status: "done" });
+      })
+      .catch(() => {});
+  }
 }
 
 /** Mark a row failed + emit. */

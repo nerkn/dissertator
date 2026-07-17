@@ -13,7 +13,7 @@ export const providersApi = {
   // --- Providers (P6) ------------------------------------------------------
   // Named, user-editable provider rows. The frontend builds the list; the
   // Functions tab assigns chat-kind → chat, embedding-kind → vectorizer.
-  // Keys live in the OS keychain under each row's keyUser (frontend-managed).
+  // Keys live in the sidecar's global app DB under each row's keyUser.
 
   listProviders: () => req<ProviderRow[]>("/providers"),
   createProvider: (input: {
@@ -77,5 +77,19 @@ export const providersApi = {
     req<FunctionTestResult>(`/functions/${fn}/test`, {
       method: "POST",
       headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+    }),
+
+  // --- Keys (global, app-wide) -------------------------------------------
+  // API keys live in the sidecar's global DB (~/.dissertator/app.db), so
+  // background jobs (ingest auto-identify) can use them.
+
+  /** All stored keys, keyed by provider keyUser slot. */
+  listKeys: () => req<Record<string, string>>("/keys"),
+
+  /** Store (or clear, when value is "") a provider's key. */
+  setKey: (keyUser: string, value: string) =>
+    req<{ ok: true }>(`/keys/${encodeURIComponent(keyUser)}`, {
+      method: "PUT",
+      body: JSON.stringify({ value }),
     }),
 };
