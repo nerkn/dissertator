@@ -11,16 +11,22 @@ import {
   CaretDown,
   CaretRight,
   Gear,
+  PencilSimple,
 } from "@phosphor-icons/react";
 import type {
   EmbeddingStatus,
   ProjectStatus,
+  Reference,
   SourceFile,
   SourcesResponse,
 } from "@dissertator/shared";
 import { api } from "../../lib/api";
+import { fmtAuthors } from "../ReferenceFields";
+import { ReferenceEditDialog } from "../ReferenceEditDialog";
 import { StatusBadge } from "../StatusBadge";
 import { kindDotClass } from "./_shared";
+
+type SortKey = "name" | "filecdate" | "author" | "publishyear";
 
 interface Props {
   project: ProjectStatus;
@@ -55,6 +61,9 @@ export function SourcesGroup({
   const [embed, setEmbed] = useState<EmbeddingStatus | null>(null);
   const [embedBusy, setEmbedBusy] = useState(false);
   const [embedError, setEmbedError] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<SortKey>("name");
+  const [refsById, setRefsById] = useState<Map<string, Reference>>(new Map());
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   // Aggregate embedding progress (5s poll). Cheap; drives the one-line
   // summary in the header + the status block. Per-file embed status isn't
@@ -76,6 +85,20 @@ export function SourcesGroup({
       clearInterval(id);
     };
   }, [project.initialized]);
+
+  const reloadRefs = useCallback(async () => {
+    try {
+      const refs = await api.listReferences();
+      const m = new Map<string, Reference>();
+      for (const r of refs) if (r.source_file_id) m.set(r.source_file_id, r);
+      setRefsById(m);
+    } catch {
+    }
+  }, []);
+  useEffect(() => {
+    if (!project.initialized) return;
+    void reloadRefs();
+  }, [project.initialized, sources, reloadRefs]);
 
   // "Embed now": push all pending chunks through the embedding provider.
   // Requires the embedding key. A missing key is caught up front with an
@@ -103,16 +126,43 @@ export function SourcesGroup({
   // Sorted + filtered source list (substring on filename + relPath).
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const items = (sources?.items ?? [])
-      .slice()
-      .sort((a, b) => a.filename.localeCompare(b.filename));
+    const refFor = (s: SourceFile) => refsById.get(s.id);
+    const cmp = (a: SourceFile, b: SourceFile): number => {
+      switch (sortBy) {
+        case "filecdate":
+          return b.addedAt - a.addedAt || a.filename.localeCompare(b.filename);
+        case "author": {
+          const fa = refFor(a)?.authors.find((x) => x.family)?.family ?? "";
+          const fb = refFor(b)?.authors.find((x) => x.family)?.family ?? "";
+          if (!fa && !fb) return a.filename.localeCompare(b.filename);
+          if (!fa) return 1;
+          if (!fb) return -1;
+          return fa.localeCompare(fb) || a.filename.localeCompare(b.filename);
+        }
+        case "publishyear": {
+          const ya = refFor(a)?.year ?? 0;
+          const yb = refFor(b)?.year ?? 0;
+          return yb - ya || a.filename.localeCompare(b.filename);
+        }
+        case "name":
+        default:
+          return a.filename.localeCompare(b.filename);
+      }
+    };
+    const items = (sources?.items ?? []).slice().sort(cmp);
     if (!q) return items;
-    return items.filter(
-      (s) =>
+    return items.filter((s) => {
+      const r = refFor(s);
+      return (
         s.filename.toLowerCase().includes(q) ||
-        s.relPath.toLowerCase().includes(q),
-    );
-  }, [sources, query]);
+        s.relPath.toLowerCase().includes(q) ||
+        (r?.title ?? "").toLowerCase().includes(q) ||
+        (r && r.authors.length > 0 ? fmtAuthors(r.authors) : "")
+          .toLowerCase()
+          .includes(q)
+      );
+    });
+  }, [sources, query, sortBy, refsById]);
 
   const c = project.counts;
   const sc = sources?.counts;
@@ -240,26 +290,108 @@ export function SourcesGroup({
       )}
 
       {expanded && (
-        <div className="source-tree">
-          {filtered.length === 0 ? (
-            <div className="muted small source-tree-empty">
-              {query ? "No matching sources." : "No sources yet."}
-            </div>
-          ) : (
-            filtered.map((src) => (
-              <div
-                key={src.id}
-                className="source-row"
-                title={src.relPath}
-                onClick={() => onOpen?.(src)}
-              >
-                <span className={`source-dot ${kindDotClass(src.kind)}`} />
-                <span className="source-name">{src.filename}</span>
-                <StatusBadge status={src.textStatus} />
+        <>
+          <div className="source-sort">
+            <span className="muted small">Sort</span>
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as SortKey)}
+            >
+              <option value="name">Name</option>
+              <option value="filecdate">Date added</option>
+              <option value="author">Author</option>
+              <option value="publishyear">Year</option>
+            </select>
+          </div>
+          <div className="source-tree">
+            {filtered.length === 0 ? (
+              <div className="muted small source-tree-empty">
+                {query ? "No matching sources." : "No sources yet."}
               </div>
-            ))
-          )}
-        </div>
+            ) : (
+              filtered.map((src) => {
+                const ref = refsById.get(src.id);
+                const title = ref?.title?.trim() || src.filename;
+                const author =
+                  ref && ref.authors.length > 0 ? fmtAuthors(ref.authors) : "";
+                const year = ref?.year ?? null;
+                return (
+                  <div
+                    key={src.id}
+                    className="source-card"
+                    onClick={() => onOpen?.(src)}
+                  >
+                    <div className="source-card-main">
+                      <span
+                        className={`source-dot ${kindDotClass(src.kind)}`}
+                      />
+                      <div className="source-card-text">
+                        <div className="source-card-title">{title}</div>
+                        {(author || year != null) && (
+                          <div className="source-card-sub">
+                            {author && (
+                              <span className="source-card-author">
+                                {author}
+                              </span>
+                            )}
+                            {year != null && (
+                              <span className="source-card-year">{year}</span>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div className="source-card-actions">
+                      <StatusBadge status={src.textStatus} />
+                      <button
+                        className="source-card-edit"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingId(src.id);
+                        }}
+                        title="Edit details"
+                        aria-label="Edit details"
+                      >
+                        <PencilSimple size={12} weight="bold" />
+                      </button>
+                    </div>
+                    <div className="source-card-popover">
+                      <div className="source-card-popover-title">{title}</div>
+                      {author && (
+                        <div className="source-card-popover-row">{author}</div>
+                      )}
+                      <div className="source-card-popover-row muted small">
+                        {[
+                          year != null ? String(year) : null,
+                          ref?.venue,
+                          src.pageCount ? `${src.pageCount}p` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </div>
+                      {ref?.doi && (
+                        <div className="source-card-popover-row muted small">
+                          DOI: {ref.doi}
+                        </div>
+                      )}
+                      <div className="source-card-popover-row muted small file">
+                        {src.relPath}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </>
+      )}
+
+      {editingId && (
+        <ReferenceEditDialog
+          sourceId={editingId}
+          onClose={() => setEditingId(null)}
+          onChanged={reloadRefs}
+        />
       )}
     </div>
   );
