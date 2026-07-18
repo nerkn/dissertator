@@ -10,6 +10,7 @@ import {
   ArrowsClockwise,
   CaretDown,
   CaretRight,
+  CircleNotch,
   Gear,
   PencilSimple,
   Sparkle,
@@ -118,19 +119,31 @@ export function SourcesGroup({
     total: number;
   } | null>(null);
   const [oneBusy, setOneBusy] = useState<string | null>(null);
+  const [oneResult, setOneResult] = useState<
+    { id: string; ok: boolean } | null
+  >(null);
+
+  const flashResult = useCallback((id: string, ok: boolean) => {
+    setOneResult({ id, ok });
+    window.setTimeout(() => {
+      setOneResult((cur) => (cur && cur.id === id ? null : cur));
+    }, 2500);
+  }, []);
 
   const identifyOne = useCallback(
     async (id: string) => {
       setOneBusy(id);
       try {
-        await api.detectReference(id, chatKey);
+        const res = await api.detectReference(id, chatKey);
         await reloadRefs();
+        flashResult(id, res.found && res.source !== "none");
       } catch {
+        flashResult(id, false);
       } finally {
         setOneBusy(null);
       }
     },
-    [chatKey, reloadRefs],
+    [chatKey, reloadRefs, flashResult],
   );
 
   const identifyAll = useCallback(async () => {
@@ -448,18 +461,55 @@ export function SourcesGroup({
                     <div className="source-card-actions">
                       <StatusBadge status={src.textStatus} />
                       {isPlaceholder(src) && src.textStatus === "done" && (
-                        <button
-                          className="source-card-edit"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            void identifyOne(src.id);
-                          }}
-                          disabled={oneBusy === src.id || identifying}
-                          title="Identify this source"
-                          aria-label="Identify this source"
-                        >
-                          <Sparkle size={12} weight="bold" />
-                        </button>
+                        (() => {
+                          const busy = oneBusy === src.id;
+                          const result =
+                            oneResult && oneResult.id === src.id
+                              ? oneResult
+                              : null;
+                          if (busy) {
+                            return (
+                              <span
+                                className="source-card-identify working"
+                                title="Identifying…"
+                                aria-label="Identifying"
+                              >
+                                <CircleNotch size={12} weight="bold" />
+                              </span>
+                            );
+                          }
+                          if (result) {
+                            return (
+                              <span
+                                className={`source-card-identify ${result.ok ? "ok" : "fail"}`}
+                                title={
+                                  result.ok
+                                    ? "Identified"
+                                    : "No metadata found"
+                                }
+                                aria-label={
+                                  result.ok ? "Identified" : "No metadata found"
+                                }
+                              >
+                                {result.ok ? "✓" : "✗"}
+                              </span>
+                            );
+                          }
+                          return (
+                            <button
+                              className="source-card-edit"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                void identifyOne(src.id);
+                              }}
+                              disabled={identifying}
+                              title="Identify this source"
+                              aria-label="Identify this source"
+                            >
+                              <Sparkle size={12} weight="bold" />
+                            </button>
+                          );
+                        })()
                       )}
                       <button
                         className="source-card-edit"
