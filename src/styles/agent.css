@@ -222,13 +222,6 @@
   border-color: rgba(234, 179, 8, 0.5);
   background: rgba(234, 179, 8, 0.08);
 }
-.embed-box.ready {
-  border-color: rgba(34, 197, 94, 0.45);
-  background: rgba(34, 197, 94, 0.08);
-  flex-direction: row;
-  align-items: center;
-  justify-content: space-between;
-}
 .embed-box-head {
   display: flex;
   align-items: center;
@@ -239,9 +232,6 @@
   font-size: 12px;
   font-weight: 600;
   color: var(--text);
-}
-.embed-box.ready .embed-box-title {
-  color: #86efac;
 }
 .embed-box-sub {
   line-height: 1.4;

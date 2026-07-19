@@ -186,6 +186,15 @@
   opacity: 0.5;
   cursor: default;
 }
+.sources-menu-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: #86efac;
+  white-space: nowrap;
+}
 .count-popover-trigger {
   position: relative;
   cursor: default;
@@ -239,7 +248,7 @@
   transition: background 0.12s;
 }
 .source-row:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--panel-2);
 }
 .source-row .source-name {
   flex: 1;
@@ -309,7 +318,7 @@
   margin-top: 1px;
 }
 .source-card:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--panel-2);
 }
 .source-card-main {
   display: flex;
@@ -327,7 +336,7 @@
 }
 .source-card-title {
   font-size: 12.5px;
-  font-weight: 600;
+  font-weight: 400;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -372,7 +381,7 @@
   opacity: 1;
 }
 .source-card-edit:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--panel-3);
   color: var(--text);
 }
 .source-card-identify {

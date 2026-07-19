@@ -31,12 +31,17 @@ import "@milkdown/theme-nord/style.css";
 
 import { useEffect, useState } from "react";
 import { MilkdownProvider } from "@milkdown/react";
-import type { Document } from "@dissertator/shared";
 import { api } from "../../lib/api";
 import { EditorInner } from "./EditorInner";
 import type { CitationClickHandler } from "./_shared";
 
 interface Props {
+  /** When "document" (default), `documentId` is a Document id loaded via
+   *  GET /documents/:id and autosaved via PUT /documents/:id. When "source",
+   *  `documentId` is a SourceFile id loaded via GET /sources/:id/markdown and
+   *  autosaved via PUT /sources/:id/markdown (writes the .md file to disk +
+   *  re-ingests). This makes .md source files editable manuscripts. */
+  mode?: "document" | "source";
   documentId: string;
   /** P5: bumps whenever the agent edits this document. The editor refetches
    *  on change and live-swaps the body via `replaceAll` when it has no unsaved
@@ -47,8 +52,19 @@ interface Props {
   onCitationClick?: CitationClickHandler;
 }
 
-export function ManuscriptEditor({ documentId, revision = 0, onCitationClick }: Props) {
-  const [doc, setDoc] = useState<Document | null>(null);
+interface LoadedDoc {
+  id: string;
+  title: string;
+  bodyMd: string;
+}
+
+export function ManuscriptEditor({
+  mode = "document",
+  documentId,
+  revision = 0,
+  onCitationClick,
+}: Props) {
+  const [doc, setDoc] = useState<LoadedDoc | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -59,7 +75,10 @@ export function ManuscriptEditor({ documentId, revision = 0, onCitationClick }: 
     setDoc(null);
     (async () => {
       try {
-        const d = await api.getDocument(documentId);
+        const d =
+          mode === "source"
+            ? await api.getSourceMarkdown(documentId)
+            : await api.getDocument(documentId);
         if (aborted) return;
         setDoc(d);
         setLoading(false);
@@ -72,7 +91,7 @@ export function ManuscriptEditor({ documentId, revision = 0, onCitationClick }: 
     return () => {
       aborted = true;
     };
-  }, [documentId, revision]);
+  }, [documentId, mode, revision]);
 
   if (loading) return <div className="editor-status">Loading document…</div>;
   if (error)
@@ -82,6 +101,7 @@ export function ManuscriptEditor({ documentId, revision = 0, onCitationClick }: 
   return (
     <MilkdownProvider>
       <EditorInner
+        mode={mode}
         document={doc}
         initialMarkdown={doc.bodyMd ?? ""}
         onCitationClick={onCitationClick}

@@ -14,7 +14,6 @@ import { listener, listenerCtx } from "@milkdown/kit/plugin/listener";
 import { nord } from "@milkdown/theme-nord";
 import type { MilkdownPlugin } from "@milkdown/kit/ctx";
 import { replaceAll, insert } from "@milkdown/kit/utils";
-import type { Document } from "@dissertator/shared";
 import { api } from "../../lib/api";
 import { promptDialog } from "../../lib/stores/dialogs";
 import {
@@ -27,14 +26,26 @@ import { StatusBar } from "./StatusBar";
 import type { CitationClickHandler, SaveState } from "./_shared";
 
 interface InnerProps {
-  document: Document;
+  mode: "document" | "source";
+  document: { id: string; title: string };
   initialMarkdown: string;
   onCitationClick?: CitationClickHandler;
 }
 
-const AUTOSAVE_DEBOUNCE_MS = 800;
+// Source mode (.md files on disk) uses a longer debounce than document mode:
+// every save triggers a sidecar re-ingest (rechunk + embedding invalidation),
+// so coalescing bursts of typing into one write avoids corpus thrash.
+const AUTOSAVE_DEBOUNCE_MS_DOC = 800;
+const AUTOSAVE_DEBOUNCE_MS_SOURCE = 3000;
+// Must match sidecar routes/sources.ts REINGEST_SETTLE_MS: after a source-mode
+// save lands, the on-disk content is ahead of the indexed chunks until the
+// settle timer fires `enqueuePath`. We surface that gap to the user as a
+// "chunks dirty" indicator in the status bar.
+const REINGEST_SETTLE_MS = 10000;
 
-export function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps) {
+export function EditorInner({ mode, document, initialMarkdown, onCitationClick }: InnerProps) {
+  const autosaveDebounceMs =
+    mode === "source" ? AUTOSAVE_DEBOUNCE_MS_SOURCE : AUTOSAVE_DEBOUNCE_MS_DOC;
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [showSource, setShowSource] = useState<boolean>(false);
   // P5: the agent edited this doc while we had unsaved local changes. Show a
@@ -48,6 +59,11 @@ export function EditorInner({ document, initialMarkdown, onCitationClick }: Inne
   // Undo/redo state (whether they're available)
   const [canUndo, setCanUndo] = useState<boolean>(false);
   const [canRedo, setCanRedo] = useState<boolean>(false);
+  // Source mode only: true while the on-disk .md is ahead of its indexed
+  // chunks (i.e. a save has landed but the sidecar's settle timer hasn't
+  // fired `enqueuePath` yet). Drives a "chunks dirty" status-bar indicator.
+  const [chunksDirty, setChunksDirty] = useState<boolean>(false);
+  const chunksDirtyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Latest markdown + pending timer, in refs so the Milkdown factory closure
   // (created once) always reads current values without re-creating the editor.
@@ -66,13 +82,27 @@ export function EditorInner({ document, initialMarkdown, onCitationClick }: Inne
     async (md: string) => {
       setSaveState("saving");
       try {
-        await api.updateDocument(document.id, { bodyMd: md });
+        if (mode === "source") {
+          await api.updateSourceMarkdown(document.id, md);
+          // The sidecar schedules a settled reingest (REINGEST_SETTLE_MS);
+          // until it fires, indexed chunks are stale. Surface that window to
+          // the user. Each successive save resets the timer so a burst of
+          // edits keeps the indicator lit until typing truly pauses.
+          setChunksDirty(true);
+          if (chunksDirtyTimer.current) clearTimeout(chunksDirtyTimer.current);
+          chunksDirtyTimer.current = setTimeout(() => {
+            chunksDirtyTimer.current = null;
+            setChunksDirty(false);
+          }, REINGEST_SETTLE_MS);
+        } else {
+          await api.updateDocument(document.id, { bodyMd: md });
+        }
         setSaveState("saved");
       } catch {
         setSaveState("error");
       }
     },
-    [document.id],
+    [mode, document.id],
   );
 
   // Record the freshly-saved body so a revision bump comparing against it can
@@ -99,7 +129,7 @@ export function EditorInner({ document, initialMarkdown, onCitationClick }: Inne
       saveTimer.current = setTimeout(() => {
         saveTimer.current = null;
         void doSaveWithTrack(latestMd.current);
-      }, AUTOSAVE_DEBOUNCE_MS);
+      }, autosaveDebounceMs);
     },
     [doSaveWithTrack],
   );
@@ -115,6 +145,10 @@ export function EditorInner({ document, initialMarkdown, onCitationClick }: Inne
         clearTimeout(saveTimer.current);
         saveTimer.current = null;
         void doSaveWithTrack(latestMd.current);
+      }
+      if (chunksDirtyTimer.current) {
+        clearTimeout(chunksDirtyTimer.current);
+        chunksDirtyTimer.current = null;
       }
     };
   }, [doSaveWithTrack]);
@@ -437,7 +471,7 @@ export function EditorInner({ document, initialMarkdown, onCitationClick }: Inne
           <EditorPage onCitationClick={onCitationClick} />
         )}
       </div>
-      <StatusBar saveState={saveState} docStats={docStats} />
+      <StatusBar saveState={saveState} docStats={docStats} chunksDirty={chunksDirty} />
       {notice && (
         <div className={`editor-toast ${notice.kind}`}>{notice.msg}</div>
       )}

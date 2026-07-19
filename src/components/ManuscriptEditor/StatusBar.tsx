@@ -25,9 +25,13 @@ function SavePip({ state }: { state: SaveState }) {
 interface StatusBarProps {
   saveState: SaveState;
   docStats: { words: number; chars: number };
+  /** Source mode only: true while the on-disk .md is ahead of its indexed
+   *  chunks (a save landed but the sidecar's settle timer hasn't fired the
+   *  trailing reingest yet). */
+  chunksDirty?: boolean;
 }
 
-function StatusBar({ saveState, docStats }: StatusBarProps) {
+function StatusBar({ saveState, docStats, chunksDirty }: StatusBarProps) {
   const map: Record<SaveState, { label: string; icon: string }> = {
     idle: { label: "All changes saved", icon: "✓" },
     dirty: { label: "Unsaved changes", icon: "●" },
@@ -45,6 +49,11 @@ function StatusBar({ saveState, docStats }: StatusBarProps) {
         <span className="status-text">{m.label}</span>
       </div>
       <div className="statusbar-right">
+        {chunksDirty && (
+          <span className="stat-item chunks-dirty" title="The file has unsaved edits waiting to be re-indexed into the corpus.">
+            ◑ reindexing soon
+          </span>
+        )}
         <span className="stat-item">{docStats.words.toLocaleString()} words</span>
         <span className="stat-divider">|</span>
         <span className="stat-item">{docStats.chars.toLocaleString()} characters</span>

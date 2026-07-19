@@ -25,9 +25,10 @@ import { ProvidersTab } from "./ProvidersTab";
 import { FunctionsTab } from "./FunctionsTab";
 import { PromptsTab } from "./PromptsTab";
 import { AgentTab } from "./AgentTab";
+import { AppearanceTab } from "./AppearanceTab";
 import { useProviderStore } from "../../lib/stores/providers";
 
-type TabId = "providers" | "functions" | "prompts" | "agent";
+type TabId = "providers" | "functions" | "prompts" | "agent" | "appearance";
 
 interface Props {
   settings: Settings;
@@ -77,6 +78,9 @@ export function SettingsDialog({
           <TabButton active={tab === "agent"} onClick={() => setTab("agent")}>
             Agent
           </TabButton>
+          <TabButton active={tab === "appearance"} onClick={() => setTab("appearance")}>
+            Appearance
+          </TabButton>
         </div>
 
         <div className="settings-tab-body">
@@ -98,6 +102,7 @@ export function SettingsDialog({
           )}
           {tab === "prompts" && <PromptsTab />}
           {tab === "agent" && <AgentTab apiKey={apiKey} />}
+          {tab === "appearance" && <AppearanceTab />}
         </div>
 
         <div className="actions">

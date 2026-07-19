@@ -22,6 +22,25 @@ export const sourcesApi = {
       `/sources/${encodeURIComponent(id)}/text`,
     ),
 
+  /** Raw markdown body of a .md source (read straight from disk; no page
+   *  markers). The manuscript editor loads this so .md files become editable
+   *  manuscripts. Only valid for sources whose `mimeType === "text/markdown"` */
+  getSourceMarkdown: (id: string) =>
+    req<{
+      id: string;
+      filename: string;
+      title: string;
+      bodyMd: string;
+    }>(`/sources/${encodeURIComponent(id)}/markdown`),
+
+  /** Write the markdown body of a .md source back to disk; the sidecar
+   *  re-ingests the file so chunks/embeddings/content_hash stay fresh. */
+  updateSourceMarkdown: (id: string, bodyMd: string) =>
+    req<{ ok: true; id: string }>(
+      `/sources/${encodeURIComponent(id)}/markdown`,
+      { method: "PUT", body: JSON.stringify({ bodyMd }) },
+    ),
+
   /** Force a rescan of the project root; returns count of newly enqueued files. */
   rescan: () => req<{ enqueued: number }>("/ingest", { method: "POST" }),
 

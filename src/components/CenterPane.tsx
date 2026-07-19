@@ -216,9 +216,13 @@ export function CenterPane({
             ones with `display:none`, so switching to a PDF and back preserves
             cursor, scroll, and undo history. Closing a tab removes it from
             this list, which unmounts it (ManuscriptEditor flushes any pending
-            autosave on unmount). */}
+            autosave on unmount).
+
+            Both `doc` (a Document in the DB) and `md-source` (a .md source
+            file edited in place on disk) render through ManuscriptEditor —
+            only the load/save backend differs. */}
         {tabs
-          .filter((t) => t.kind === "doc")
+          .filter((t) => t.kind === "doc" || t.kind === "md-source")
           .map((t) => {
             const visible = t.sourceId === activeTabId;
             return (
@@ -229,6 +233,7 @@ export function CenterPane({
                 aria-hidden={!visible}
               >
                 <ManuscriptEditor
+                  mode={t.kind === "md-source" ? "source" : "document"}
                   documentId={t.sourceId}
                   revision={docRevisions?.[t.sourceId] ?? 0}
                   onCitationClick={onCitationClick}

@@ -161,7 +161,7 @@ export function registerChats(app: Hono): void {
           },
           { role: "user", content: transcript },
         ],
-        maxTokens: 24,
+        maxTokens: 1024,
         temperature: 0.3,
       });
       const title = sanitizeTitle(raw);

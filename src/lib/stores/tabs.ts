@@ -41,7 +41,7 @@ export const useTabsStore = create<TabsState>((set) => ({
             ...s.tabs,
             {
               sourceId: src.id,
-              kind: kindForSource(src.kind),
+              kind: kindForSource(src),
               title: src.filename,
               filename: src.filename,
             },
@@ -62,7 +62,7 @@ export const useTabsStore = create<TabsState>((set) => ({
             ...s.tabs,
             {
               sourceId: src.id,
-              kind: kindForSource(src.kind),
+              kind: kindForSource(src),
               title: src.filename,
               filename: src.filename,
               initialPage: page,

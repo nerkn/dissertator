@@ -7,6 +7,7 @@
 // groups are simple enough to stay inline.
 
 import { useState } from "react";
+import { CaretDown, CaretRight } from "@phosphor-icons/react";
 import type {
   Document,
   OcrStrategy,
@@ -73,6 +74,7 @@ export function LibraryPanel({
 }: Props) {
   // Panel-level search query; currently filters the Sources group only.
   const [query, setQuery] = useState("");
+  const [docsOpen, setDocsOpen] = useState(false);
 
   const sources = useContentStore((s) => s.sources);
   const documents = useContentStore((s) => s.documents);
@@ -91,7 +93,6 @@ export function LibraryPanel({
     );
   }
 
-  const c = project.counts;
   const attentionItems = (sources?.items ?? []).filter((i) =>
     ATTENTION_STATUSES.includes(i.textStatus),
   );
@@ -121,7 +122,18 @@ export function LibraryPanel({
 
       <div className="group yellow">
         <div className="group-head group-head-row">
-          <span>🟡 Documents</span>
+          <span
+            className="group-head-toggle"
+            onClick={() => setDocsOpen((v) => !v)}
+            title="Your papers & dissertations"
+          >
+            {docsOpen ? (
+              <CaretDown size={13} weight="bold" />
+            ) : (
+              <CaretRight size={13} weight="bold" />
+            )}
+            🟡 Documents
+          </span>
           {onNewDocument && (
             <button
               className="btn ghost tiny-btn"
@@ -132,33 +144,41 @@ export function LibraryPanel({
             </button>
           )}
         </div>
-        <div className="count">{(documents ?? []).length} drafts</div>
-        <div className="muted small">Your papers &amp; dissertations</div>
-        {(documents ?? []).length > 0 && (
-          <div className="source-tree">
-            {(documents ?? []).map((d) => (
-              <div
-                key={d.id}
-                className="source-row"
-                title={d.title}
-                onClick={() => onOpenDocument?.(d)}
-              >
-                <span className="source-dot doc" />
-                <span className="source-name">{d.title}</span>
-              </div>
-            ))}
-          </div>
-        )}
+        {docsOpen &&
+          ((documents ?? []).length > 0 ? (
+            <div className="source-tree">
+              {(documents ?? []).map((d) => (
+                <div
+                  key={d.id}
+                  className="source-row"
+                  title={d.title}
+                  onClick={() => onOpenDocument?.(d)}
+                >
+                  <span className="source-dot doc" />
+                  <span className="source-name">{d.title}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="muted small source-tree-empty">
+              No documents yet.
+            </div>
+          ))}
       </div>
 
-      <div
-        className="group purple clickable"
-        onClick={onOpenReferences}
-        title={onOpenReferences ? "Open the bibliography manager" : ""}
-      >
-        <div className="group-head">📒 References</div>
-        <div className="count">{c.references} entries</div>
-        <div className="muted small">APA bibliography (citeproc)</div>
+      <div className="group purple">
+        <div className="group-head group-head-row">
+          <span title="APA bibliography (citeproc)">📒 References</span>
+          {onOpenReferences && (
+            <button
+              className="btn ghost tiny-btn"
+              onClick={onOpenReferences}
+              title="Open the bibliography manager"
+            >
+              Open
+            </button>
+          )}
+        </div>
       </div>
 
       <ListsGroup sources={sources} onOpenNote={onOpenNote} />

@@ -23,7 +23,7 @@
 // `kindForSource`: anything that isn't a PDF or image becomes a text view
 // (docx/xlsx/text/markdown/unsupported all show their extracted text).
 
-export type TabKind = "pdf" | "image" | "text" | "doc" | "references";
+export type TabKind = "pdf" | "image" | "text" | "doc" | "md-source" | "references";
 
 /** Sentinel id for the singleton References-manager tab (kind "references").
  *  Not a UUID, so it can never collide with a source/doc id. */
@@ -45,11 +45,17 @@ export interface Tab {
 
 /**
  * Map an ingest-layer file `kind` ("pdf" | "docx" | ...) to a viewer TabKind.
- * PDFs render via pdf.js; images via <img>; everything else (docx, xlsx,
- * text, markdown, even unsupported) renders its extracted text.
+ * PDFs render via pdf.js; images via <img>; markdown files become editable
+ * manuscripts (ManuscriptEditor in source mode); everything else (docx,
+ * xlsx, text, even unsupported) renders its extracted text read-only.
  */
-export function kindForSource(kind: string): TabKind {
-  if (kind === "pdf") return "pdf";
-  if (kind === "image") return "image";
+export function kindForSource(src: {
+  kind: string;
+  ext: string;
+}): TabKind {
+  if (src.kind === "pdf") return "pdf";
+  if (src.kind === "image") return "image";
+  const ext = src.ext.toLowerCase();
+  if (ext === "md" || ext === "markdown") return "md-source";
   return "text";
 }

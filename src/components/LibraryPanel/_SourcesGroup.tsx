@@ -10,6 +10,7 @@ import {
   ArrowsClockwise,
   CaretDown,
   CaretRight,
+  CheckCircle,
   CircleNotch,
   DotsThreeVertical,
   Gear,
@@ -63,7 +64,7 @@ export function SourcesGroup({
   onOpen,
   onOpenSettings,
 }: Props) {
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [embed, setEmbed] = useState<EmbeddingStatus | null>(null);
   // Optimistic flag covering the ≤5s gap between clicking "Embed now" and the
   // poll reflecting `embed.running`. Cleared once the poll confirms running
@@ -349,6 +350,12 @@ export function SourcesGroup({
                 className="sources-menu"
                 onClick={(e) => e.stopPropagation()}
               >
+                {embedReady && (
+                  <div className="sources-menu-info" title="All chunks embedded — semantic search ready">
+                    <CheckCircle size={13} weight="bold" />
+                    corpus embedded
+                  </div>
+                )}
                 {onRescan && (
                   <button
                     className="sources-menu-item"
@@ -378,31 +385,6 @@ export function SourcesGroup({
                 </button>
               </div>
             </>
-          )}
-        </div>
-      </div>
-      <div className="count count-popover-trigger" tabIndex={0}>
-        {sourceCount} files
-        <div className="count-popover">
-          {sc ? (
-            <>
-              <div className="count-popover-row">
-                {doneCount} done
-                {extractingCount ? `, ${extractingCount} extracting` : ""}
-                {needsOcrCount ? `, ${needsOcrCount} need OCR` : ""}
-                {failedCount ? `, ${failedCount} failed` : ""}
-              </div>
-              {embedLine && (
-                <div className="count-popover-row muted">{embedLine}</div>
-              )}
-              {embedReady && (
-                <div className="count-popover-row muted">✓ corpus embedded</div>
-              )}
-            </>
-          ) : (
-            <div className="count-popover-row muted">
-              PDFs, DOCX, XLSX, CSV, MD, TXT, images
-            </div>
           )}
         </div>
       </div>
@@ -452,12 +434,7 @@ export function SourcesGroup({
           {embedError && <div className="embed-box-error">{embedError}</div>}
         </div>
       )}
-      {embedReady && (
-        <div className="embed-box ready">
-          <span className="embed-box-title">✓ corpus embedded</span>
-          <span className="muted small">semantic search ready</span>
-        </div>
-      )}
+
 
       {expanded && (
         <>
@@ -607,6 +584,32 @@ export function SourcesGroup({
           </div>
         </>
       )}
+
+      <div className="count count-popover-trigger" tabIndex={0}>
+        {sourceCount} files
+        <div className="count-popover">
+          {sc ? (
+            <>
+              <div className="count-popover-row">
+                {doneCount} done
+                {extractingCount ? `, ${extractingCount} extracting` : ""}
+                {needsOcrCount ? `, ${needsOcrCount} need OCR` : ""}
+                {failedCount ? `, ${failedCount} failed` : ""}
+              </div>
+              {embedLine && (
+                <div className="count-popover-row muted">{embedLine}</div>
+              )}
+              {embedReady && (
+                <div className="count-popover-row muted">✓ corpus embedded</div>
+              )}
+            </>
+          ) : (
+            <div className="count-popover-row muted">
+              PDFs, DOCX, XLSX, CSV, MD, TXT, images
+            </div>
+          )}
+        </div>
+      </div>
 
       {editingId && (
         <ReferenceEditDialog

@@ -142,6 +142,10 @@
   color: var(--muted);
   font-variant-numeric: tabular-nums;
 }
+.stat-item.chunks-dirty {
+  color: var(--accent, #d97706);
+  animation: pulse 1.4s ease-in-out infinite;
+}
 .stat-divider {
   color: var(--border);
 }
