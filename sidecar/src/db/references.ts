@@ -1,11 +1,11 @@
 // References (P2 Track 3): CRUD + citekey assignment.
 //
-// The `references` table is the citation index. A citekey is FROZEN after
-// first assignment (DESIGN.md §8 decision #9): `upsertReference` regenerates
-// it ONLY when an incoming reference has none, and never overwrites an
-// existing one. Collisions (`smith2020` twice) are resolved by appending a
-// BibTeX-style alpha suffix (`b`, `c`, …; the bare key plays the role of
-// `a`) at insert time — the DB UNIQUE constraint is authoritative.
+// The `references` table is the citation index. `upsertReference`
+// regenerates the citekey from author/year/title on every write and rewrites
+// matching `[@citekey]` tokens across manuscript bodies when the key changes.
+// Collisions (`smith2020` twice) are resolved by appending a BibTeX-style
+// alpha suffix (`b`, `c`, …; the bare key plays the role of `a`) — the DB
+// UNIQUE constraint is authoritative.
 // No LEFT JOIN to `source_files` is needed: the only FK is `source_file_id`,
 // filtered directly when requested.
 
@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { type Author, type Reference } from "@dissertator/shared";
 import { alphaSuffix, generateCitekey } from "../cite/citekey.ts";
 import { current } from "./_core.ts";
+import { rewriteCitekeyInBodies } from "./documents.ts";
 
 /**
  * Snake_case shape of a `references` row as returned by `bun:sqlite`.
@@ -137,9 +138,10 @@ export function mapReference(row: ReferenceRow): Reference {
  * If `ref.id` is present and an existing row matches, the row is UPDATED
  * field-by-field (missing fields preserve their DB value); otherwise a new
  * row is INSERTed with a fresh `crypto.randomUUID()`. Citekey handling:
- *   - If `ref.citekey` is supplied, it is used (and de-collided if taken).
- *   - Else if updating an existing row, the existing citekey is preserved
- *     (FROZEN — DESIGN.md §8 decision #9; tokens in docs never break).
+ *   - If updating an existing row, the citekey is regenerated from the
+ *     merged author/year/title; if it changed, `[@citekey]` tokens in every
+ *     manuscript body are rewritten in lockstep (no dangling citations).
+ *   - Else if `ref.citekey` is supplied, it is used (and de-collided if taken).
  *   - Else (new row, no citekey), one is generated from the first author's
  *     family + year (falling back to the title), then de-collided.
  *
@@ -152,42 +154,12 @@ export function upsertReference(ref: Partial<Reference>): Reference {
   const db = current.db;
 
   // Resolve the target id: keep the supplied id, else mint a fresh UUID.
-  const id = ref.id ?? randomUUID();
+  const id = ref.id?.trim() || randomUUID();
 
-  // Does a row already exist for this id? If so we're updating — and must
-  // preserve its citekey unless the caller explicitly passed a new one.
   const existing = db
     .prepare('SELECT * FROM "references" WHERE id = ?')
     .get(id) as ReferenceRow | null;
 
-  let citekey: string;
-  if (existing) {
-    // FROZEN (DESIGN §11 decision #9): once assigned, the citekey NEVER
-    // changes — citations in manuscripts would otherwise dangle. Any
-    // `ref.citekey` on an update is silently ignored. Caller-supplied
-    // citekeys are honored only on the FIRST insert (the branches below).
-    citekey = existing.citekey;
-  } else if (ref.citekey && ref.citekey.trim()) {
-    // New row, caller supplied a citekey → honor it (collision-resolved).
-    citekey = resolveCitekey(ref.citekey.trim(), id);
-  } else {
-    // New row, no citekey supplied — generate from author/year/title.
-    const firstAuthor = ref.authors?.[0];
-    citekey = resolveCitekey(
-      generateCitekey({
-        family: firstAuthor?.family,
-        year: ref.year,
-        title: ref.title,
-      }),
-      id
-    );
-  }
-
-  // Merge authors: caller fields win (even `[]` = explicit clear), else parse
-  // the existing row's JSON column, else []. Written as explicit if/else —
-  // a `??`-and-ternary one-liner here was a precedence bug that discarded
-  // caller-supplied authors on new rows (it read `existing?.authors`, which
-  // is null for a fresh insert, falling back to "[]").
   let authors: Author[];
   if (ref.authors !== undefined) {
     authors = ref.authors;
@@ -195,6 +167,25 @@ export function upsertReference(ref: Partial<Reference>): Reference {
     authors = JSON.parse(existing.authors) as Author[];
   } else {
     authors = [];
+  }
+  const year = ref.year ?? existing?.year ?? null;
+  const title = ref.title ?? existing?.title ?? null;
+
+  let citekey: string;
+  if (existing) {
+    const candidate = generateCitekey({
+      family: authors[0]?.family,
+      year,
+      title,
+    });
+    citekey = candidate ? resolveCitekey(candidate, id) : existing.citekey;
+  } else if (ref.citekey && ref.citekey.trim()) {
+    citekey = resolveCitekey(ref.citekey.trim(), id);
+  } else {
+    citekey = resolveCitekey(
+      generateCitekey({ family: authors[0]?.family, year, title }),
+      id
+    );
   }
   const csl = ref.csl_json ??
     (existing?.csl_json
@@ -240,6 +231,10 @@ export function upsertReference(ref: Partial<Reference>): Reference {
     row.csl_json,
     row.source_file_id
   );
+
+  if (existing && citekey !== existing.citekey) {
+    rewriteCitekeyInBodies(existing.citekey, citekey);
+  }
 
   return mapReference(row);
 }

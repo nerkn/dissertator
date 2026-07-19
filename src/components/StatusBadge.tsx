@@ -17,8 +17,11 @@ const STATUS_MAP: Record<TextStatus, { label: string; cls: string }> = {
   failed: { label: "failed", cls: "badge red" },
 };
 
-/** Small colored badge for a file's text-status. */
+/** Small colored badge for a file's text-status. `done` is omitted (a
+ *  completed source needs no flag) — every other status carries useful
+ *  signal about work pending or intervention needed. */
 export function StatusBadge({ status }: { status: TextStatus }) {
+  if (status === "done") return null;
   const m = STATUS_MAP[status] ?? STATUS_MAP.new;
   return <span className={m.cls}>{m.label}</span>;
 }

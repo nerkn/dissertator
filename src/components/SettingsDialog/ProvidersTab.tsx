@@ -211,7 +211,7 @@ function ProviderRow({
                   setKey(e.target.value);
                   setDirty(true);
                 }}
-                placeholder="stored in the app DB (~/.dissertator)"
+                placeholder="API key"
               />
               <button
                 type="button"
@@ -392,7 +392,7 @@ function AddProviderModal({
                 type={showKey ? "text" : "password"}
                 value={key}
                 onChange={(e) => setKey(e.target.value)}
-                placeholder="stored in the app DB"
+                placeholder="API key"
               />
               <button
                 type="button"

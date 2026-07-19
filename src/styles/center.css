@@ -20,15 +20,43 @@
 }
 
 /* ---- tab bar ---- */
+.tabs-wrap {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  flex-shrink: 0;
+}
+.tab-scroll-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  flex-shrink: 0;
+  border: none;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.tab-scroll-btn:hover {
+  background: var(--panel-2);
+  color: var(--text);
+}
 .tabs {
   display: flex;
   flex-direction: row;
   gap: 2px;
-  border-bottom: 1px solid var(--border);
-  background: var(--panel);
   padding: 6px 6px 0;
   overflow-x: auto;
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
+  scrollbar-width: none;
+}
+.tabs::-webkit-scrollbar {
+  height: 0;
+  display: none;
 }
 .tab {
   display: inline-flex;
@@ -296,7 +324,7 @@
 .source-card-popover {
   position: absolute;
   top: 100%;
-  left: 0;
+  left: 40px;
   right: 0;
   z-index: 20;
   background: var(--panel-2);
@@ -308,7 +336,8 @@
   visibility: hidden;
   transition: opacity 0.12s;
 }
-.source-card:hover .source-card-popover {
+.source-card:hover .source-card-popover,
+.source-card:focus-within .source-card-popover {
   opacity: 1;
   visibility: visible;
 }

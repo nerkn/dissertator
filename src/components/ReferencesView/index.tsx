@@ -10,14 +10,13 @@
 // toolbar + row are presentational (see `_ReferencesToolbar`, `_ReferenceRow`).
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { Reference, SourceFile } from "@dissertator/shared";
+import { type Reference, type SourceFile, parseAuthors } from "@dissertator/shared";
 import { api } from "../../lib/api";
 import { confirmDialog, alertDialog } from "../../lib/stores/dialogs";
 import { useContentStore } from "../../lib/stores/content";
 import { useProviderStore } from "../../lib/stores/providers";
 import {
   fmtAuthors,
-  parseAuthors,
   type ReferenceDraft,
 } from "../ReferenceFields";
 import { ReferencesToolbar } from "./_ReferencesToolbar";

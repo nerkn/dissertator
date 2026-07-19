@@ -27,6 +27,29 @@ import type { ChatEndpointConfig } from "@dissertator/shared";
 /** Cap on echoed provider error bodies — never let a key leak via an error. */
 const ERR_BODY_CAP = 500;
 
+/** Max retries on a transient rate-limit (429 / rate_limit_error). Each retry
+ *  honors the provider's `retry in Ns` hint when present, else an exponential
+ *  backoff. Keeps a single TPM spike from killing the whole agent turn. */
+const RATE_LIMIT_MAX_RETRIES = 3;
+const RATE_LIMIT_MIN_WAIT_MS = 2_000;
+const RATE_LIMIT_MAX_WAIT_MS = 30_000;
+
+/** Parse a `retry in Ns` hint from a provider error body. z.ai emits it as
+ *  `"retry in 17s"`. Returns ms to wait, or null if no hint found. */
+function parseRetryHint(body: string): number | null {
+  const m = body.match(/retry\s+in\s+(\d+)\s*s/i);
+  if (m) return Math.min(Number(m[1]) * 1000, RATE_LIMIT_MAX_WAIT_MS);
+  const m2 = body.match(/retry\s+in\s+(\d+)\s*ms/i);
+  if (m2) return Math.min(Number(m2[1]), RATE_LIMIT_MAX_WAIT_MS);
+  return null;
+}
+
+/** Is this a 429 / rate-limit response worth retrying? */
+function isRateLimit(status: number, body: string): boolean {
+  if (status === 429) return true;
+  return /rate_limit_error|rate limit exceeded|overloaded/i.test(body);
+}
+
 /** An OpenAI function-tool spec (`tools[]` entry in the request body). */
 export interface ToolSpec {
   type: "function";
@@ -150,27 +173,50 @@ export async function streamOpenAIChat(
   }
 
   let res: Response;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        // Key transmitted ONLY here; never logged or persisted.
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal,
-    });
-  } catch (e) {
-    if (signal?.aborted) {
-      onAbort?.();
-      return ABORTED;
+  let attempt = 0;
+  while (true) {
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          // Key transmitted ONLY here; never logged or persisted.
+          Authorization: `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (e) {
+      if (signal?.aborted) {
+        onAbort?.();
+        return ABORTED;
+      }
+      throw e;
     }
-    throw e;
-  }
-
-  if (!res.ok) {
+    if (res.ok) break;
     const errBody = await res.text().catch(() => "");
+    if (isRateLimit(res.status, errBody) && attempt < RATE_LIMIT_MAX_RETRIES && !signal?.aborted) {
+      const wait =
+        parseRetryHint(errBody) ??
+        Math.min(RATE_LIMIT_MIN_WAIT_MS * 2 ** attempt, RATE_LIMIT_MAX_WAIT_MS);
+      await new Promise<void>((resolve) => {
+        const t = setTimeout(resolve, wait);
+        signal?.addEventListener(
+          "abort",
+          () => {
+            clearTimeout(t);
+            resolve();
+          },
+          { once: true },
+        );
+      });
+      if (signal?.aborted) {
+        onAbort?.();
+        return ABORTED;
+      }
+      attempt++;
+      continue;
+    }
     throw new Error(`chat adapter failed: ${res.status} ${truncate(errBody)}`);
   }
   if (!res.body) {

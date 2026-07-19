@@ -18,11 +18,11 @@ import {
 import type {
   EmbeddingStatus,
   ProjectStatus,
-  Reference,
   SourceFile,
   SourcesResponse,
 } from "@dissertator/shared";
 import { api } from "../../lib/api";
+import { useContentStore } from "../../lib/stores/content";
 import { alertDialog } from "../../lib/stores/dialogs";
 import { fmtAuthors } from "../ReferenceFields";
 import { ReferenceEditDialog } from "../ReferenceEditDialog";
@@ -70,7 +70,8 @@ export function SourcesGroup({
   const [embedStarting, setEmbedStarting] = useState(false);
   const [embedError, setEmbedError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortKey>("name");
-  const [refsById, setRefsById] = useState<Map<string, Reference>>(new Map());
+  const refsById = useContentStore((s) => s.referencesBySource);
+  const setReferences = useContentStore((s) => s.setReferences);
   const [editingId, setEditingId] = useState<string | null>(null);
 
   // Aggregate embedding progress (5s poll). Cheap; drives the one-line
@@ -96,20 +97,17 @@ export function SourcesGroup({
 
   const reloadRefs = useCallback(async () => {
     try {
-      const refs = await api.listReferences();
-      const m = new Map<string, Reference>();
-      for (const r of refs) if (r.source_file_id) m.set(r.source_file_id, r);
-      setRefsById(m);
+      setReferences(await api.listReferences());
     } catch {
     }
-  }, []);
+  }, [setReferences]);
   useEffect(() => {
     if (!project.initialized) return;
     void reloadRefs();
   }, [project.initialized, sources, reloadRefs]);
 
   const isPlaceholder = (s: SourceFile): boolean => {
-    const r = refsById.get(s.id);
+    const r = refsById?.get(s.id);
     return !r || (r.authors.length === 0 && !r.doi);
   };
 
@@ -229,7 +227,7 @@ export function SourcesGroup({
   // Sorted + filtered source list (substring on filename + relPath).
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const refFor = (s: SourceFile) => refsById.get(s.id);
+    const refFor = (s: SourceFile) => refsById?.get(s.id);
     const cmp = (a: SourceFile, b: SourceFile): number => {
       switch (sortBy) {
         case "filecdate":
@@ -252,7 +250,10 @@ export function SourcesGroup({
           return a.filename.localeCompare(b.filename);
       }
     };
-    const items = (sources?.items ?? []).slice().sort(cmp);
+    const items = (sources?.items ?? [])
+      .slice()
+      .filter((s) => s.textStatus !== "failed")
+      .sort(cmp);
     if (!q) return items;
     return items.filter((s) => {
       const r = refFor(s);
@@ -427,7 +428,7 @@ export function SourcesGroup({
               </div>
             ) : (
               filtered.map((src) => {
-                const ref = refsById.get(src.id);
+                const ref = refsById?.get(src.id);
                 const title = ref?.title?.trim() || src.filename;
                 const author =
                   ref && ref.authors.length > 0 ? fmtAuthors(ref.authors) : "";

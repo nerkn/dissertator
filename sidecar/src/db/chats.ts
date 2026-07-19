@@ -246,3 +246,12 @@ export function listChatMessages(chatId: string, limit = 50): ChatMessage[] {
     .all(chatId, limit) as ChatMessageRow[];
   return rows.reverse().map(mapChatMessage);
 }
+
+/**
+ * Delete a single chat message row by id. Used by the retry flow to drop a
+ * failed/partial assistant turn before re-running the loop.
+ */
+export function deleteChatMessage(id: string): void {
+  if (!current) throw new Error("no project initialized");
+  current.db.prepare("DELETE FROM chat_messages WHERE id = ?").run(id);
+}

@@ -242,3 +242,33 @@ body {
   color: var(--text);
 }
 
+.col-divider {
+  width: 100%;
+  position: relative;
+  cursor: col-resize;
+  z-index: 5;
+}
+.col-divider-grip {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-50%);
+  background: transparent;
+  transition: background 120ms ease;
+  pointer-events: none;
+}
+.col-divider:hover .col-divider-grip,
+.col-divider:active .col-divider-grip {
+  background: var(--blue, #3b82f6);
+}
+body.dragging-col,
+body.dragging-col * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+body.dragging-col .col-divider-grip {
+  background: var(--blue, #3b82f6);
+}
+

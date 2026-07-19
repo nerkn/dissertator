@@ -8,7 +8,8 @@
 // be typed, exactly once.
 //
 // `authorsText` is a free-text mirror of `authors[]`: it carries the raw
-// string while editing and is parsed back to Author[] on save.
+// string while editing and is parsed back to Author[] on save via the shared
+// `parseAuthors` (same rules as PDF info-dict + LLM-byline paths).
 
 import type { Author } from "@dissertator/shared";
 
@@ -29,23 +30,6 @@ export function fmtAuthors(a: Author[]): string {
     .map((x) => [x.given, x.family].filter(Boolean).join(" "))
     .filter(Boolean)
     .join(", ");
-}
-
-/** Parse "Given Family; Given Family" (or "Family, Given; ...") → Author[]. */
-export function parseAuthors(s: string): Author[] {
-  return s
-    .split(/[;\n]/)
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .map((p) => {
-      // "Family, Given" form
-      const m = p.match(/^([^,]+),\s*(.+)$/);
-      if (m) return { family: m[1].trim(), given: m[2].trim() };
-      // "Given Family" form (last token = family)
-      const i = p.lastIndexOf(" ");
-      if (i === -1) return { family: p, given: "" };
-      return { given: p.slice(0, i).trim(), family: p.slice(i + 1).trim() };
-    });
 }
 
 interface Props {
@@ -85,7 +69,7 @@ export function ReferenceFields({
         onChange={(e) => setDraft({ ...draft, title: e.target.value })}
       />
       <input
-        placeholder="Authors (Given Family; …)"
+        placeholder="Authors (Given Family, …)"
         value={draft.authorsText ?? ""}
         disabled={disabled}
         onChange={(e) => setDraft({ ...draft, authorsText: e.target.value })}

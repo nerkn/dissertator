@@ -19,6 +19,7 @@ import type { PDFDocumentProxy, RenderTask } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import type { NoteRect } from "@dissertator/shared";
 import { api } from "../../lib/api";
+import { useChatInputStore } from "../../lib/stores/chatInput";
 import { NotePopup } from "../NotePopup";
 import { ReferenceEditDialog } from "../ReferenceEditDialog";
 import { PdfControls } from "./_PdfControls";
@@ -40,6 +41,7 @@ interface Props {
 
 export function PdfViewer({ sourceId, initialPage }: Props) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const pillRef = useRef<HTMLDivElement | null>(null);
   // Container (.pdf-canvas-area) — measured for fit-to-width.
   const areaRef = useRef<HTMLDivElement | null>(null);
   // True once we've auto-fit the current document (so user zoom isn't fought).
@@ -77,6 +79,7 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
     clientRect: DOMRect;
     pageRect: NoteRect | null;
   } | null>(null);
+  const [pillLeft, setPillLeft] = useState<number | null>(null);
   // When set, the NotePopup save card is open (anchored at the selection).
   const [popup, setPopup] = useState<{
     text: string;
@@ -163,6 +166,7 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
     // Cancel any in-flight render from a prior page before starting a new one.
     renderTaskRef.current?.cancel();
     renderTaskRef.current = null;
+    if (areaRef.current) areaRef.current.scrollTop = 0;
 
     (async () => {
       try {
@@ -264,6 +268,46 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceId, page]);
 
+  useEffect(() => {
+    const el = areaRef.current;
+    if (!el) return;
+    let accum = 0;
+    let locked = false;
+    let resetTimer: ReturnType<typeof setTimeout> | undefined;
+    let unlockTimer: ReturnType<typeof setTimeout> | undefined;
+    const norm = (e: WheelEvent): number =>
+      e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 600 : 1);
+    const onWheel = (e: WheelEvent) => {
+      const goingDown = e.deltaY > 0;
+      const atTop = el.scrollTop <= 0;
+      const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= 1;
+      const atEdge = goingDown ? atBottom : atTop;
+      if (!atEdge) return;
+      e.preventDefault();
+      if (locked) return;
+      accum += norm(e);
+      clearTimeout(resetTimer);
+      resetTimer = setTimeout(() => {
+        accum = 0;
+      }, 200);
+      const threshold = 60;
+      if (Math.abs(accum) < threshold) return;
+      const dir = accum > 0 ? 1 : -1;
+      accum = 0;
+      locked = true;
+      setPage((p) => Math.min(Math.max(1, p + dir), Math.max(1, total)));
+      unlockTimer = setTimeout(() => {
+        locked = false;
+      }, 320);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => {
+      el.removeEventListener("wheel", onWheel);
+      clearTimeout(resetTimer);
+      clearTimeout(unlockTimer);
+    };
+  }, [total]);
+
   if (loading) return <div className="pdf-status">Loading PDF…</div>;
   if (error) return <div className="pdf-error">Failed to load PDF: {error}</div>;
 
@@ -310,11 +354,27 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
     setSel({ text, clientRect: r, pageRect });
   };
 
-  // Pill click → open the save card seeded with the live selection.
   const openNotePopup = (): void => {
     if (!sel) return;
     setPopup(sel);
     setSel(null);
+  };
+
+  const sendSelectionToChat = (): void => {
+    if (!sel) return;
+    useChatInputStore.getState().request(sel.text);
+    setSel(null);
+    window.getSelection()?.removeAllRanges();
+  };
+
+  const copySelection = async (): Promise<void> => {
+    if (!sel) return;
+    try {
+      await navigator.clipboard.writeText(sel.text);
+    } catch {
+    }
+    setSel(null);
+    window.getSelection()?.removeAllRanges();
   };
 
   return (
@@ -342,18 +402,50 @@ export function PdfViewer({ sourceId, initialPage }: Props) {
         </div>
       </div>
       {sel && (
-        <button
-          type="button"
+        <div
+          ref={(el) => {
+            pillRef.current = el;
+            if (!el) {
+              setPillLeft(null);
+              return;
+            }
+            const center = sel.clientRect.left + sel.clientRect.width / 2;
+            const half = el.offsetWidth / 2;
+            const max = window.innerWidth - el.offsetWidth - 4;
+            setPillLeft(Math.max(4, Math.min(Math.round(center - half), max)));
+          }}
           className="note-save-pill"
           style={{
-            left: sel.clientRect.left + sel.clientRect.width / 2,
-            top: sel.clientRect.bottom + 8,
+            left: pillLeft ?? -9999,
+            top: Math.round(sel.clientRect.bottom + 8),
+            visibility: pillLeft === null ? "hidden" : "visible",
           }}
-          onClick={openNotePopup}
-          title="Save this passage as a note"
         >
-          ＋ Save note
-        </button>
+          <button
+            type="button"
+            className="note-save-pill-btn"
+            onClick={openNotePopup}
+            title="Save this passage as a note"
+          >
+            📝 Save note
+          </button>
+          <button
+            type="button"
+            className="note-save-pill-btn"
+            onClick={sendSelectionToChat}
+            title="Quote this passage in the chat"
+          >
+            💬 To chat
+          </button>
+          <button
+            type="button"
+            className="note-save-pill-btn"
+            onClick={() => void copySelection()}
+            title="Copy this passage to the clipboard"
+          >
+            📋 Copy
+          </button>
+        </div>
       )}
       {popup && (
         <NotePopup

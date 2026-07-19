@@ -291,3 +291,39 @@ test("dispatchTool unknown tool returns ok=false", async () => {
   expect(r.ok).toBe(false);
   expect(r.error).toContain("unknown tool");
 });
+
+test("dispatchTool doc_read resolves a citekey to its linked source", async () => {
+  const project = (await import("../db")).getCurrentProject()!;
+  const sid = "src-docread-citekey-test";
+  project.db
+    .prepare(
+      `INSERT OR REPLACE INTO source_files
+       (id, rel_path, filename, ext, kind, page_count, text_status, added_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(sid, "x.pdf", "x.pdf", "pdf", "pdf", 1, "done", 1700000002);
+  project.db
+    .prepare(
+      `INSERT OR REPLACE INTO chunks (id, source_file_id, ord, physical_page, text)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run("chk-drc-1", sid, 1, 1, "hello body");
+  const { upsertReference } = await import("../db");
+  upsertReference({
+    citekey: "CiteKey2025",
+    title: "Sample",
+    source_file_id: sid,
+  });
+  const byId = await dispatchTool("doc_read", { id: sid }, ctxBase);
+  expect(byId.ok).toBe(true);
+  const byCitekey = await dispatchTool(
+    "doc_read",
+    { id: "CiteKey2025" },
+    ctxBase,
+  );
+  expect(byCitekey.ok).toBe(true);
+  expect((byCitekey.data as { text: string }).text).toContain("hello body");
+  const missing = await dispatchTool("doc_read", { id: "nope" }, ctxBase);
+  expect(missing.ok).toBe(false);
+  expect(missing.error).toContain("citekey");
+});

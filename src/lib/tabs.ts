@@ -33,6 +33,10 @@ export interface Tab {
   sourceId: string;
   kind: TabKind;
   title: string;
+  /** Source filename (e.g. `emo25.pdf`). Used as the tab tooltip so the
+   *  visible title can show the reference title instead. Undefined for
+   *  non-source tabs (doc / references). */
+  filename?: string;
   /** Page to land a PDF viewer on (1-based). Set when navigating from a
    *  citation token `[@citekey:page]`; undefined otherwise. The viewer treats
    *  it as both the mount-time initial page and a live "go to page" command. */

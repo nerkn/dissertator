@@ -34,7 +34,8 @@ export function isKeylessProviderType(type: string): boolean {
 /**
  * A generic provider credential row (the POOL). No `kind`, no `model`: a
  * provider is reusable across functions, and `model` lives on the binding.
- * The API key is NOT stored here — it lives in the OS keychain under `keyUser`.
+ * The API key is NOT stored here — it lives in the sidecar's global app DB
+ * under `keyUser`.
  */
 export interface ProviderRow {
   id: string;

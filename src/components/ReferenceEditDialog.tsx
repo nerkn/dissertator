@@ -11,12 +11,11 @@
 
 import { useEffect, useState } from "react";
 import { BookOpen, Check, X } from "@phosphor-icons/react";
-import type { Reference } from "@dissertator/shared";
+import { type Reference, parseAuthors } from "@dissertator/shared";
 import { api } from "../lib/api";
 import {
   ReferenceFields,
   fmtAuthors,
-  parseAuthors,
   type ReferenceDraft,
 } from "./ReferenceFields";
 

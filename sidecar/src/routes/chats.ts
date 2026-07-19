@@ -1,11 +1,12 @@
 import type { Hono } from "hono";
 import { join } from "node:path";
 import { streamSSE } from "hono/streaming";
-import type { ChatRequest, ToolTrace } from "@dissertator/shared";
+import type { ChatRequest, Reference, ToolTrace } from "@dissertator/shared";
 import {
   buildOpenFilesContext,
   createChat,
   deleteChat,
+  deleteChatMessage,
   getChat,
   getCurrentProject,
   getDocument,
@@ -220,6 +221,7 @@ export function registerChats(app: Hono): void {
     if (!chatId) return c.json({ error: "chatId required" }, 400);
     if (!getChat(chatId)) return c.json({ error: "chat not found" }, 404);
     const isOpener = body.opener === true;
+    const isRetry = body.retry === true;
     const message = (body.message ?? "").trim();
     if (!message && !isOpener) return c.json({ error: "message required" }, 400);
     const openFiles = Array.isArray(body.openFiles) ? body.openFiles : [];
@@ -256,14 +258,28 @@ export function registerChats(app: Hono): void {
       // Persist the user turn immediately (so an aborted stream still records it).
       // OPENER turns skip the user row entirely — only the assistant greeting
       // is persisted (the opener instruction below is ephemeral).
-      const userMsg = isOpener
-        ? null
-        : insertChatMessage({
-            chatId,
-            role: "user",
-            content: message,
-            openFiles,
-          });
+      // RETRY turns also skip the insert — the last user row is reused as-is,
+      // and the most recent assistant row (the failed/partial one) is deleted
+      // first so the transcript keeps a single user+assistant pair instead of
+      // accumulating duplicates with each retry.
+      let userMsg: { id: string } | null = null;
+      if (isOpener) {
+        userMsg = null;
+      } else if (isRetry) {
+        const tail = listChatMessages(chatId, 10);
+        const reversed = [...tail].reverse();
+        const lastAssistant = reversed.find((m) => m.role === "assistant");
+        const lastUser = reversed.find((m) => m.role === "user");
+        if (lastAssistant) deleteChatMessage(lastAssistant.id);
+        userMsg = lastUser ? { id: lastUser.id } : null;
+      } else {
+        userMsg = insertChatMessage({
+          chatId,
+          role: "user",
+          content: message,
+          openFiles,
+        });
+      }
 
       // Recent transcript (excluding system rows + the user turn just
       // inserted). Reused for (a) detecting whether the pinned-source set
@@ -313,7 +329,25 @@ export function registerChats(app: Hono): void {
       // resolve a source via corpus_list/doc_read for full text. Sent every
       // turn — it's cheap metadata and underpins the pins-on-change design
       // (unchanged pins fall back to this index instead of re-injected text).
-      const refs = listReferences();
+      //
+      // Trimming: (a) drop placeholder refs (no authors AND no real title) —
+      // they're filename-derived stubs that add tokens and confuse citation;
+      // (b) dedupe by source_file_id so a stub citekey (e.g. `emo`) and a
+      // later real citekey (`Eshraghian2025`) for the SAME source don't both
+      // appear — the model would otherwise pass the stale citekey to doc_read.
+      const allRefs = listReferences();
+      const seenSrc = new Set<string>();
+      const isPlaceholder = (r: Reference) =>
+        r.authors.length === 0 &&
+        (!r.title || r.title.trim().toLowerCase() === r.citekey.trim().toLowerCase());
+      const refs = allRefs.filter((r) => {
+        if (isPlaceholder(r)) return false;
+        if (r.source_file_id) {
+          if (seenSrc.has(r.source_file_id)) return false;
+          seenSrc.add(r.source_file_id);
+        }
+        return true;
+      });
       if (refs.length) {
         const refRows = refs.map((r) =>
           [
@@ -379,6 +413,12 @@ export function registerChats(app: Hono): void {
 
       const ac = new AbortController();
       let aborted = false;
+      // Accumulate streamed text here (not from runAgentLoop's return value)
+      // so a throw on a LATER step (e.g. 429 on synthesis after the answer
+      // already streamed) still has the partial content to persist —
+      // otherwise the catch block saves a placeholder and the UI watches
+      // the streamed reply vanish on reload.
+      let content = "";
       stream.onAbort(() => {
         aborted = true;
         ac.abort();
@@ -393,6 +433,7 @@ export function registerChats(app: Hono): void {
       const onEvent = async (e: AgentStreamEvent): Promise<void> => {
         switch (e.type) {
           case "delta":
+            content += e.text;
             await stream.writeSSE({ event: "delta", data: e.text });
             break;
           case "tool_call":
@@ -497,7 +538,6 @@ export function registerChats(app: Hono): void {
         },
       };
 
-      let content = "";
       let usage = { prompt: 0, completion: 0 };
       let toolCalls = 0;
       let capped = false;
@@ -524,7 +564,7 @@ export function registerChats(app: Hono): void {
           signal: ac.signal,
           onEvent,
           streamFn: wrapStream,
-          stepTimeoutMs: Number(process.env.CHAT_STEP_TIMEOUT_MS) || 30_000,
+          stepTimeoutMs: Number(process.env.CHAT_STEP_TIMEOUT_MS) || 600_000,
         });
         content = res.content;
         usage = res.usage;

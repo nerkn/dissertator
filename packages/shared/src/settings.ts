@@ -31,7 +31,7 @@ export interface ChatFlowSettings {
 
 /** Defaults applied when no `chatFlow` blob is stored yet. */
 export const DEFAULT_CHAT_FLOW: ChatFlowSettings = {
-  promptsOpen: true,
+  promptsOpen: false,
   inheritPins: true,
   autoGreet: true,
   autoTitle: true,

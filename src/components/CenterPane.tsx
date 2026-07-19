@@ -9,7 +9,8 @@
 // hidden) across tab switches so the caret, scroll position, and undo
 // history survive — see the keep-alive block below.
 
-import { Sparkle } from "@phosphor-icons/react";
+import { Sparkle, CaretLeft, CaretRight } from "@phosphor-icons/react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTabsStore } from "../lib/stores/tabs";
 import { api } from "../lib/api";
 import { useContentStore, useSourceItems } from "../lib/stores/content";
@@ -43,6 +44,51 @@ export function CenterPane({
 
   const active = tabs.find((t) => t.sourceId === activeTabId) ?? null;
   const hasTabs = tabs.length > 0;
+  const refsById = useContentStore((s) => s.referencesBySource);
+
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const [scrollState, setScrollState] = useState({ left: false, right: false });
+
+  const updateScrollState = useCallback(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    setScrollState({
+      left: el.scrollLeft > 4,
+      right: el.scrollLeft + el.clientWidth < el.scrollWidth - 4,
+    });
+  }, []);
+
+  useEffect(() => {
+    const el = tabsRef.current;
+    if (!el) return;
+    updateScrollState();
+    const onScroll = () => updateScrollState();
+    el.addEventListener("scroll", onScroll, { passive: true });
+    const ro = new ResizeObserver(() => updateScrollState());
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      ro.disconnect();
+    };
+  }, [updateScrollState, tabs.length]);
+
+  useEffect(() => {
+    const el = tabsRef.current;
+    if (!el || !activeTabId) return;
+    el.querySelector<HTMLElement>(".tab.active")?.scrollIntoView({
+      block: "nearest",
+      inline: "nearest",
+    });
+  }, [activeTabId, tabs.length]);
+
+  const scrollByDir = useCallback((dir: 1 | -1) => {
+    const el = tabsRef.current;
+    if (!el) return;
+    el.scrollBy({
+      left: dir * Math.max(140, el.clientWidth * 0.7),
+      behavior: "smooth",
+    });
+  }, []);
 
   // No open tabs → preserve the original empty placeholder logic.
   if (!hasTabs || !active) {
@@ -84,30 +130,56 @@ export function CenterPane({
   // Tabs open → top-aligned flex column (tab bar + content fill).
   return (
     <section className="panel center with-tabs">
-      <div className="tabs" role="tablist">
-        {tabs.map((t) => (
-          <div
-            key={t.sourceId}
-            className={`tab${t.sourceId === activeTabId ? " active" : ""}`}
-            role="tab"
-            aria-selected={t.sourceId === activeTabId}
-            title={t.title}
-            onClick={() => onActivate(t.sourceId)}
+      <div className="tabs-wrap">
+        {scrollState.left && (
+          <button
+            className="tab-scroll-btn left"
+            onClick={() => scrollByDir(-1)}
+            aria-label="Scroll tabs left"
+            title="Scroll left"
           >
-            <span className="tab-title">{t.title}</span>
-            <button
-              className="tab-close"
-              onClick={(e) => {
-                e.stopPropagation();
-                onClose(t.sourceId);
-              }}
-              title="Close tab"
-              aria-label={`Close ${t.title}`}
+            <CaretLeft size={14} weight="bold" />
+          </button>
+        )}
+        <div className="tabs" role="tablist" ref={tabsRef}>
+          {tabs.map((t) => {
+            const refTitle = refsById?.get(t.sourceId)?.title?.trim();
+            const displayTitle = refTitle || t.title;
+            return (
+            <div
+              key={t.sourceId}
+              className={`tab${t.sourceId === activeTabId ? " active" : ""}`}
+              role="tab"
+              aria-selected={t.sourceId === activeTabId}
+              title={t.filename ?? t.title}
+              onClick={() => onActivate(t.sourceId)}
             >
-              ×
-            </button>
-          </div>
-        ))}
+              <span className="tab-title">{displayTitle}</span>
+              <button
+                className="tab-close"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose(t.sourceId);
+                }}
+                title="Close tab"
+                aria-label={`Close ${displayTitle}`}
+              >
+                ×
+              </button>
+            </div>
+            );
+          })}
+        </div>
+        {scrollState.right && (
+          <button
+            className="tab-scroll-btn right"
+            onClick={() => scrollByDir(1)}
+            aria-label="Scroll tabs right"
+            title="Scroll right"
+          >
+            <CaretRight size={14} weight="bold" />
+          </button>
+        )}
       </div>
       <div className="tab-content">
         {/* `key={sourceId}` forces a fresh viewer instance per source so

@@ -14,6 +14,9 @@ interface ProviderState {
    *  sidecar's global `keys` table; this map is the source of truth for the
    *  running session. */
   keys: Record<string, string>;
+  /** True once the first providers+keys fetch completed — gates the startup
+   *  onboarding check so it doesn't flash before data is in. */
+  loaded: boolean;
 
   /** Re-read provider rows from the sidecar. */
   refreshProviders: () => Promise<void>;
@@ -28,6 +31,7 @@ interface ProviderState {
 export const useProviderStore = create<ProviderState>((set, get) => ({
   providers: [],
   keys: {},
+  loaded: false,
 
   refreshProviders: async () => {
     try {
@@ -58,7 +62,7 @@ export const useProviderStore = create<ProviderState>((set, get) => ({
       for (const [k, v] of Object.entries(s.keys)) {
         if (v) merged[k] = v;
       }
-      return { keys: merged };
+      return { keys: merged, loaded: true };
     });
   },
 }));

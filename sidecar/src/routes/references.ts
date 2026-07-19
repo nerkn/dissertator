@@ -14,8 +14,9 @@ import { exportBibtex, parseBibtex } from "../cite/bibtex.ts";
 // ---------------------------------------------------------------------------
 // Citations & references (P2 Track 3): CRUD + Crossref lookup + BibTeX I/O.
 //
-// Citekey discipline: `upsertReference` FREEZES the citekey after first
-// assignment (DESIGN.md §8 decision #9) — tokens in docs never break. The
+// Citekey discipline: `upsertReference` regenerates the citekey from
+// author/year/title on every write and rewrites `[@citekey]` tokens in
+// manuscripts when the key changes (no dangling citations). The
 // Crossref routes read `contactEmail` from settings to route through
 // Crossref's polite pool; Crossref is a FREE PUBLIC API (no keychain key).
 // NEVER block on network errors: lookup routes return `[]` / null on failure
@@ -73,7 +74,7 @@ export function registerReferences(app: Hono): void {
       .catch(() => ({}) as Partial<Reference>);
     try {
       // Pin the resolved id so upsert updates the right row (the caller may
-      // have addressed it by citekey). Citekey is FROZEN unless explicitly passed.
+      // have addressed it by citekey). Citekey follows author/year/title.
       const ref = upsertReference({ ...body, id: existing.id });
       return c.json(ref);
     } catch (e) {

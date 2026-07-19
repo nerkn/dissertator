@@ -71,7 +71,7 @@ export interface RunAgentOptions {
   /** Step cap (default 12). One step = one model round-trip. */
   maxSteps?: number;
   /**
-   * No-activity watchdog per step (default 30000ms). If the provider emits
+   * No-activity watchdog per step (default 600000ms). If the provider emits
    * nothing (no delta) for this long, the in-flight fetch is aborted and the
    * step throws — surfacing a clear "timed out" instead of hanging forever.
    * Resets on every token, so a slow-but-streaming reasoning model is never
@@ -109,7 +109,7 @@ export async function runAgentLoop(
 ): Promise<RunAgentResult> {
   const tools = opts.tools ?? TOOL_SPECS;
   const maxSteps = opts.maxSteps ?? 12;
-  const stepTimeoutMs = opts.stepTimeoutMs ?? 30_000;
+  const stepTimeoutMs = opts.stepTimeoutMs ?? 600_000;
   const stream = opts.streamFn ?? streamOpenAIChat;
   const messages: LoopMessage[] = [...opts.messages];
 

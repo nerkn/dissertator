@@ -166,6 +166,35 @@ export function updateDocument(
 }
 
 /**
+ * Rewrite every `[@citekey]` / `[@citekey:page]` token across all document
+ * bodies from `oldKey` to `newKey`, preserving any `:page` suffix and any
+ * sibling citations inside a multi-citation `[@a; @b]` token. Called by
+ * `upsertReference` when a reference's citekey changes so manuscript tokens
+ * never dangle. Returns the number of document rows actually changed.
+ */
+export function rewriteCitekeyInBodies(oldKey: string, newKey: string): number {
+  if (!current) throw new Error("no project initialized");
+  if (!oldKey || oldKey === newKey) return 0;
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`@${escape(oldKey)}(:\\d+)?(?![\\p{L}\\p{N}])`, "gu");
+  const rows = current.db
+    .prepare("SELECT id, body_md FROM documents")
+    .all() as Array<{ id: string; body_md: string | null }>;
+  let changed = 0;
+  for (const row of rows) {
+    const body = row.body_md ?? "";
+    const next = body.replace(re, (_m, page) => `@${newKey}${page ?? ""}`);
+    if (next !== body) {
+      current.db
+        .prepare("UPDATE documents SET body_md = ? WHERE id = ?")
+        .run(next, row.id);
+      changed++;
+    }
+  }
+  return changed;
+}
+
+/**
  * Delete a document by id. Returns true if a row was deleted, false if the
  * id was unknown (idempotent).
  */

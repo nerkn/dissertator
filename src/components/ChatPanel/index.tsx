@@ -53,6 +53,7 @@ import type { DebugEvent } from "../../lib/api";
 import { useActiveDocumentId } from "../../lib/stores/tabs";
 import { useContentStore, useSourceItems } from "../../lib/stores/content";
 import { useSessionStore } from "../../lib/stores/session";
+import { useChatInputStore } from "../../lib/stores/chatInput";
 import { promptDialog, confirmDialog } from "../../lib/stores/dialogs";
 import {
   LiveAssistantBubble,
@@ -122,6 +123,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   const [chats, setChats] = useState<Chat[]>([]);
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messagesLoadedFor, setMessagesLoadedFor] = useState<string | null>(null);
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [loadingChats, setLoadingChats] = useState(true);
 
@@ -176,9 +178,11 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     try {
       const list = await api.listChatMessages(chatId);
       setMessages(list);
+      setMessagesLoadedFor(chatId);
       return list;
     } catch {
       setMessages([]);
+      setMessagesLoadedFor(chatId);
       return [];
     }
   }, []);
@@ -191,6 +195,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     // stale messages don't linger while the new project's chats load.
     setActiveChatId(null);
     setMessages([]);
+    setMessagesLoadedFor(null);
     let stopped = false;
     (async () => {
       setLoadingChats(true);
@@ -225,8 +230,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     if (activeChatId) void loadMessages(activeChatId);
     else setMessages([]);
   }, [activeChatId, loadMessages]);
-
-  // --- send / stream -------------------------------------------------------
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [liveAssistant, setLiveAssistant] = useState("");
@@ -381,28 +384,33 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   );
 
   const send = useCallback(
-    async (overrideText?: string) => {
+    async (overrideText?: string, sendOpts?: { retry?: boolean }) => {
+      const isRetry = sendOpts?.retry === true;
       const text = (overrideText ?? input).trim();
       if (!text || !activeChatId || streaming) return;
       lastSentRef.current = text;
       setError(null);
-      setInput("");
+      if (!isRetry) setInput("");
       // Stale quick-reply chips disappear the moment the user says anything else.
       setPendingOptions(null);
       setToolBeats([]);
       setDebugEvents([]);
 
       // Optimistic user bubble (no id); replaced wholesale on reload.
-      const optimistic: ChatMessage = {
-        id: `pending-${Date.now()}`,
-        chatId: activeChatId,
-        role: "user",
-        content: text,
-        openFiles: activeChat?.contextSources ?? [],
-        costTokens: null,
-        createdAt: Date.now(),
-      };
-      setMessages((prev) => [...prev, optimistic]);
+      // Skipped on RETRY — the existing user row is reused server-side, so a
+      // duplicate optimistic bubble would briefly show two copies.
+      if (!isRetry) {
+        const optimistic: ChatMessage = {
+          id: `pending-${Date.now()}`,
+          chatId: activeChatId,
+          role: "user",
+          content: text,
+          openFiles: activeChat?.contextSources ?? [],
+          costTokens: null,
+          createdAt: Date.now(),
+        };
+        setMessages((prev) => [...prev, optimistic]);
+      }
 
       const ac = new AbortController();
       abortRef.current = ac;
@@ -413,6 +421,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
         openFiles: activeChat?.contextSources ?? [],
         activeDocumentId,
         embeddingApiKey,
+        ...(isRetry ? { retry: true } : {}),
         onDelta: (d) => setLiveAssistant((prev) => prev + d),
         onToolCall: (e) =>
           setToolBeats((prev) => [
@@ -526,11 +535,28 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   useEffect(() => {
     if (!flow.autoGreet) return;
     if (!activeChatId || streaming) return;
+    if (messagesLoadedFor !== activeChatId) return;
     if (messages.length > 0) return;
     if (greetedRef.current.has(activeChatId)) return;
     greetedRef.current.add(activeChatId);
     void runOpener(activeChatId);
-  }, [activeChatId, messages.length, streaming, flow.autoGreet, runOpener]);
+  }, [activeChatId, messagesLoadedFor, messages.length, streaming, flow.autoGreet, runOpener]);
+
+  const chatInputToken = useChatInputStore((s) => s.token);
+  const chatInputText = useChatInputStore((s) => s.text);
+  const lastPrefillTokenRef = useRef(0);
+  useEffect(() => {
+    if (chatInputToken === lastPrefillTokenRef.current) return;
+    lastPrefillTokenRef.current = chatInputToken;
+    const text = chatInputText?.trim();
+    if (!text) return;
+    const quote = text
+      .split("\n")
+      .map((l) => `> ${l}`)
+      .join("\n");
+    setInput((prev) => (prev.trim() ? `${prev.trim()}\n\n${quote}\n\n` : `${quote}\n\n`));
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [chatInputToken, chatInputText]);
 
   const newChat = useCallback(async () => {
     try {
@@ -1040,7 +1066,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
               <button
                 type="button"
                 className="btn retry"
-                onClick={() => send(lastSentRef.current)}
+                onClick={() => send(lastSentRef.current, { retry: true })}
                 title="Re-run the last message"
               >
                 <ArrowClockwise size={14} weight="bold" />

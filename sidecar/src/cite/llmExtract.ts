@@ -13,7 +13,7 @@
 // text. The model is told to emit ONLY a JSON object; we additionally tolerate
 // ```json fences and trailing prose by slicing to the outermost {...}.
 
-import { type Author, type ChatEndpointConfig, type Reference } from "@dissertator/shared";
+import { type Author, type ChatEndpointConfig, type Reference, parseAuthors } from "@dissertator/shared";
 import { streamOpenAIChat } from "../chat/openai.ts";
 
 /** Cap input to the title page (keeps the call cheap and on-point). */
@@ -24,10 +24,12 @@ const SYSTEM_PROMPT =
   "document. Identify the document's OWN metadata (title, authors, year, " +
   "venue, DOI) — never metadata of cited works in its reference list. " +
   "Respond with ONLY a JSON object, no prose, in this exact shape:\n" +
-  '{"title": string|null, "authors": [{"family": string, "given": string}], ' +
+  '{"title": string|null, "authors_text": string|null, ' +
   '"year": number|null, "venue": string|null, "doi": string|null}.\n' +
-  "Use null for unknown fields. Split authors into family/given; if a name " +
-  "has no clear given name, put the whole name in family. DOI must be the " +
+  "Use null for unknown fields. `authors_text` is the author byline copied " +
+  "CHARACTER-FOR-CHARACTER from the document, in the ORIGINAL order as " +
+  "printed (the first author listed drives citation sorting). Do not split, " +
+  "abbreviate, reorder, or normalize names — copy verbatim. DOI must be the " +
   "bare `10.xxxx/...` form, lowercase, no URL prefix.";
 
 export interface LlmExtractOpts {
@@ -64,11 +66,16 @@ export async function extractReferenceViaLLM(
         buf += d;
       },
     });
-  } catch {
+  } catch (e) {
+    console.error(`[llm-extract] stream failed:`, (e as Error)?.message ?? String(e));
     return null;
   }
 
-  return parseLlmReferenceJson(buf);
+  const parsed = parseLlmReferenceJson(buf);
+  if (!parsed && buf.trim()) {
+    console.error(`[llm-extract] parsed null from buf (len=${buf.length}):`, buf.slice(0, 300));
+  }
+  return parsed;
 }
 
 /**
@@ -93,7 +100,12 @@ export function parseLlmReferenceJson(raw: string): Partial<Reference> | null {
   if (typeof obj.title === "string" && obj.title.trim()) {
     out.title = obj.title.trim();
   }
-  if (Array.isArray(obj.authors)) {
+  if (typeof obj.authors_text === "string" && obj.authors_text.trim()) {
+    const authors = parseAuthors(obj.authors_text);
+    if (authors.length > 0) out.authors = authors;
+  } else if (Array.isArray(obj.authors)) {
+    // Legacy structured form — tolerated only if the model ignores the
+    // `authors_text` instruction. Order is whatever the model emitted.
     const authors: Author[] = obj.authors
       .map((a): Author | null => {
         if (!a || typeof a !== "object") return null;

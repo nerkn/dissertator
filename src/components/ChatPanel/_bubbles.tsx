@@ -1,6 +1,15 @@
 import { Bug, CaretDown } from "@phosphor-icons/react";
 import type { ChatMessage } from "@dissertator/shared";
 import type { DebugEvent } from "../../lib/api";
+import { Markdown } from "./Markdown";
+
+/** Wrap streamed text so partial markdown (an unclosed `**` or ``` fence)
+ *  renders gracefully instead of flashing raw syntax — the parser treats
+ *  unclosed markers as literal text. */
+function StreamBody({ text }: { text: string }) {
+  if (!text) return <>…</>;
+  return <Markdown text={text} />;
+}
 
 /** One narration beat: a tool_call awaiting/with its tool_result. */
 interface ToolBeat {
@@ -77,7 +86,9 @@ export function LiveAssistantBubble({
           ))}
         </div>
       )}
-      <div className="msg-body">{text || "…"}</div>
+      <div className="msg-body">
+        <StreamBody text={text} />
+      </div>
     </div>
   );
 }
@@ -118,7 +129,13 @@ export function MessageBubble({
         </div>
       )}
       <div className="msg-body">
-        {msg.content || (live ? "…" : "")}
+        {isUser ? (
+          msg.content || (live ? "…" : "")
+        ) : msg.content ? (
+          <Markdown text={msg.content} />
+        ) : (
+          (live ? "…" : "")
+        )}
       </div>
     </div>
   );

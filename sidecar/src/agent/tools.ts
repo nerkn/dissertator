@@ -23,6 +23,7 @@ import type { ToolSpec } from "../chat/openai.ts";
 import {
   createDocument,
   getDocument,
+  getReferenceByCitekey,
   getReferenceById,
   listReferences,
   getSourceById,
@@ -100,7 +101,8 @@ export const TOOL_SPECS: ToolSpec[] = [
       name: "corpus_write",
       description:
         "Update a reference's metadata (title/authors/year/doi). The citekey " +
-        "is frozen and never changes. Use for cleaning up import errors.",
+        "is regenerated from author/year/title; existing `[@citekey]` tokens " +
+        "in manuscripts are rewritten to match. Use for cleaning up import errors.",
       parameters: {
         type: "object",
         properties: {
@@ -120,11 +122,12 @@ export const TOOL_SPECS: ToolSpec[] = [
       description:
         "Read a source bundle's extracted text (read-only). Returns the text, " +
         "page-tagged as [p.N]. Optionally filter to one page. Truncated past " +
-        "~12k chars (pass `page` to page through).",
+        "~12k chars (pass `page` to page through). `id` accepts a source-file " +
+        "id OR a citekey (e.g. from the corpus index).",
       parameters: {
         type: "object",
         properties: {
-          id: { type: "string", description: "Source-file id." },
+          id: { type: "string", description: "Source-file id or citekey." },
           page: { type: "integer", description: "Optional physical page." },
         },
         required: ["id"],
@@ -376,6 +379,17 @@ function hitFromSource(s: SourceFile, r?: Reference): CorpusHit {
   return h;
 }
 
+/** Resolve a source id from either a source-file id or a citekey. The corpus
+ *  index advertises citekeys; if the model passes one to a doc_* tool, fall
+ *  back to the reference row's linked source_file_id rather than failing.
+ *  Returns the resolved source id, or null if neither matches. */
+function resolveSourceId(id: string): string | null {
+  if (!id) return null;
+  if (getSourceById(id)) return id;
+  const ref = getReferenceByCitekey(id);
+  return ref?.source_file_id ?? null;
+}
+
 /** Slice a page-tagged source text to one physical page (if present). */
 function slicePage(text: string, page: number): string {
   // Segments look like "[p.12] ...text... [p.13] ...". Split keeping tags.
@@ -556,10 +570,12 @@ async function corpusWrite(args: Record<string, unknown>): Promise<ToolResult> {
 }
 
 async function docRead(args: Record<string, unknown>): Promise<ToolResult> {
-  const id = (args.id as string)?.trim();
-  if (!id) return { ok: false, summary: "doc_read: id required", error: "id required" };
+  const raw = (args.id as string)?.trim();
+  if (!raw) return { ok: false, summary: "doc_read: id required", error: "id required" };
+  const id = resolveSourceId(raw);
+  if (!id) return { ok: false, summary: "doc_read: not found", error: `source ${raw} not found (pass a source-file id or citekey from corpus_list)` };
   const src = getSourceById(id);
-  if (!src) return { ok: false, summary: "doc_read: not found", error: `source ${id} not found` };
+  if (!src) return { ok: false, summary: "doc_read: not found", error: `source ${raw} not found` };
   const { text, pageCount } = getSourceText(id);
   const page = args.page as number | undefined;
   const body = page ? slicePage(text, page) : text;
@@ -677,11 +693,12 @@ async function pInsert(
 }
 
 function guiDocOpen(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
-  const id = (args.id as string)?.trim();
-  if (!id) return { ok: false, summary: "gui_doc_open: id required", error: "id required" };
+  const raw = (args.id as string)?.trim();
+  if (!raw) return { ok: false, summary: "gui_doc_open: id required", error: "id required" };
+  const id = resolveSourceId(raw) ?? raw;
   const src = getSourceById(id);
   ctx.emitGui({ kind: "doc_open", sourceId: id });
-  return { ok: true, summary: `📂 Opened source "${src?.filename ?? id}"`, data: { opened: true } };
+  return { ok: true, summary: `📂 Opened source "${src?.filename ?? raw}"`, data: { opened: true } };
 }
 
 function guiPOpen(args: Record<string, unknown>, ctx: ToolContext): ToolResult {

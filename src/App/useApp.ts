@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { api, resolveSidecarBase, resetSidecarBase, sidecarBase } from "../lib/api";
 import { useProviderStore } from "../lib/stores/providers";
+import { isKeylessProviderType } from "@dissertator/shared";
 import type {
   AiFunction,
   Reference,
@@ -53,6 +54,7 @@ export function useApp() {
   const setSettings = useContentStore((s) => s.setSettings);
   const setSources = useContentStore((s) => s.setSources);
   const setDocuments = useContentStore((s) => s.setDocuments);
+  const setReferences = useContentStore((s) => s.setReferences);
   const handleDocumentEdited = useContentStore((s) => s.handleDocumentEdited);
   const handleSettingsChange = useContentStore((s) => s.handleSettingsChange);
   // P6: provider rows + their API keys live in the provider store (split out
@@ -231,16 +233,25 @@ export function useApp() {
     if (project?.initialized) refreshSources();
   }, [project?.initialized, project?.projectPath, refreshSources]);
 
-  // LAST-OPENED PROJECT — auto-reopen once the sidecar is up and we know no
-  // project is active yet. Runs at most once per app launch (`autoInitTried`)
-  // so it doesn't fight the user if they manually open a different folder.
+  // LAST-OPENED PROJECT — auto-reopen once the sidecar is up, providers are
+  // loaded, AND a chat key exists. Without a chat key the onboarding dialog
+  // is showing — defer the reopen until the user provides a key, so the
+  // first thing they see is the key prompt, not a half-loaded project.
+  // Runs at most once per app launch (`autoInitTried`) so it doesn't fight
+  // the user if they manually open a different folder.
   // On failure (path gone, or it's a data dir — now rejected by initProject)
   // we clear the stored entry so the next launch starts clean instead of
   // looping on a bad path.
   const LAST_PROJECT_KEY = "dissertator.lastProjectPath";
+  const providersLoaded = useProviderStore((s) => s.loaded);
+  const hasChatKey = providers.some(
+    (p) => !isKeylessProviderType(p.type) && !!keys[p.keyUser],
+  );
   useEffect(() => {
     if (autoInitTried.current) return;
     if (health !== "up") return;
+    if (!providersLoaded) return;
+    if (!hasChatKey) return;
     if (project?.initialized) {
       autoInitTried.current = true;
       return;
@@ -259,7 +270,7 @@ export function useApp() {
         setError((e as Error)?.message ?? String(e));
       }
     })();
-  }, [health, project?.initialized, refreshStatus]);
+  }, [health, providersLoaded, hasChatKey, project?.initialized, refreshStatus]);
 
   // Refresh the document list (same triggers as sources).
   const refreshDocuments = useCallback(async () => {
@@ -274,13 +285,27 @@ export function useApp() {
     if (project?.initialized) refreshDocuments();
   }, [project?.initialized, project?.projectPath, refreshDocuments]);
 
-  // P6: load provider rows when a project is open, then re-read their keys
-  // from the sidecar's global app DB. Both run in the provider store; this
-  // orchestrator only gates them on project lifecycle and re-runs the key
-  // load when the provider set changes.
+  // Refresh the reference list (same triggers as sources/documents). The
+  // map is keyed by source_file_id and powers tab-title resolution in the
+  // CenterPane (PDF tab shows the paper title, not the filename).
+  const refreshReferences = useCallback(async () => {
+    if (!project?.initialized) return;
+    try {
+      setReferences(await api.listReferences());
+    } catch {
+      /* sidecar mid-restart */
+    }
+  }, [project?.initialized, setReferences]);
   useEffect(() => {
-    if (project?.initialized) void refreshProviders();
-  }, [project?.initialized, project?.projectPath, refreshProviders]);
+    if (project?.initialized) refreshReferences();
+  }, [project?.initialized, project?.projectPath, refreshReferences]);
+
+  // P6: provider rows + keys are GLOBAL (sidecar app DB), so load them as
+  // soon as the sidecar is up — not gated on a project. This lets the
+  // startup onboarding check for a chat key before any folder is opened.
+  useEffect(() => {
+    if (health === "up") void refreshProviders();
+  }, [health, refreshProviders]);
 
   useEffect(() => {
     if (providers.length === 0) return;

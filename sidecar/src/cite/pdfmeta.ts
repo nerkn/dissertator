@@ -15,7 +15,7 @@
 // placeholder reference is never pinned to garbage.
 
 import { getMeta } from "unpdf";
-import { type Author, type Reference } from "@dissertator/shared";
+import { type Author, type Reference, parseAuthors as parseAuthorsShared } from "@dissertator/shared";
 
 /** Bare tokens / substrings that identify a tool, not a person. */
 const JUNK_AUTHOR_SUBSTR = /(microsoft|adobe|acrobat|office|photoshop|indesign|\bpages\b|word\s*\d|excel|powerpoint|ghostscript|latex|pdftex|ctex|arxiv|openoffice|libreoffice|wkhtmltopdf|itext|pikepdf)/i;
@@ -51,33 +51,16 @@ export function isJunkAuthor(s: string): boolean {
   return false;
 }
 
-/**
- * Parse a PDF info-dict `Author` string into CSL authors. Splits on `;`
- * (arXiv style "A; B; C"), then honors "Family, Given" when a part has a
- * comma; a multi-token comma-less part becomes `{family: last, given: rest}`;
- * a single token becomes family-only. Junk tokens are dropped.
- */
+/** Parse a PDF info-dict `Author` string into CSL authors via the shared
+ *  parser, then drop tooling artifacts ("Microsoft Word", "Adobe Acrobat",
+ *  ...). PDF-specific junk filtering lives here, not in the shared parser —
+ *  GUI and LLM-byline paths must not drop names just because a token happens
+ *  to match a tool substring. */
 export function parseAuthors(raw: string): Author[] {
-  return raw
-    .split(/[;\n]/)
-    .map((p) => p.trim())
-    .filter((p) => p.length > 0 && !isJunkAuthor(p))
-    .map((p) => {
-      const comma = p.indexOf(",");
-      if (comma > 0) {
-        const family = p.slice(0, comma).trim();
-        const given = p.slice(comma + 1).trim();
-        return { family, given: given || undefined };
-      }
-      const parts = p.split(/\s+/).filter(Boolean);
-      if (parts.length >= 2) {
-        return {
-          family: parts.slice(-1)[0],
-          given: parts.slice(0, -1).join(" "),
-        };
-      }
-      return { family: p };
-    });
+  return parseAuthorsShared(raw).filter((a) => {
+    const full = `${a.given ?? ""} ${a.family ?? ""}`.trim();
+    return !isJunkAuthor(full);
+  });
 }
 
 /** Parse a PDF `CreationDate` ("D:YYYYMMDDHHmmSS...") → 4-digit year, or null. */

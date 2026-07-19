@@ -305,6 +305,18 @@ async fn sidecar_port(state: tauri::State<'_, SidecarState>) -> Result<Option<u1
     Ok(port)
 }
 
+#[tauri::command]
+async fn open_url(url: String) -> Result<(), String> {
+    let r = if cfg!(target_os = "windows") {
+        Command::new("cmd").args(["/c", "start", "", &url]).spawn()
+    } else if cfg!(target_os = "macos") {
+        Command::new("open").arg(&url).spawn()
+    } else {
+        Command::new("xdg-open").arg(&url).spawn()
+    };
+    r.map(|_| ()).map_err(|e| e.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -320,6 +332,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             sidecar_port,
+            open_url,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Dissertator");

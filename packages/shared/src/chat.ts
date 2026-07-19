@@ -67,6 +67,13 @@ export interface ChatRequest {
    * messages yet (defense against re-greeting).
    */
   opener?: boolean;
+  /**
+   * RETRY: re-run the last user turn. When true, no new user row is inserted
+   * (the existing last user row is reused) and the most recent assistant
+   * row (the failed/partial one) is deleted first — so the transcript keeps
+   * a single user+assistant pair instead of accumulating duplicates.
+   */
+  retry?: boolean;
 }
 
 /**

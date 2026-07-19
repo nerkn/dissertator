@@ -5,6 +5,8 @@ import {
   PencilSimpleLine,
   ChatCircleDots,
 } from "@phosphor-icons/react";
+import { useEffect, useState } from "react";
+import { isKeylessProviderType } from "@dissertator/shared";
 import { LibraryPanel } from "../components/LibraryPanel";
 import { CenterPane } from "../components/CenterPane";
 import { ChatPanel } from "../components/ChatPanel";
@@ -12,11 +14,17 @@ import { SettingsDialog } from "../components/SettingsDialog";
 import { CitationPopup } from "../components/CitationPopup";
 import { WindowControls } from "../components/WindowControls";
 import { ResizeHandle } from "../components/ResizeHandle";
+import { PanelDivider } from "../components/PanelDivider";
+import { useLayoutStore } from "../lib/stores/layout";
 import { SystemDialog } from "../components/SystemDialog";
+import { OnboardingDialog } from "../components/OnboardingDialog";
 import { useApp } from "./useApp";
+import { useExternalLinks } from "../lib/useExternalLinks";
 import { useSessionStore } from "../lib/stores/session";
+import { useProviderStore } from "../lib/stores/providers";
 
 export default function App() {
+  useExternalLinks();
   const health = useSessionStore((s) => s.health);
   const project = useSessionStore((s) => s.project);
   const showSettings = useSessionStore((s) => s.showSettings);
@@ -25,6 +33,26 @@ export default function App() {
   const setShowSettings = useSessionStore((s) => s.setShowSettings);
   const setError = useSessionStore((s) => s.setError);
   const initialized = !!project?.initialized;
+
+  const providers = useProviderStore((s) => s.providers);
+  const keys = useProviderStore((s) => s.keys);
+  const providersLoaded = useProviderStore((s) => s.loaded);
+  const libraryWidth = useLayoutStore((s) => s.libraryWidth);
+  const chatWidth = useLayoutStore((s) => s.chatWidth);
+  const adjustLibrary = useLayoutStore((s) => s.adjustLibrary);
+  const adjustChat = useLayoutStore((s) => s.adjustChat);
+
+  useEffect(() => {
+    const onResize = () => adjustLibrary(0);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [adjustLibrary]);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  const hasChatKey = providers.some(
+    (p) => !isKeylessProviderType(p.type) && !!keys[p.keyUser],
+  );
+  const showOnboarding =
+    health === "up" && providersLoaded && !hasChatKey && !onboardingDismissed;
 
   const {
     settings,
@@ -82,7 +110,12 @@ export default function App() {
       </header>
       <ResizeHandle />
 
-      <main className="body">
+      <main
+        className="body"
+        style={{
+          gridTemplateColumns: `${libraryWidth}px 6px minmax(0, 1fr) 6px ${chatWidth}px`,
+        }}
+      >
         <LibraryPanel
           onRescan={handleRescan}
           onAttentionResolved={refreshSources}
@@ -100,9 +133,17 @@ export default function App() {
           onOpenReferences={openReferencesView}
           onOpenNote={openSourceByIdAtPage}
         />
+        <PanelDivider
+          onDelta={adjustLibrary}
+          label="Resize library panel"
+        />
         <CenterPane
           onNewDocument={handleNewDocument}
           onCitationClick={handleCitationClick}
+        />
+        <PanelDivider
+          onDelta={adjustChat}
+          label="Resize chat panel"
         />
         <ChatPanel
           ref={chatPanelRef}
@@ -146,6 +187,10 @@ export default function App() {
 
       {/* In-app prompt/confirm/alert renderer (replaces window.prompt etc.) */}
       <SystemDialog />
+
+      {showOnboarding && (
+        <OnboardingDialog onClose={() => setOnboardingDismissed(true)} />
+      )}
     </div>
   );
 }

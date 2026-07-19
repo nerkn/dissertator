@@ -102,27 +102,36 @@
   background: rgba(74, 144, 226, 0.35);
 }
 
-/* Floating "Save note" pill that appears at a live text selection. Fixed so
-   it tracks viewport coords from the selection's bounding rect. */
 .note-save-pill {
   position: fixed;
-  transform: translateX(-50%);
   z-index: 72;
   display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
+  flex-direction: column;
+  padding: 2px;
   font-size: 12px;
   font-weight: 600;
-  border-radius: 999px;
+  border-radius: 10px;
   border: 1px solid var(--border, #334155);
   background: var(--panel-2, #273449);
-  color: var(--text, #e2e8f0);
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
-  cursor: pointer;
   white-space: nowrap;
 }
-.note-save-pill:hover {
+.note-save-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 6px;
+  padding: 5px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text, #e2e8f0);
+  font: inherit;
+  font-weight: 600;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.note-save-pill-btn:hover {
   background: var(--panel-3, #334155);
 }
 
