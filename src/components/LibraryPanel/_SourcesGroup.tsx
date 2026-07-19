@@ -11,6 +11,7 @@ import {
   CaretDown,
   CaretRight,
   CircleNotch,
+  DotsThreeVertical,
   Gear,
   PencilSimple,
   Sparkle,
@@ -29,7 +30,7 @@ import { ReferenceEditDialog } from "../ReferenceEditDialog";
 import { StatusBadge } from "../StatusBadge";
 import { kindDotClass } from "./_shared";
 
-type SortKey = "name" | "filecdate" | "author" | "publishyear";
+type SortKey = "title" | "filecdate" | "author" | "publishyear" | "filename";
 
 interface Props {
   project: ProjectStatus;
@@ -69,7 +70,8 @@ export function SourcesGroup({
   // (or the drain already finished).
   const [embedStarting, setEmbedStarting] = useState(false);
   const [embedError, setEmbedError] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<SortKey>("name");
+  const [sortBy, setSortBy] = useState<SortKey>("title");
+  const [menuOpen, setMenuOpen] = useState(false);
   const refsById = useContentStore((s) => s.referencesBySource);
   const setReferences = useContentStore((s) => s.setReferences);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -228,8 +230,19 @@ export function SourcesGroup({
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const refFor = (s: SourceFile) => refsById?.get(s.id);
+    const stripArticle = (t: string): string =>
+      t.replace(/^\s*(a|an|the)\b\s*/i, "");
     const cmp = (a: SourceFile, b: SourceFile): number => {
       switch (sortBy) {
+        case "title": {
+          const ta = stripArticle(
+            (refFor(a)?.title?.trim() || a.filename).toLowerCase(),
+          );
+          const tb = stripArticle(
+            (refFor(b)?.title?.trim() || b.filename).toLowerCase(),
+          );
+          return ta.localeCompare(tb) || a.filename.localeCompare(b.filename);
+        }
         case "filecdate":
           return b.addedAt - a.addedAt || a.filename.localeCompare(b.filename);
         case "author": {
@@ -245,7 +258,7 @@ export function SourcesGroup({
           const yb = refFor(b)?.year ?? 0;
           return yb - ya || a.filename.localeCompare(b.filename);
         }
-        case "name":
+        case "filename":
         default:
           return a.filename.localeCompare(b.filename);
       }
@@ -311,49 +324,88 @@ export function SourcesGroup({
           )}
           🔵 Sources
         </span>
-        {onRescan && (
+        <div className="sources-head-menu">
           <button
-            className="btn ghost tiny-btn"
+            className="btn ghost tiny-btn sources-head-menu-btn"
             onClick={(e) => {
               e.stopPropagation();
-              onRescan();
+              setMenuOpen((v) => !v);
             }}
-            disabled={busy}
-            title="Re-scan project root for new/changed files"
+            title="Corpus actions"
+            aria-label="Corpus actions"
           >
-            <ArrowsClockwise size={13} weight="bold" />
-            {busy ? "scanning…" : "Rescan"}
+            <DotsThreeVertical size={14} weight="bold" />
           </button>
-        )}
-        <button
-          className="btn ghost tiny-btn"
-          onClick={(e) => {
-            e.stopPropagation();
-            void identifyAll();
-          }}
-          disabled={identifying || busy}
-          title="Detect title, authors, year via DOI, PDF metadata, then AI"
-        >
-          <Sparkle size={13} weight="bold" />
-          {identifying
-            ? `identifying ${identifyProg?.done ?? 0}/${identifyProg?.total ?? 0}`
-            : "Identify all"}
-        </button>
+          {menuOpen && (
+            <>
+              <div
+                className="sources-menu-backdrop"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setMenuOpen(false);
+                }}
+              />
+              <div
+                className="sources-menu"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {onRescan && (
+                  <button
+                    className="sources-menu-item"
+                    onClick={() => {
+                      setMenuOpen(false);
+                      onRescan();
+                    }}
+                    disabled={busy}
+                  >
+                    <ArrowsClockwise size={13} weight="bold" />
+                    {busy ? "Scanning…" : "Rescan"}
+                  </button>
+                )}
+                <button
+                  className="sources-menu-item"
+                  onClick={() => {
+                    setMenuOpen(false);
+                    void identifyAll();
+                  }}
+                  disabled={identifying || busy}
+                  title="Detect title, authors, year via DOI, PDF metadata, then AI"
+                >
+                  <Sparkle size={13} weight="bold" />
+                  {identifying
+                    ? `Identifying ${identifyProg?.done ?? 0}/${identifyProg?.total ?? 0}`
+                    : "Identify all"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
       </div>
-      <div className="count">{sourceCount} files</div>
-      {sc ? (
-        <div className="muted small">
-          {doneCount} done
-          {extractingCount ? `, ${extractingCount} extracting` : ""}
-          {needsOcrCount ? `, ${needsOcrCount} need OCR` : ""}
-          {failedCount ? `, ${failedCount} failed` : ""}
+      <div className="count count-popover-trigger" tabIndex={0}>
+        {sourceCount} files
+        <div className="count-popover">
+          {sc ? (
+            <>
+              <div className="count-popover-row">
+                {doneCount} done
+                {extractingCount ? `, ${extractingCount} extracting` : ""}
+                {needsOcrCount ? `, ${needsOcrCount} need OCR` : ""}
+                {failedCount ? `, ${failedCount} failed` : ""}
+              </div>
+              {embedLine && (
+                <div className="count-popover-row muted">{embedLine}</div>
+              )}
+              {embedReady && (
+                <div className="count-popover-row muted">✓ corpus embedded</div>
+              )}
+            </>
+          ) : (
+            <div className="count-popover-row muted">
+              PDFs, DOCX, XLSX, CSV, MD, TXT, images
+            </div>
+          )}
         </div>
-      ) : (
-        <div className="muted small">
-          PDFs, DOCX, XLSX, CSV, MD, TXT, images
-        </div>
-      )}
-      {embedLine && <div className="muted small">{embedLine}</div>}
+      </div>
 
       {/* Embedding status + action. Extraction ("done") only means the text
           was pulled out + chunked — it does NOT mean vectors exist. Make
@@ -415,10 +467,11 @@ export function SourcesGroup({
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as SortKey)}
             >
-              <option value="name">Name</option>
-              <option value="filecdate">Date added</option>
+              <option value="title">Title</option>
               <option value="author">Author</option>
               <option value="publishyear">Year</option>
+              <option value="filecdate">Date added</option>
+              <option value="filename">Filename</option>
             </select>
           </div>
           <div className="source-tree">
