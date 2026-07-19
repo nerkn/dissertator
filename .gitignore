@@ -23,6 +23,8 @@ Thumbs.db
 
 # local test data
 denemeFolder/
+.tmp-test-*/
+library_mock.html
 
 # editor
 .vscode/
