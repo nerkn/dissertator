@@ -5,7 +5,7 @@
 // buttons are stateless triggers.
 // ---------------------------------------------------------------------------
 
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useInstance } from "@milkdown/react";
 import type { Editor } from "@milkdown/kit/core";
 import { callCommand, getHTML } from "@milkdown/kit/utils";
@@ -73,6 +73,16 @@ export function Toolbar({
   const [exportErr, setExportErr] = useState<string | null>(null);
   const [savedTo, setSavedTo] = useState<string | null>(null);
   const exportMenuRef = useRef<HTMLDetailsElement | null>(null);
+
+  useEffect(() => {
+    const details = exportMenuRef.current;
+    if (!details) return;
+    const onDown = (e: MouseEvent) => {
+      if (details.open && !details.contains(e.target as Node)) details.open = false;
+    };
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
 
   // Run a Milkdown command. Spread into `callCommand` so the key + payload
   // are typed exactly as `callCommand` expects (no manual casts).
