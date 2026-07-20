@@ -39,7 +39,7 @@ export function ListsGroup({ sources, onOpenNote }: Props) {
           ) : (
             <CaretRight size={13} weight="bold" />
           )}
-          🔖 Lists
+          Favorites
         </span>
         <button
           className="btn ghost tiny-btn"

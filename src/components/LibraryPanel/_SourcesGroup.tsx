@@ -1,9 +1,10 @@
-// SourcesGroup — the 🔵 Sources section of the Library panel.
+// SourcesGroup — the 🔵 Documents section of the Library panel.
 //
 // Owns its own state: the collapse toggle, the corpus-wide embedding poll +
 // "Embed now" action, and the client-side filter against the panel-level
 // search query. Renders the group header (with rescan), the embedding status
-// block, and the source tree.
+// block, and the source tree. Markdown source files are excluded — they
+// belong to the Manuscripts group.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -29,7 +30,7 @@ import { alertDialog } from "../../lib/stores/dialogs";
 import { fmtAuthors } from "../ReferenceFields";
 import { ReferenceEditDialog } from "../ReferenceEditDialog";
 import { StatusBadge } from "../StatusBadge";
-import { kindDotClass } from "./_shared";
+import { isMdSource, kindDotClass } from "./_shared";
 
 type SortKey = "title" | "filecdate" | "author" | "publishyear" | "filename";
 
@@ -267,6 +268,7 @@ export function SourcesGroup({
     const items = (sources?.items ?? [])
       .slice()
       .filter((s) => s.textStatus !== "failed")
+      .filter((s) => !isMdSource(s))
       .sort(cmp);
     if (!q) return items;
     return items.filter((s) => {
@@ -282,14 +284,13 @@ export function SourcesGroup({
     });
   }, [sources, query, sortBy, refsById]);
 
-  const c = project.counts;
   const sc = sources?.counts;
-  // Prefer live counts from the ingest surface when available.
-  const sourceCount = sc ? sc.total : c.sourceFiles;
+  const nonMdTotal = (sources?.items ?? []).filter((s) => !isMdSource(s)).length;
   const doneCount = sc ? sc.done : null;
   const needsOcrCount = sc ? sc.needsOcr : null;
   const failedCount = sc ? sc.failed : null;
   const extractingCount = sc ? sc.extracting : null;
+  const sourceCount = sc ? Math.min(sc.total, nonMdTotal) : nonMdTotal;
 
   // One-line aggregate embedding summary (corpus-wide). Hidden until we have
   // a status fetch back; degrades to nothing rather than "0/0".
@@ -323,7 +324,7 @@ export function SourcesGroup({
           ) : (
             <CaretRight size={13} weight="bold" />
           )}
-          🔵 Sources
+          Documents
         </span>
         <div className="sources-head-menu">
           <button

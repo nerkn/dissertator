@@ -1,13 +1,13 @@
 // LibraryPanel — the left sidebar: the corpus browser.
 //
-// Orchestrates the panel-level search query and renders four collapsible
-// groups in a fixed order: 🔵 Sources, 🟡 Documents, 📒 References, 🔖 Lists,
+// Orchestrates the panel-level search query and renders collapsible groups
+// in a fixed order: 🟡 Manuscripts, 🔵 Documents, 🔖 Favorites, 📒 References,
 // followed by the AttentionPanel. Each complex group owns its own state and
-// fetching (see `_SourcesGroup`, `_ListsGroup`); the Documents + References
-// groups are simple enough to stay inline.
+// fetching (see `_SourcesGroup`, `_ListsGroup`); the References group is a
+// simple singleton launcher. Manuscripts mixes DB documents with markdown
+// source files (both editable in the ManuscriptEditor).
 
 import { useState } from "react";
-import { CaretDown, CaretRight } from "@phosphor-icons/react";
 import type {
   Document,
   OcrStrategy,
@@ -17,8 +17,9 @@ import { useContentStore } from "../../lib/stores/content";
 import { useSessionStore } from "../../lib/stores/session";
 import { AttentionPanel } from "../AttentionPanel";
 import { SourcesGroup } from "./_SourcesGroup";
+import { ManuscriptsGroup } from "./_ManuscriptsGroup";
 import { ListsGroup } from "./_ListsGroup";
-import { ATTENTION_STATUSES } from "./_shared";
+import { ATTENTION_STATUSES, isMdSource } from "./_shared";
 
 interface Props {
   /** Click handler for the rescan button. */
@@ -72,9 +73,8 @@ export function LibraryPanel({
   onOpenReferences,
   onOpenNote,
 }: Props) {
-  // Panel-level search query; currently filters the Sources group only.
+  // Panel-level search query; currently filters the Documents group only.
   const [query, setQuery] = useState("");
-  const [docsOpen, setDocsOpen] = useState(false);
 
   const sources = useContentStore((s) => s.sources);
   const documents = useContentStore((s) => s.documents);
@@ -93,6 +93,7 @@ export function LibraryPanel({
     );
   }
 
+  const mdSources = (sources?.items ?? []).filter(isMdSource);
   const attentionItems = (sources?.items ?? []).filter((i) =>
     ATTENTION_STATUSES.includes(i.textStatus),
   );
@@ -102,11 +103,19 @@ export function LibraryPanel({
       <div className="panel-title">Library</div>
       <div className="search">
         <input
-          placeholder="🔍 search sources…"
+          placeholder="🔍 search documents…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
       </div>
+
+      <ManuscriptsGroup
+        documents={documents ?? []}
+        mdSources={mdSources}
+        onOpenDocument={onOpenDocument}
+        onOpenMd={onOpen}
+        onNewDocument={onNewDocument}
+      />
 
       <SourcesGroup
         project={project}
@@ -120,55 +129,11 @@ export function LibraryPanel({
         onOpenSettings={onOpenSettings}
       />
 
-      <div className="group yellow">
-        <div className="group-head group-head-row">
-          <span
-            className="group-head-toggle"
-            onClick={() => setDocsOpen((v) => !v)}
-            title="Your papers & dissertations"
-          >
-            {docsOpen ? (
-              <CaretDown size={13} weight="bold" />
-            ) : (
-              <CaretRight size={13} weight="bold" />
-            )}
-            🟡 Documents
-          </span>
-          {onNewDocument && (
-            <button
-              className="btn ghost tiny-btn"
-              onClick={onNewDocument}
-              title="Create a new document"
-            >
-              + New
-            </button>
-          )}
-        </div>
-        {docsOpen &&
-          ((documents ?? []).length > 0 ? (
-            <div className="source-tree">
-              {(documents ?? []).map((d) => (
-                <div
-                  key={d.id}
-                  className="source-row"
-                  title={d.title}
-                  onClick={() => onOpenDocument?.(d)}
-                >
-                  <span className="source-dot doc" />
-                  <span className="source-name">{d.title}</span>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <div className="muted small source-tree-empty">
-              No documents yet.
-            </div>
-          ))}
-      </div>
+      <ListsGroup sources={sources} onOpenNote={onOpenNote} />
 
       <div className="group purple">
         <div className="group-head group-head-row">
-          <span title="APA bibliography (citeproc)">📒 References</span>
+          <span title="APA bibliography (citeproc)">References</span>
           {onOpenReferences && (
             <button
               className="btn ghost tiny-btn"
@@ -180,8 +145,6 @@ export function LibraryPanel({
           )}
         </div>
       </div>
-
-      <ListsGroup sources={sources} onOpenNote={onOpenNote} />
 
       <AttentionPanel
         items={attentionItems}
