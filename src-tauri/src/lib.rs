@@ -3,10 +3,26 @@
 // Responsibilities:
 //   - window + IPC bridge to the React frontend
 //   - OWN the Bun sidecar process: spawn it, learn its port from stdout, and
-//     hand that port to the frontend over IPC. Tauri-ownership means each app
-//     instance gets its own sidecar on its own free port — so multi-instance
-//     ("open another project") just works, and the frontend never guesses.
+//     hand that port to the frontend over IPC.
 //   - dialog + filesystem plugins
+//
+// # IMPORTANT — multi-instance is a first-class feature, not an accident.
+//
+// Each app instance spawns its OWN sidecar, which binds the first free port
+// starting at 4319 (4319 busy → 4320 → 4321 …) and reports it back over stdout.
+// The frontend learns its sidecar's port from THIS parent only, via the
+// `sidecar_port` IPC command. This is what lets a user run several Dissertator
+// windows at once — e.g. two different projects open simultaneously, each with
+// its own backend and its own SQLite DB.
+//
+// ➤ DO NOT collapse this to a single fixed port, and DO NOT make a new instance
+//   reuse/kill an existing 4319 listener. Either change breaks multi-instance.
+//
+// The flip side: a sidecar must die with its parent. Clean exit is handled
+// below in `RunEvent::Exit`; the sidecar ALSO self-exits when its parent PID
+// disappears (see sidecar/src/index.ts parent-watch) so a Ctrl-C / crash /
+// force-quit of this process can never leak a listening zombie. Only the
+// orphaned sidecar exits — sibling instances stay up.
 
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
@@ -28,10 +44,14 @@ struct SidecarState {
 /// Build the command that launches the sidecar.
 ///
 /// - **Debug (dev):** `bun run <root>/sidecar/src/index.ts` — no compile step,
-///   edits land on the next `tauri dev`. Multi-instance: the 2nd app's sidecar
-///   finds 4319 busy and binds 4320; we read whichever port back from stdout.
+///   edits land on the next `tauri dev`.
 /// - **Release:** the bundled `dissertator-sidecar` binary (built upstream by
 ///   `bun build --compile`, placed next to the executable / in resources).
+///
+/// Multi-instance (see the module-level note): the child binds the first free
+/// port from 4319 upward and prints `{"sidecar":"ready","port":N}`; the 2nd app
+/// finds 4319 busy and takes 4320, the 3rd takes 4321, etc. We read whichever
+/// port back from stdout — never assume 4319.
 fn sidecar_command(workspace_root: &Path, resource_dir: Option<&Path>) -> Option<Command> {
     if cfg!(debug_assertions) {
         let mut cmd = Command::new("bun");

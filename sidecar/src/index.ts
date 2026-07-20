@@ -31,6 +31,11 @@ import { registerSettings } from "./routes/settings.ts";
 import { registerSources } from "./routes/sources.ts";
 import { registerUi } from "./routes/ui.ts";
 
+// Captured before any await: the Tauri process that spawned us. Used by the
+// parent-death watchdog at the bottom of this file. (ppid is read once, early,
+// so async work below can't race a dying parent.)
+const PARENT_PID = process.ppid;
+
 const app = new Hono();
 
 // Frontend (localhost:1420) calls the sidecar (localhost:4319) cross-origin.
@@ -77,3 +82,32 @@ console.log(
 // line from stdout to learn which port we bound (we pick a free one), then
 // hands the port to the frontend over IPC. One JSON object per line, first.
 process.stdout.write(`${JSON.stringify({ sidecar: "ready", port })}\n`);
+
+// Parent-death watchdog. The Rust parent kills us on a clean RunEvent::Exit,
+// but a Ctrl-C / SIGKILL / crash / force-quit skips that handler and would
+// leave us listening forever — a zombie still holding the project's SQLite DB
+// open (the exact WAL/lock contention that hung a long agent turn). So poll
+// the parent ourselves and self-exit when it's gone. Multi-instance safe: each
+// sidecar watches only its OWN parent (PARENT_PID above), so this never kills
+// a sibling app's sidecar. Skipped when launched detached (ppid === 1).
+//
+// Unix: a dead parent reparents us to init → process.ppid changes. Windows has
+// no reparenting, so ppid goes stale → fall back to kill(pid, 0), which throws
+// once the pid no longer exists.
+if (PARENT_PID > 1) {
+  const parentAlive = () => {
+    if (process.ppid !== PARENT_PID) return false;
+    try {
+      process.kill(PARENT_PID, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  setInterval(() => {
+    if (!parentAlive()) {
+      console.log("[sidecar] parent process gone — exiting to avoid zombie");
+      process.exit(0);
+    }
+  }, 2000);
+}
