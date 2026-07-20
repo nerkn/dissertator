@@ -448,6 +448,32 @@ code {
   border-top: 1px solid var(--border);
   margin: 4px 0;
 }
+.msg-body .md .md-table-wrap {
+  margin: 4px 0;
+  overflow-x: auto;
+}
+.msg-body .md .md-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.msg-body .md .md-table th,
+.msg-body .md .md-table td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  word-break: break-word;
+}
+.msg-body .md .md-table th {
+  background: rgba(127, 127, 127, 0.14);
+  font-weight: 600;
+}
+.msg-body .md .md-table tbody tr:nth-child(even) td {
+  background: rgba(127, 127, 127, 0.06);
+}
 .msg-body .md a {
   color: var(--blue, #3b82f6);
   text-decoration: underline;

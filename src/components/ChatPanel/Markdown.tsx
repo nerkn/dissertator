@@ -129,10 +129,30 @@ type Block =
   | { t: "ul"; items: string[] }
   | { t: "ol"; items: string[] }
   | { t: "para"; text: string }
+  | { t: "table"; header: string[]; align: TableAlign[]; rows: string[][] }
   | { t: "hr" };
 
-const SPECIAL = /^\s*(```|#{1,6}\s|>\s?|[-*+]\s|\d+\.\s|---\s*$|\*\*\*\s*$|___\s*$)/;
+const SPECIAL = /^\s*(```|#{1,6}\s|>\s?|[-*+]\s|\d+\.\s|---\s*$|\*\*\*\s*$|___\s*$|\|)/;
 
+type TableAlign = "left" | "right" | "center" | "none";
+
+function tableCells(line: string): string[] {
+  const t = line.trim().replace(/^\|/, "").replace(/\|\s*$/, "");
+  return t.split("|").map((s) => s.trim());
+}
+function isTableSep(line: string): boolean {
+  const cells = tableCells(line);
+  if (cells.length === 0) return false;
+  return cells.every((c) => /^:?-{1,}:?$/.test(c));
+}
+function alignOf(cell: string): TableAlign {
+  const l = cell.startsWith(":");
+  const r = cell.endsWith(":");
+  if (l && r) return "center";
+  if (r) return "right";
+  if (l) return "left";
+  return "none";
+}
 function parseBlocks(src: string): Block[] {
   const lines = src.replace(/\r\n?/g, "\n").split("\n");
   const blocks: Block[] = [];
@@ -192,6 +212,22 @@ function parseBlocks(src: string): Block[] {
         i++;
       }
       blocks.push({ t: "ol", items });
+      continue;
+    }
+    if (i + 1 < lines.length && line.includes("|") && isTableSep(lines[i + 1])) {
+      const header = tableCells(line);
+      const aligns = tableCells(lines[i + 1]).map(alignOf);
+      i += 2;
+      const rows: string[][] = [];
+      while (
+        i < lines.length &&
+        lines[i].includes("|") &&
+        lines[i].trim() !== ""
+      ) {
+        rows.push(tableCells(lines[i]));
+        i++;
+      }
+      blocks.push({ t: "table", header, align: aligns, rows });
       continue;
     }
     const para: string[] = [];
@@ -257,6 +293,38 @@ function renderBlock(b: Block, i: number): ReactNode {
           ))}
         </ol>
       );
+    case "table": {
+      const alignStyle = (a?: TableAlign) =>
+        a === "left" || a === "right" || a === "center"
+          ? { textAlign: a }
+          : undefined;
+      return (
+        <div key={i} className="md-table-wrap">
+          <table className="md-table">
+            <thead>
+              <tr>
+                {b.header.map((h, j) => (
+                  <th key={j} style={alignStyle(b.align[j])}>
+                    {renderInline(parseInline(h))}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {b.rows.map((row, r) => (
+                <tr key={r}>
+                  {row.map((cell, j) => (
+                    <td key={j} style={alignStyle(b.align[j])}>
+                      {renderInline(parseInline(cell))}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+    }
     case "hr":
       return <hr key={i} className="md-hr" />;
     case "para":
