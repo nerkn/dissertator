@@ -17,7 +17,7 @@ import {
   listReferences,
   updateChat,
 } from "../db";
-import { readPreferences } from "../agent-files.ts";
+import { getAgentPersona, readPreferences } from "../agent-files.ts";
 import {
   runAgentLoop,
   type AgentStreamEvent,
@@ -303,12 +303,20 @@ export function registerChats(app: Hono): void {
         "- p_create({title, text?}) creates a new manuscript.",
         "- p_write({id?, oldtext, text}) REPLACES the first occurrence of `oldtext` (must exist verbatim) with `text`.",
         "- p_insert({id?, anchor, text}) INSERTs `text` right after the first occurrence of `anchor` (empty anchor = top of the body).",
-        "- gui_doc_open / gui_p_open open things for the user; gui_options offers quick-reply choices (does NOT pause); gui_action narrates milestones.",
-        "- pref_add({ text }) records ONE durable user preference (tone, format, citation style, workflow, constraint) as a bullet. Use ONLY for lasting preferences — NEVER for one-off requests.",
+        "- gui_doc_open / gui_p_open open things for the user; gui_action narrates milestones.",
+        "- gui_options shows quick-reply choice buttons (does NOT pause). PROACTIVELY end most turns with 2–4 concrete next-step options so the user can tap instead of type — not only on the first turn. Skip only when the user asked a direct factual question or the task is clearly complete.",
+        "- pref_add({ text }) records ONE durable user preference or correction as a bullet (read into every future chat). Call it the moment the user expresses a LASTING preference OR corrects you / shows frustration — signals like: don't, stop doing, never, always, instead, I hate, you keep doing X, all-caps, or terse annoyance. Distill the correction into one forward rule (what TO do). NEVER for one-off or transient requests.",
         "",
         "Manuscript edits are CONTENT-ADDRESSED: pass the exact `oldtext`/`anchor` you got from p_read. If p_write/p_insert fails because the text wasn't found, p_read again — the user may have edited meanwhile.",
         "Cite sources inline as [@citekey] or [@citekey:42] (page). Prefer grounded claims; say plainly when the sources are insufficient.",
       ];
+      const persona = await getAgentPersona();
+      if (persona.personality.trim() || persona.rules.trim()) {
+        const block: string[] = [];
+        if (persona.personality.trim()) block.push("", "# Personality", persona.personality.trim());
+        if (persona.rules.trim()) block.push("", "# Rules", persona.rules.trim());
+        systemParts.splice(1, 0, ...block);
+      }
       const prefs = await readPreferences();
       if (prefs.trim()) {
         systemParts.push(
