@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { CaretDown, CaretRight } from "@phosphor-icons/react";
 import { api } from "../lib/api";
 import type { OcrStrategy, SourceFile } from "@dissertator/shared";
 import { StatusBadge } from "./StatusBadge";
@@ -30,12 +31,18 @@ export function AttentionPanel({
   // Per-item, per-engine working/error state. Keyed `${id}:${engine}`.
   const [working, setWorking] = useState<Record<string, boolean>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [open, setOpen] = useState(false);
 
   if (items.length === 0) {
     return (
       <div className="group red">
-        <div className="group-head">🔴 Attention</div>
-        <div className="muted small">✅ Nothing needs attention</div>
+        <div className="group-head group-head-row">
+          <span>
+            {open ? <CaretDown size={13} weight="bold" /> : <CaretRight size={13} weight="bold" />}
+            Attention
+          </span>
+        </div>
+        <div className="muted small">Nothing needs attention</div>
       </div>
     );
   }
@@ -115,16 +122,28 @@ export function AttentionPanel({
 
   return (
     <div className="group red attention">
-      <div className="group-head">
-        🔴 Attention
+      <div
+        className="group-head group-head-row"
+        onClick={() => setOpen((v) => !v)}
+        role="button"
+        aria-expanded={open}
+        title={open ? "Collapse" : "Expand"}
+        style={{ cursor: "pointer" }}
+      >
+        <span className="group-head-toggle">
+          {open ? <CaretDown size={13} weight="bold" /> : <CaretRight size={13} weight="bold" />}
+          Attention
+        </span>
         <span className="count-inline">{items.length}</span>
       </div>
-      <div className="muted small">
-        Files that failed extraction, need OCR, or need transcription.
-        Resolve each below.
-      </div>
+      {open && (
+        <>
+          <div className="muted small">
+            Files that failed extraction, need OCR, or need transcription.
+            Resolve each below.
+          </div>
 
-      <div className="attention-list">
+          <div className="attention-list">
         {items.map((item) => {
           const tKey = `${item.id}:tesseract`;
           const vKey = `${item.id}:vision`;
@@ -214,6 +233,8 @@ export function AttentionPanel({
           OCR is currently <strong>skipped</strong> globally — override per
           file here.
         </div>
+      )}
+        </>
       )}
     </div>
   );
