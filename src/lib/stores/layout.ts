@@ -53,8 +53,8 @@ interface LayoutState {
   /** Grow (+) / shrink (-) the library. The chat panel donates first; once
    *  chat hits its floor, the center pane (1fr) absorbs the remainder. */
   adjustLibrary: (delta: number) => void;
-  /** Grow (+) / shrink (-) the chat. The library panel donates first; once
-   *  library hits its base, the center pane absorbs the remainder. */
+  /** Grow (+) / shrink (-) the chat. Only chat changes; the center pane (1fr)
+   *  absorbs the delta, leaving the library panel untouched. */
   adjustChat: (delta: number) => void;
 }
 
@@ -72,10 +72,9 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
   adjustChat: (delta) => {
     const s = get();
     const w = window.innerWidth;
-    const newLib = clampLib(s.libraryWidth - delta, w);
-    const newChat = clampChat(s.chatWidth + delta, w);
-    save({ lib: newLib, chat: newChat });
-    set({ libraryWidth: newLib, chatWidth: newChat });
+    const newChat = clampChat(s.chatWidth - delta, w);
+    save({ lib: s.libraryWidth, chat: newChat });
+    set({ chatWidth: newChat });
   },
 }));
 
