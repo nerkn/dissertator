@@ -12,7 +12,7 @@
   padding: 0 4px;
   margin: 0 1px;
   font-size: 0.88em;
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.12s ease, border-color 0.12s ease;
@@ -54,7 +54,7 @@
   font-size: 12px;
 }
 .citation-popup-citekey {
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-weight: 600;
 }
 .citation-popup-page {
@@ -180,7 +180,7 @@
 }
 .references-import textarea {
   width: 100%;
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-size: 12px;
   padding: 8px;
   border: 1px solid var(--border);
@@ -236,7 +236,7 @@
   flex-wrap: wrap;
 }
 .reference-head .citekey {
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-size: 13px;
   color: var(--accent, #6ea8fe);
   background: rgba(110, 168, 254, 0.08);

@@ -414,7 +414,7 @@ code {
   white-space: normal;
 }
 .msg-body .md .md-inline-code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   padding: 1px 4px;
   border-radius: 4px;
@@ -431,7 +431,7 @@ code {
   line-height: 1.45;
 }
 .msg-body .md .md-code-block code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   white-space: pre;
 }
 .msg-body .md .md-quote {

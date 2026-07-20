@@ -116,7 +116,7 @@
   padding: 14px 18px;
   background: var(--panel-2);
   color: var(--text);
-  font-family: "JetBrains Mono", "SFMono-Regular", "Menlo", monospace;
+  font-family: var(--font-mono);
   font-size: 12.5px;
   line-height: 1.55;
   white-space: pre-wrap;

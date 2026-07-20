@@ -443,7 +443,7 @@
   margin-top: 2px;
 }
 .source-card-popover-row.file {
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   font-size: 11px;
   word-break: break-all;
   margin-top: 4px;

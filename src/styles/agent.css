@@ -153,7 +153,7 @@
 }
 .dev-debug-model {
   margin-left: auto;
-  font-family: ui-monospace, monospace;
+  font-family: var(--font-mono);
   color: var(--muted);
   max-width: 140px;
   overflow: hidden;
@@ -195,7 +195,7 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   color: #cbd5e1;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: 10.5px;
   line-height: 1.5;
   white-space: pre-wrap;

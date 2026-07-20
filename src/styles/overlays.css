@@ -2,7 +2,7 @@
 .reference-edit input.citekey-readonly {
   background: rgba(255, 255, 255, 0.03);
   color: var(--muted);
-  font-family: var(--mono, ui-monospace, monospace);
+  font-family: var(--font-mono);
   cursor: not-allowed;
   opacity: 0.85;
 }
