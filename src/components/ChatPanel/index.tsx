@@ -236,7 +236,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   const [error, setError] = useState<string | null>(null);
   // P5 narration beats for the in-flight assistant turn (tool_call+result pairs).
   const [toolBeats, setToolBeats] = useState<ToolBeat[]>([]);
-  // Quick-reply chips the agent offered via gui_options (cleared on next send).
+  // Quick-reply chips the agent offered via gui_suggest_replies (cleared on next send).
   const [pendingOptions, setPendingOptions] = useState<GuiOption[] | null>(null);
   // Ephemeral non-blocking beats the agent surfaced via gui_action.
   const [toasts, setToasts] = useState<ChatToast[]>([]);
@@ -253,6 +253,26 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
 
+  const liveBufRef = useRef("");
+  const liveFlushRef = useRef<number | null>(null);
+  const resetLiveBuffer = useCallback(() => {
+    if (liveFlushRef.current !== null) {
+      cancelAnimationFrame(liveFlushRef.current);
+      liveFlushRef.current = null;
+    }
+    liveBufRef.current = "";
+    setLiveAssistant("");
+  }, []);
+  const onDeltaBundled = useCallback((d: string) => {
+    liveBufRef.current += d;
+    if (liveFlushRef.current === null) {
+      liveFlushRef.current = requestAnimationFrame(() => {
+        liveFlushRef.current = null;
+        setLiveAssistant(liveBufRef.current);
+      });
+    }
+  }, []);
+
   const pushToast = useCallback((kind: ChatToast["kind"], text: string) => {
     const id = `t-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     setToasts((prev) => [...prev, { id, kind, text }]);
@@ -261,14 +281,11 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     }, 5000);
   }, []);
 
-  // Autoscroll to bottom as the transcript, the live reply, or its tool
-  // narration grows.
   useEffect(() => {
-    scrollRef.current?.scrollTo({
-      top: scrollRef.current.scrollHeight,
-      behavior: "smooth",
-    });
-  }, [messages, liveAssistant, toolBeats, pendingOptions]);
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: streaming ? "auto" : "smooth" });
+  }, [messages, liveAssistant, toolBeats, pendingOptions, streaming]);
 
   // New chats inherit the previous (active) chat's pinned sources when the
   // toggle is on — preserves the user's working context across "New chat".
@@ -302,7 +319,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       const ac = new AbortController();
       abortRef.current = ac;
       setStreaming(true);
-      setLiveAssistant("");
+      resetLiveBuffer();
       setToolBeats([]);
       setDebugEvents([]);
       const result = await streamChat(chatId, "", apiKey, {
@@ -310,7 +327,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
         openFiles: activeChat?.contextSources ?? [],
         activeDocumentId,
         embeddingApiKey,
-        onDelta: (d) => setLiveAssistant((prev) => prev + d),
+        onDelta: onDeltaBundled,
         onToolCall: (e) =>
           setToolBeats((prev) => [
             ...prev,
@@ -355,11 +372,12 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
               break;
           }
         },
-        onDebug: (e) => setDebugEvents((prev) => [...prev, e]),
+        onDebug: (e) =>
+          setDebugEvents((prev) => [...prev, e].slice(-5)),
         signal: ac.signal,
       });
       setStreaming(false);
-      setLiveAssistant("");
+      resetLiveBuffer();
       setToolBeats([]);
       abortRef.current = null;
       if (result.error && !result.aborted) {
@@ -415,14 +433,14 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       const ac = new AbortController();
       abortRef.current = ac;
       setStreaming(true);
-      setLiveAssistant("");
+      resetLiveBuffer();
 
       const result = await streamChat(activeChatId, text, apiKey, {
         openFiles: activeChat?.contextSources ?? [],
         activeDocumentId,
         embeddingApiKey,
         ...(isRetry ? { retry: true } : {}),
-        onDelta: (d) => setLiveAssistant((prev) => prev + d),
+        onDelta: onDeltaBundled,
         onToolCall: (e) =>
           setToolBeats((prev) => [
             ...prev,
@@ -471,12 +489,13 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
               break;
           }
         },
-        onDebug: (e) => setDebugEvents((prev) => [...prev, e]),
+        onDebug: (e) =>
+          setDebugEvents((prev) => [...prev, e].slice(-5)),
         signal: ac.signal,
       });
 
       setStreaming(false);
-      setLiveAssistant("");
+      resetLiveBuffer();
       setToolBeats([]);
       abortRef.current = null;
 
@@ -979,7 +998,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             />
           )}
 
-          {/* Quick-reply chips the agent offered via gui_options. Persist
+          {/* Quick-reply chips the agent offered via gui_suggest_replies. Persist
               after the turn until the user sends anything else (stale then). */}
           {pendingOptions && pendingOptions.length > 0 && !streaming && (
             <div className="option-chips">

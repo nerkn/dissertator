@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Bug, CaretDown } from "@phosphor-icons/react";
 import type { ChatMessage } from "@dissertator/shared";
 import type { DebugEvent } from "../../lib/api";
@@ -41,7 +42,7 @@ export function toolVerb(name: string): string {
     case "gui_doc_open":
     case "gui_p_open":
       return "opening";
-    case "gui_options":
+    case "gui_suggest_replies":
       return "asking";
     case "gui_action":
       return "noting";
@@ -93,8 +94,7 @@ export function LiveAssistantBubble({
   );
 }
 
-/** One transcript row. `live` flags the in-flight assistant stream. */
-export function MessageBubble({
+export const MessageBubble = memo(function MessageBubble({
   msg,
   live = false,
 }: {
@@ -139,7 +139,7 @@ export function MessageBubble({
       </div>
     </div>
   );
-}
+});
 
 /**
  * Dev-only panel: shows exactly what was sent to the LLM each agent step

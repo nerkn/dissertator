@@ -245,10 +245,12 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     type: "function",
     function: {
-      name: "gui_options",
+      name: "gui_suggest_replies",
       description:
-        "Show the user quick-reply option buttons. The run does NOT pause — " +
-        "clicking a button sends its `prompt` as the user's next message. Use " +
+        "Offer the user quick-reply buttons to close your turn. The run does " +
+        "NOT pause — clicking a button sends its `prompt` as the user's next " +
+        "message. This is how the user picks the next step; you MUST call this " +
+        "at the end of essentially every turn (2–4 concrete next steps). Use " +
         "for 'pick one of these directions' moments.",
       parameters: {
         type: "object",
@@ -442,8 +444,8 @@ export async function dispatchTool(
         return guiDocOpen(a, ctx);
       case "gui_p_open":
         return guiPOpen(a, ctx);
-      case "gui_options":
-        return guiOptions(a, ctx);
+      case "gui_suggest_replies":
+        return guiSuggestReplies(a, ctx);
       case "gui_action":
         return guiAction(a, ctx);
       case "pref_add":
@@ -709,7 +711,7 @@ function guiPOpen(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
   return { ok: true, summary: `📂 Opened manuscript "${doc?.title ?? id}"`, data: { opened: true } };
 }
 
-function guiOptions(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
+function guiSuggestReplies(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
   const raw = Array.isArray(args.options) ? args.options : [];
   const options = raw
     .filter((o): o is { short: string; prompt: string } =>
@@ -718,8 +720,8 @@ function guiOptions(args: Record<string, unknown>, ctx: ToolContext): ToolResult
     .slice(0, 5)
     .map((o) => ({ short: o.short, prompt: o.prompt }));
   if (options.length === 0)
-    return { ok: false, summary: "gui_options: no valid options", error: "options must be a non-empty array of {short, prompt}" };
-  ctx.emitGui({ kind: "options", options });
+    return { ok: false, summary: "gui_suggest_replies: no valid options", error: "options must be a non-empty array of {short, prompt}" };
+  ctx.emitGui({ kind: "suggest_replies", options });
   return { ok: true, summary: `🔘 Offered ${options.length} option${options.length === 1 ? "" : "s"}`, data: { offered: options.length } };
 }
 

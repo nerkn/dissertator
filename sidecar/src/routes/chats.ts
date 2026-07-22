@@ -30,10 +30,10 @@ import type { ToolContext } from "../agent/tools.ts";
  * brand-new chat auto-greets. The system prompt already carries the whole
  * corpus glimpse + other chat titles + the active manuscript, so this just
  * asks for a short orientation + concrete next-step proposals (offered as
- * one-tap gui_options). No user row is persisted for opener turns.
+ * one-tap gui_suggest_replies). No user row is persisted for opener turns.
  */
 const OPENER_INSTRUCTION =
-  "This is a brand-new chat and the user hasn't said anything yet. Greet them in ONE short sentence, then orient: you can already see the full corpus and the active manuscript above. Propose 2–3 concrete next steps (e.g. read a specific source, draft or revise a section, compare sources, fill a citation gap) and surface them as one-tap choices via gui_options. Keep it brief — do NOT read documents or run heavy tools yet; just propose and let the user pick.";
+  "This is a brand-new chat and the user hasn't said anything yet. Greet them in ONE short sentence, then orient: you can already see the full corpus and the active manuscript above. Propose 2–3 concrete next steps (e.g. read a specific source, draft or revise a section, compare sources, fill a citation gap) and surface them as one-tap choices via gui_suggest_replies. Keep it brief — do NOT read documents or run heavy tools yet; just propose and let the user pick.";
 
 /** Tighten a model-emitted title: strip quotes/punctuation, cap length. */
 function sanitizeTitle(raw: string): string {
@@ -304,11 +304,14 @@ export function registerChats(app: Hono): void {
         "- p_write({id?, oldtext, text}) REPLACES the first occurrence of `oldtext` (must exist verbatim) with `text`.",
         "- p_insert({id?, anchor, text}) INSERTs `text` right after the first occurrence of `anchor` (empty anchor = top of the body).",
         "- gui_doc_open / gui_p_open open things for the user; gui_action narrates milestones.",
-        "- gui_options shows quick-reply choice buttons (does NOT pause). PROACTIVELY end most turns with 2–4 concrete next-step options so the user can tap instead of type — not only on the first turn. Skip only when the user asked a direct factual question or the task is clearly complete.",
+        "- gui_suggest_replies offers quick-reply buttons the user taps to choose the next step (the run does NOT pause). This is your DEFAULT turn-ending action — see \"Response pattern\" below. Think of it as \"suggested replies\" (like Gmail/Slack), NOT configuration.",
         "- pref_add({ text }) records ONE durable user preference or correction as a bullet (read into every future chat). Call it the moment the user expresses a LASTING preference OR corrects you / shows frustration — signals like: don't, stop doing, never, always, instead, I hate, you keep doing X, all-caps, or terse annoyance. Distill the correction into one forward rule (what TO do). NEVER for one-off or transient requests.",
         "",
         "Manuscript edits are CONTENT-ADDRESSED: pass the exact `oldtext`/`anchor` you got from p_read. If p_write/p_insert fails because the text wasn't found, p_read again — the user may have edited meanwhile.",
         "Cite sources inline as [@citekey] or [@citekey:42] (page). Prefer grounded claims; say plainly when the sources are insufficient.",
+        "",
+        "# Response pattern (REQUIRED)",
+        "END EVERY TURN WITH gui_suggest_replies offering 2–4 concrete next-step buttons. This is your single most important habit. Whenever you would pose a bare question or list alternatives in prose, wrap them as buttons instead. The only exceptions: (a) the user asked a direct factual question and you just answered it, or (b) the task is fully complete with nothing left to choose. Never end with a plain question like \"What would you like next?\" or \"Should I do A or B?\" — that is a gui_suggest_replies call, not prose. Never end a turn without calling gui_suggest_replies unless one of the two exceptions clearly applies.",
       ];
       const persona = await getAgentPersona();
       if (persona.personality.trim() || persona.rules.trim()) {

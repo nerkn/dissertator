@@ -218,7 +218,28 @@ test("loop: no-activity watchdog aborts a stalled provider and throws a clear er
 
 test("loop: watchdog does not trip while the provider is actively streaming", async () => {
   // Streams a token every 5ms (well under the 200ms budget) → must finish.
+  // Two-phase fake: first call offers quick replies (so the suggest-replies
+  // nudge never fires), second call streams the text answer.
+  let phase = 0;
   const slow = async (opts: StreamChatOptions): Promise<StreamResult> => {
+    phase++;
+    if (phase === 1) {
+      return {
+        toolCalls: [
+          {
+            id: "t1",
+            type: "function",
+            function: {
+              name: "gui_suggest_replies",
+              arguments: JSON.stringify({
+                options: [{ short: "A", prompt: "a" }],
+              }),
+            },
+          },
+        ],
+        finishReason: "tool_calls",
+      };
+    }
     for (let i = 0; i < 4; i++) {
       await new Promise((r) => setTimeout(r, 5));
       opts.onDelta("x");
@@ -235,6 +256,53 @@ test("loop: watchdog does not trip while the provider is actively streaming", as
     streamFn: slow,
   });
   expect(res.content).toBe("xxxx");
+  expect(res.aborted).toBe(false);
+});
+
+test("loop: nudges the model to call gui_suggest_replies when it forgets", async () => {
+  // First call: text answer, no quick-reply buttons → loop must nudge once.
+  // Second call: still no buttons → accepted (no infinite loop).
+  let phase = 0;
+  const forgetful = async (): Promise<StreamResult> => {
+    phase++;
+    return phase === 1
+      ? { toolCalls: [], finishReason: "stop" }
+      : phase === 2
+        ? {
+            toolCalls: [
+              {
+                id: "t1",
+                type: "function",
+                function: {
+                  name: "gui_suggest_replies",
+                  arguments: JSON.stringify({
+                    options: [{ short: "A", prompt: "a" }],
+                  }),
+                },
+              },
+            ],
+            finishReason: "tool_calls",
+          }
+        : { toolCalls: [], finishReason: "stop" };
+  };
+  const events: AgentStreamEvent[] = [];
+  const res = await runAgentLoop({
+    apiKey: "k",
+    config: CFG,
+    messages: [{ role: "user", content: "hi" }],
+    toolContext: ctxBase,
+    onEvent: (e) => {
+      events.push(e);
+    },
+    streamFn: forgetful,
+  });
+  // The nudge happened: the model was called a 2nd time and the tool ran.
+  expect(phase).toBeGreaterThanOrEqual(2);
+  expect(
+    events.some(
+      (e) => e.type === "tool_call" && e.name === "gui_suggest_replies",
+    ),
+  ).toBe(true);
   expect(res.aborted).toBe(false);
 });
 

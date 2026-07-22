@@ -118,6 +118,8 @@ export async function runAgentLoop(
   let aborted = false;
   let capped = false;
   let finalAnswer = false;
+  let suggestedReplies = false;
+  let nudged = false;
   const usage = { prompt: 0, completion: 0 };
 
   for (let step = 0; step < maxSteps; step++) {
@@ -173,7 +175,23 @@ export async function runAgentLoop(
     if (aborted) break;
 
     if (res.toolCalls.length === 0) {
-      // Final answer — text already streamed. Done.
+      // Final text answer — but enforce the turn-closing habit: if the model
+      // produced its answer and never offered quick-reply buttons, nudge it
+      // exactly once to call gui_suggest_replies now. Keeps the model author
+      // the buttons; one extra round-trip only when it forgets. Second miss
+      // is accepted (no infinite loop).
+      if (!suggestedReplies && !nudged) {
+        nudged = true;
+        if (stepText) {
+          messages.push({ role: "assistant", content: stepText, tool_calls: [] });
+        }
+        messages.push({
+          role: "user",
+          content:
+            "You ended this turn without calling gui_suggest_replies. Do not re-explain or re-state your answer in prose. Reply with ONLY a single gui_suggest_replies tool call offering 2–4 concrete next-step buttons ({short, prompt}).",
+        });
+        continue;
+      }
       finalAnswer = true;
       break;
     }
@@ -200,6 +218,8 @@ export async function runAgentLoop(
         name: tc.function.name,
         args: parsed,
       });
+
+      if (tc.function.name === "gui_suggest_replies") suggestedReplies = true;
 
       let result: ToolResult;
       if (parseError) {

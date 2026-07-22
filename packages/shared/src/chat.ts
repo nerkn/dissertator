@@ -77,7 +77,7 @@ export interface ChatRequest {
 }
 
 /**
- * One option offered to the user mid-run via `gui_options`. Clicking it sends
+ * One option offered to the user mid-run via `gui_suggest_replies`. Clicking it sends
  * {@link prompt} as the user's next message; {@link short} is the chip label.
  */
 export interface GuiOption {
@@ -93,5 +93,5 @@ export interface GuiOption {
 export type GuiEvent =
   | { kind: "doc_open"; sourceId: string }
   | { kind: "p_open"; documentId: string }
-  | { kind: "options"; options: GuiOption[] }
+  | { kind: "suggest_replies"; options: GuiOption[] }
   | { kind: "action"; action: "warn" | "celebrate" | "info"; text: string };
