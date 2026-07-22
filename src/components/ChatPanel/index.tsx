@@ -364,7 +364,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             case "p_open":
               onOpenDocument?.(g.documentId);
               break;
-            case "options":
+            case "suggest_replies":
               setPendingOptions(g.options);
               break;
             case "action":
@@ -481,7 +481,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             case "p_open":
               onOpenDocument?.(g.documentId);
               break;
-            case "options":
+            case "suggest_replies":
               setPendingOptions(g.options);
               break;
             case "action":
