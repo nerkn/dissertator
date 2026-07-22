@@ -56,6 +56,7 @@ interface LoadedDoc {
   id: string;
   title: string;
   bodyMd: string;
+  _mode?: "document" | "source";
 }
 
 export function ManuscriptEditor({
@@ -68,11 +69,20 @@ export function ManuscriptEditor({
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
+  // First mount (no doc yet OR the document itself changed) shows the
+  // loading screen. A revision bump (agent edited the open doc) refetches
+  // silently: we keep the current doc mounted so EditorInner can live-swap
+  // the body in place and preserve caret + scroll position. Wiping to a
+  // "Loading…" screen on every agent edit would scroll the user back to top.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     let aborted = false;
-    setLoading(true);
-    setError(null);
-    setDoc(null);
+    const coldStart = !doc || doc.id !== documentId || doc._mode !== mode;
+    if (coldStart) {
+      setLoading(true);
+      setError(null);
+      setDoc(null);
+    }
     (async () => {
       try {
         const d =
@@ -80,7 +90,7 @@ export function ManuscriptEditor({
             ? await api.getSourceMarkdown(documentId)
             : await api.getDocument(documentId);
         if (aborted) return;
-        setDoc(d);
+        setDoc({ ...d, _mode: mode });
         setLoading(false);
       } catch (e) {
         if (aborted) return;

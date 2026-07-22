@@ -8,7 +8,14 @@ type Inline =
   | { t: "code"; v: string }
   | { t: "link"; href: string; c: Inline[] };
 
-function parseInline(s: string): Inline[] {
+const MAX_PARSE_LEN = 200_000;
+const MAX_BLOCKS = 4_000;
+const MAX_INLINE_DEPTH = 64;
+
+function parseInline(s: string, depth = 0): Inline[] {
+  if (depth > MAX_INLINE_DEPTH || s.length > MAX_PARSE_LEN) {
+    return [{ t: "text", v: s.slice(0, MAX_PARSE_LEN) }];
+  }
   const out: Inline[] = [];
   let buf = "";
   let i = 0;
@@ -34,7 +41,7 @@ function parseInline(s: string): Inline[] {
       const end = s.indexOf("**", i + 2);
       if (end > i + 1) {
         flush();
-        out.push({ t: "bold", c: parseInline(s.slice(i + 2, end)) });
+        out.push({ t: "bold", c: parseInline(s.slice(i + 2, end), depth + 1) });
         i = end + 2;
         continue;
       }
@@ -43,7 +50,7 @@ function parseInline(s: string): Inline[] {
       const end = s.indexOf("~~", i + 2);
       if (end > i + 1) {
         flush();
-        out.push({ t: "strike", c: parseInline(s.slice(i + 2, end)) });
+        out.push({ t: "strike", c: parseInline(s.slice(i + 2, end), depth + 1) });
         i = end + 2;
         continue;
       }
@@ -59,7 +66,7 @@ function parseInline(s: string): Inline[] {
       }
       if (end > i) {
         flush();
-        out.push({ t: "italic", c: parseInline(s.slice(i + 1, end)) });
+        out.push({ t: "italic", c: parseInline(s.slice(i + 1, end), depth + 1) });
         i = end + 1;
         continue;
       }
@@ -74,7 +81,7 @@ function parseInline(s: string): Inline[] {
             out.push({ t: "text", v: buf });
             buf = "";
           }
-          out.push({ t: "link", href, c: parseInline(s.slice(i + 1, cb)) });
+          out.push({ t: "link", href, c: parseInline(s.slice(i + 1, cb), depth + 1) });
           i = cp + 1;
           continue;
         }
@@ -154,10 +161,14 @@ function alignOf(cell: string): TableAlign {
   return "none";
 }
 function parseBlocks(src: string): Block[] {
+  if (src.length > MAX_PARSE_LEN) {
+    return [{ t: "para", text: src.slice(0, MAX_PARSE_LEN) }];
+  }
   const lines = src.replace(/\r\n?/g, "\n").split("\n");
   const blocks: Block[] = [];
   let i = 0;
   while (i < lines.length) {
+    if (blocks.length >= MAX_BLOCKS) break;
     const line = lines[i];
     if (line.trim() === "") {
       i++;
@@ -232,6 +243,10 @@ function parseBlocks(src: string): Block[] {
     }
     const para: string[] = [];
     while (i < lines.length && lines[i].trim() !== "" && !SPECIAL.test(lines[i])) {
+      para.push(lines[i]);
+      i++;
+    }
+    if (para.length === 0 && i < lines.length) {
       para.push(lines[i]);
       i++;
     }
@@ -334,6 +349,15 @@ function renderBlock(b: Block, i: number): ReactNode {
 
 export function Markdown({ text }: { text: string }) {
   if (!text) return null;
-  const blocks = parseBlocks(text);
+  let blocks: Block[];
+  try {
+    blocks = parseBlocks(text);
+  } catch {
+    return (
+      <div className="md">
+        <p className="md-para">{text}</p>
+      </div>
+    );
+  }
   return <div className="md">{blocks.map((b, i) => renderBlock(b, i))}</div>;
 }
