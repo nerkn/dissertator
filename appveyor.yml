@@ -1,5 +1,5 @@
 # =============================================================================
-# AppVeyor — PRIMARY CI for Dissertator (Windows .msi + .exe → GitHub Release).
+# AppVeyor — PRIMARY CI for Dissertator (Windows .msi → GitHub Release).
 # =============================================================================
 # GitHub Actions is DISABLED for this account (see .github/workflows/release.yml,
 # kept only as a reference/fallback for Linux + macOS). AppVeyor is the SOLE CI:
@@ -12,7 +12,7 @@
 # onnxruntime native bits) → fetch the granite ONNX model (not in git, ~94 MB)
 # → place sidecar at the target-triple path Tauri's externalBin expects →
 # `tauri build` (whose beforeBuildCommand runs `stage:resources` to bundle the
-# native libs + model) → upload .msi/.exe to GitHub on tag builds.
+# native libs + model) → upload .msi to GitHub on tag builds.
 #
 # The Linux .deb is NOT built here — it's built locally and uploaded to the same
 # GitHub Release with `gh release upload --clobber`.
@@ -75,19 +75,18 @@ build_script:
       # AppVeyor sets CI=True (capitalized); tauri's clap parser expects lowercase
       # true/false and rejects 'True'. Force it lowercase so tauri doesn't error.
       $env:CI = "true"
-      bun run tauri build
+      bun run tauri build --bundles msi
       $tauriExit = $LASTEXITCODE
       Write-Host "tauri build exit code: $tauriExit"
 
       # tauri build can exit non-zero on Windows even when bundles were produced.
       # Verify by checking the output files rather than trusting the exit code,
       # so we don't throw and skip artifact upload on a successful bundle.
-      $msi  = Get-ChildItem "src-tauri\target\release\bundle\msi\*.msi"  -ErrorAction SilentlyContinue
-      $nsis = Get-ChildItem "src-tauri\target\release\bundle\nsis\*.exe" -ErrorAction SilentlyContinue
-      if (-not $msi -and -not $nsis) {
-        throw "tauri build produced no installers (exit $tauriExit)"
+      $msi = Get-ChildItem "src-tauri\target\release\bundle\msi\*.msi" -ErrorAction SilentlyContinue
+      if (-not $msi) {
+        throw "tauri build produced no .msi (exit $tauriExit)"
       }
-      Write-Host "Bundles OK: $($msi.Name) / $($nsis.Name)"
+      Write-Host "Bundle OK: $($msi.Name)"
 
 # -----------------------------------------------------------------------------
 # GitHub release upload — runs after a successful build, but ONLY on tag builds
@@ -168,8 +167,7 @@ on_success:
 
         # 2. upload each installer asset (create-or-replace via ?name= + clobber)
         $assets = @(
-          "src-tauri\target\release\bundle\msi\*.msi",
-          "src-tauri\target\release\bundle\nsis\*.exe"
+          "src-tauri\target\release\bundle\msi\*.msi"
         )
         # NOTE: the raw dissertator.exe is intentionally NOT published. It has
         # no bundled native resources (vec0.dll / onnxruntime.dll / granite
@@ -201,5 +199,3 @@ test: off
 artifacts:
   - path: 'src-tauri\target\release\bundle\msi\*.msi'
     name: Dissertator-msi
-  - path: 'src-tauri\target\release\bundle\nsis\*.exe'
-    name: Dissertator-nsis
