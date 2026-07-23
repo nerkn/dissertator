@@ -334,6 +334,18 @@ test("dispatchTool p_write fails when oldtext is absent (optimistic)", async () 
   expect(getDocument(d.id)?.bodyMd).toBe("abc"); // unchanged
 });
 
+test("dispatchTool p_write fixes over-escaped quotes in oldtext", async () => {
+  const d = createDocument({ title: "W3" });
+  updateDocument(d.id, { bodyMd: 'Atlas: "Sevil mi?" dedi' });
+  const r = await dispatchTool(
+    "p_write",
+    { id: d.id, oldtext: '\\"Sevil mi?\\"', text: "OK" },
+    ctxBase
+  );
+  expect(r.ok).toBe(true);
+  expect(r.document?.bodyMd).toBe("Atlas: OK dedi");
+});
+
 test("dispatchTool p_insert anchors after first match; empty anchor prepends", async () => {
   const d = createDocument({ title: "I" });
   updateDocument(d.id, { bodyMd: "head\nbody" });

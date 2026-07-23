@@ -18,7 +18,7 @@
 // optimistic-concurrency check explicit (oldtext must still be present) without
 // line numbers that drift as the body changes.
 
-import type { GuiEvent, Reference, SourceFile } from "@dissertator/shared";
+import type { Document, GuiEvent, Reference, SourceFile } from "@dissertator/shared";
 import type { ToolSpec } from "../chat/openai.ts";
 import {
   createDocument,
@@ -31,9 +31,20 @@ import {
   updateDocument,
   upsertReference,
 } from "../db";
-import { listSources } from "../ingest/index.ts";
+import { listSources, readSourceMarkdown, writeSourceMarkdown } from "../ingest/index.ts";
 import { searchCorpus } from "../search.ts";
 import { appendPreference } from "../agent-files.ts";
+
+function looseIndex(body: string, needle: string): { idx: number; len: number } {
+  const exact = body.indexOf(needle);
+  if (exact !== -1) return { idx: exact, len: needle.length };
+  const relaxed = needle.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  if (relaxed !== needle) {
+    const alt = body.indexOf(relaxed);
+    if (alt !== -1) return { idx: alt, len: relaxed.length };
+  }
+  return { idx: -1, len: 0 };
+}
 
 /** Per-run context handed to every tool. */
 export interface ToolContext {
@@ -53,6 +64,7 @@ export interface ToolResult {
   summary: string;
   data?: unknown;
   error?: string;
+  rawContent?: string;
   /** Present when a p_* tool mutated a document — the loop emits `edit`. */
   document?: { id: string; title: string; bodyMd: string };
 }
@@ -320,6 +332,25 @@ export const TOOL_SPECS: ToolSpec[] = [
 // ---------------------------------------------------------------------------
 // Helpers.
 // ---------------------------------------------------------------------------
+
+type EditTarget =
+  | { kind: "document"; doc: Document }
+  | { kind: "source"; source: SourceFile };
+
+function lookupEditTarget(id: string):
+  | { kind: "document"; doc: Document }
+  | { kind: "source"; source: SourceFile }
+  | { kind: "non-md-source"; source: SourceFile }
+  | null {
+  const doc = getDocument(id);
+  if (doc) return { kind: "document", doc };
+  const source = getSourceById(id);
+  if (!source) return null;
+  if ((source.mimeType ?? "").toLowerCase() === "text/markdown") {
+    return { kind: "source", source };
+  }
+  return { kind: "non-md-source", source };
+}
 
 /** Cap on doc_read text returned to the model (keeps context window sane). */
 const DOC_READ_CAP = 12000;
@@ -608,6 +639,7 @@ async function pRead(
     ok: true,
     summary: `📄 Read manuscript "${doc.title}"`,
     data: { id: doc.id, title: doc.title, bodyMd: doc.bodyMd },
+    rawContent: doc.bodyMd,
   };
 }
 
@@ -638,7 +670,7 @@ async function pWrite(
     return { ok: false, summary: "p_write: oldtext + text required", error: "oldtext and text required" };
   const doc = getDocument(id);
   if (!doc) return { ok: false, summary: "p_write: not found", error: `document ${id} not found` };
-  const idx = doc.bodyMd.indexOf(oldtext);
+  const { idx, len } = looseIndex(doc.bodyMd, oldtext);
   if (idx === -1) {
     return {
       ok: false,
@@ -646,7 +678,7 @@ async function pWrite(
       error: "oldtext not found in body — the user may have edited it; p_read again",
     };
   }
-  const next = doc.bodyMd.slice(0, idx) + text + doc.bodyMd.slice(idx + oldtext.length);
+  const next = doc.bodyMd.slice(0, idx) + text + doc.bodyMd.slice(idx + len);
   const updated = updateDocument(id, { bodyMd: next });
   if (!updated) return { ok: false, summary: "p_write: update failed", error: "update returned null" };
   return {
@@ -673,7 +705,7 @@ async function pInsert(
     // Empty anchor → prepend at the very top.
     next = text + (text.endsWith("\n") ? "" : "\n") + doc.bodyMd;
   } else {
-    const idx = doc.bodyMd.indexOf(anchor);
+    const { idx, len } = looseIndex(doc.bodyMd, anchor);
     if (idx === -1) {
       return {
         ok: false,
@@ -681,7 +713,7 @@ async function pInsert(
         error: "anchor not found in body — p_read to see current text",
       };
     }
-    const insertAt = idx + anchor.length;
+    const insertAt = idx + len;
     next = doc.bodyMd.slice(0, insertAt) + text + doc.bodyMd.slice(insertAt);
   }
   const updated = updateDocument(id, { bodyMd: next });

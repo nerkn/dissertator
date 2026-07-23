@@ -183,7 +183,7 @@ export async function runAgentLoop(
       if (!suggestedReplies && !nudged) {
         nudged = true;
         if (stepText) {
-          messages.push({ role: "assistant", content: stepText, tool_calls: [] });
+          messages.push({ role: "assistant", content: stepText });
         }
         messages.push({
           role: "user",
@@ -255,11 +255,14 @@ export async function runAgentLoop(
         role: "tool",
         tool_call_id: tc.id,
         name: tc.function.name,
-        content: JSON.stringify(
-          result.ok
-            ? result.data ?? { ok: true }
-            : { ok: false, error: result.error }
-        ),
+        content:
+          result.ok && result.rawContent !== undefined
+            ? result.rawContent
+            : JSON.stringify(
+                result.ok
+                  ? result.data ?? { ok: true }
+                  : { ok: false, error: result.error }
+              ),
       });
     }
     // Loop: the model now sees the tool results and continues. The for-
