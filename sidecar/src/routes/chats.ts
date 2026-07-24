@@ -25,30 +25,15 @@ import {
 import { completeChat, streamOpenAIChat, type LoopMessage, type ToolSpec } from "../chat/openai.ts";
 import type { ToolContext } from "../agent/tools.ts";
 
-/**
- * Ephemeral opener instruction injected as the (unsent) user turn when a
- * brand-new chat auto-greets. The system prompt already carries the whole
- * corpus glimpse + other chat titles + the active manuscript, so this just
- * asks for a short orientation + concrete next-step proposals (offered as
- * one-tap gui_suggest_replies). No user row is persisted for opener turns.
- */
 const OPENER_INSTRUCTION =
-  "This is a brand-new chat and the user hasn't said anything yet. Greet them in ONE short sentence, then orient: you can already see the full corpus and the active manuscript above. Propose 2–3 concrete next steps (e.g. read a specific source, draft or revise a section, compare sources, fill a citation gap) and surface them as one-tap choices via gui_suggest_replies. Keep it brief — do NOT read documents or run heavy tools yet; just propose and let the user pick.";
+  "This is a brand-new chat and the user hasn't said anything yet. Greet them in ONE short sentence, then orient: you can already see the full corpus and the active manuscript above. Propose 2–3 concrete next steps (e.g. read a specific source, draft or revise a section, compare sources, fill a citation gap) and surface them as one-tap choices via suggest. Keep it brief — do NOT read documents or run heavy tools yet; just propose and let the user pick.";
 
-/** Tighten a model-emitted title: strip quotes/punctuation, cap length. */
 function sanitizeTitle(raw: string): string {
   let t = raw.trim().replace(/^["'`]+|["'`]+$/g, "").trim();
   t = t.replace(/[.·:]\s*$/, "").trim();
   if (t.length > 80) t = t.slice(0, 80).trim();
   return t;
 }
-
-// ---------------------------------------------------------------------------
-// Chats (P4): freeform chat thread CRUD. A chat is NOT bound to a document;
-// it carries its own pinned `contextSources` (source_file ids) for UI
-// persistence, and owns a transcript of `chat_messages` (POST /chat appends).
-// Mirrors the /documents guards (400 if no project, 404 if id unknown).
-// ---------------------------------------------------------------------------
 
 export function registerChats(app: Hono): void {
   app.get("/chats", (c) => {
@@ -113,13 +98,6 @@ export function registerChats(app: Hono): void {
     );
   });
 
-  // -----------------------------------------------------------------------
-  // Auto-title (non-blocking): summarize the transcript into a short title.
-  // Only honored while the title is still the default "New chat" — a manual
-  // rename (or a prior auto-title) opts the chat out. Reuses the configured
-  // chat provider/model; the API key travels as a Bearer header. The client
-  // fires this once after the configured turn threshold (Settings → Agent).
-  // -----------------------------------------------------------------------
   app.post("/chats/:id/autotitle", async (c) => {
     if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
     const id = c.req.param("id");
@@ -175,32 +153,6 @@ export function registerChats(app: Hono): void {
     }
   });
 
-  // -------------------------------------------------------------------------
-  // Chat (P3 Track E): streaming `POST /chat` with open-files context.
-  //
-  // Streams an OpenAI-compatible chat completion. The chat provider/model/url
-  // come from `Settings` (optionally overridden by the P3 `chat_*` block —
-  // decision #1: fall back to the main provider if not specified). The API key
-  // travels ONLY as a Bearer header — never stored, never logged (mirrors the
-  // /embed + ocr/vision discipline).
-  //
-  // CONTEXT: `open_files` source ids are concatenated (their chunks, page-
-  // tagged) up to a char budget and injected as a system message. This is plain
-  // full-text injection, NOT semantic retrieval (that's /search). The full
-  // transcript is persisted to `chat_messages` AFTER the turn completes (user
-  // msg up-front, assistant msg once the stream ends — so an aborted stream
-  // still records the user turn + whatever completed).
-  //
-  // STREAM PROTOCOL: each delta is forwarded as an SSE `delta` event carrying
-  // the text fragment; a final `done` event carries usage + persisted message
-  // ids. Errors mid-stream are emitted as an `error` event then the stream
-  // closes (the client sees the partial text + the error message).
-  //
-  // SCOPING (P4): `chatId` is REQUIRED — the turn is persisted to + replayed
-  // from THAT chat only. `GET /chat/messages?chatId=` is retained as a thin
-  // backward-compat alias for `GET /chats/:id/messages` (canonical).
-  // -------------------------------------------------------------------------
-
   app.get("/chat/messages", (c) => {
     if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
     const chatId = c.req.query("chatId");
@@ -225,21 +177,14 @@ export function registerChats(app: Hono): void {
     const message = (body.message ?? "").trim();
     if (!message && !isOpener) return c.json({ error: "message required" }, 400);
     const openFiles = Array.isArray(body.openFiles) ? body.openFiles : [];
-    // Opener only fires on an empty chat — defense against re-greeting a
-    // chat that already has turns (e.g. a stale frontend trigger).
     if (isOpener && listChatMessages(chatId, 1).length > 0) {
       return c.json({ error: "chat not empty" }, 400);
     }
 
-    // API key travels ONLY as a Bearer header (same discipline as /embed +
-    // ocr/vision). Never logged.
     const auth = c.req.header("Authorization") ?? "";
     const apiKey = auth.startsWith("Bearer ") ? auth.slice(7) : undefined;
     if (!apiKey) return c.json({ error: "chat api key required" }, 400);
 
-    // P5: the document the user is currently editing (default p_* target) + the
-    // embedding key (separate secret slot) for corpus_list vector search. Both
-    // are optional; corpus_list degrades to metadata-only without the embed key.
     const activeDocId = (body.activeDocumentId ?? "").trim() || undefined;
     const embedKeyRaw = c.req.header("X-Embedding-Key") ?? "";
     const embeddingApiKey = embedKeyRaw.trim() || undefined;
@@ -255,13 +200,6 @@ export function registerChats(app: Hono): void {
     const config = { apiUrl: chat.apiUrl, model: chat.model };
 
     return streamSSE(c, async (stream) => {
-      // Persist the user turn immediately (so an aborted stream still records it).
-      // OPENER turns skip the user row entirely — only the assistant greeting
-      // is persisted (the opener instruction below is ephemeral).
-      // RETRY turns also skip the insert — the last user row is reused as-is,
-      // and the most recent assistant row (the failed/partial one) is deleted
-      // first so the transcript keeps a single user+assistant pair instead of
-      // accumulating duplicates with each retry.
       let userMsg: { id: string } | null = null;
       if (isOpener) {
         userMsg = null;
@@ -281,10 +219,6 @@ export function registerChats(app: Hono): void {
         });
       }
 
-      // Recent transcript (excluding system rows + the user turn just
-      // inserted). Reused for (a) detecting whether the pinned-source set
-      // CHANGED vs the previous turn — full text is injected only on change
-      // (pins-on-change design), and (b) replaying conversational continuity.
       const recent = listChatMessages(chatId, 20).filter(
         (m) => m.role !== "system" && (userMsg ? m.id !== userMsg.id : true),
       );
@@ -292,26 +226,25 @@ export function registerChats(app: Hono): void {
         ? recent[recent.length - 1].openFiles ?? []
         : [];
 
-      // Build the system message: role + tool guidance + active-doc + context.
       const systemParts: string[] = [
         "You are Dissertator, a research writing assistant. You help the user read sources and write their manuscript.",
         "",
         "You have tools — use them proactively:",
-        "- corpus_list({query}) semantic-searches the embedded corpus; ({author,title}) filters the reference index. Returns short metadata; call doc_read for full text.",
-        "- doc_read({id, page?}) reads a source's extracted text.",
-        "- p_read({id?}) reads the manuscript body (id defaults to the active document).",
-        "- p_create({title, text?}) creates a new manuscript.",
-        "- p_write({id?, oldtext, text}) REPLACES the first occurrence of `oldtext` (must exist verbatim) with `text`.",
-        "- p_insert({id?, anchor, text}) INSERTs `text` right after the first occurrence of `anchor` (empty anchor = top of the body).",
-        "- gui_doc_open / gui_p_open open things for the user; gui_action narrates milestones.",
-        "- gui_suggest_replies offers quick-reply buttons the user taps to choose the next step (the run does NOT pause). This is your DEFAULT turn-ending action — see \"Response pattern\" below. Think of it as \"suggested replies\" (like Gmail/Slack), NOT configuration.",
-        "- pref_add({ text }) records ONE durable user preference or correction as a bullet (read into every future chat). Call it the moment the user expresses a LASTING preference OR corrects you / shows frustration — signals like: don't, stop doing, never, always, instead, I hate, you keep doing X, all-caps, or terse annoyance. Distill the correction into one forward rule (what TO do). NEVER for one-off or transient requests.",
+        "- list({query?}) semantic-searches the embedded corpus; ({author,title,filename,limit}) filters the reference index. Returns lean metadata + each source's handle (`filename`); call read for full text.",
+        "- read({id?, page?} | {id?, offset?, limit?}) reads text. Paginated sources (PDF/docx) take `page`; the manuscript or any `.md` source takes an `offset`+`limit` char window. `id` defaults to the active document.",
+        "- create({title, text?}) creates a new manuscript and returns its id + body.",
+        "- edit({id?, op, anchor?, text}) mutates the manuscript or a `.md` source. `op:\"replace\"` swaps the first verbatim `anchor` for `text`; `op:\"insert\"` inserts `text` after the first `anchor` (empty/omitted anchor = top). `id` defaults to the active document; non-markdown sources are read-only via read.",
+        "- show({id}) opens a document or source in the UI for the user to view.",
+        "- suggest({options:[{short,prompt}]}) offers quick-reply buttons the user taps to choose the next step (the run does NOT pause). This is your DEFAULT turn-ending action — see \"Response pattern\" below. Think of it as \"suggested replies\" (like Gmail/Slack), NOT configuration.",
+        "- pref_add({ text }) records ONE durable user preference or correction as a bullet (read into every future chat). Call it the moment the user expresses a LASTING preference OR corrects you / shows frustration — distill it into one forward rule (what TO do). NEVER for one-off or transient requests.",
+        "- toast({action, text}) narrates a milestone (action: \"warn\" | \"celebrate\" | \"info\").",
         "",
-        "Manuscript edits are CONTENT-ADDRESSED: pass the exact `oldtext`/`anchor` you got from p_read. If p_write/p_insert fails because the text wasn't found, p_read again — the user may have edited meanwhile.",
+        "Tools that take `id` (read, edit) act on the active manuscript when `id` is omitted.",
+        "Manuscript edits are CONTENT-ADDRESSED: pass the exact `anchor` you got from read. If edit fails because the text wasn't found, read again — the user may have edited meanwhile.",
         "Cite sources inline as [@citekey] or [@citekey:42] (page). Prefer grounded claims; say plainly when the sources are insufficient.",
         "",
         "# Response pattern (REQUIRED)",
-        "END EVERY TURN WITH gui_suggest_replies offering 2–4 concrete next-step buttons. This is your single most important habit. Whenever you would pose a bare question or list alternatives in prose, wrap them as buttons instead. The only exceptions: (a) the user asked a direct factual question and you just answered it, or (b) the task is fully complete with nothing left to choose. Never end with a plain question like \"What would you like next?\" or \"Should I do A or B?\" — that is a gui_suggest_replies call, not prose. Never end a turn without calling gui_suggest_replies unless one of the two exceptions clearly applies.",
+        "END EVERY TURN WITH suggest offering 2–4 concrete next-step buttons. This is your single most important habit. Whenever you would pose a bare question or list alternatives in prose, wrap them as buttons instead. The only exceptions: (a) the user asked a direct factual question and you just answered it, or (b) the task is fully complete with nothing left to choose. Never end with a plain question like \"What would you like next?\" or \"Should I do A or B?\" — that is a suggest call, not prose. Never end a turn without calling suggest unless one of the two exceptions clearly applies.",
       ];
       const persona = await getAgentPersona();
       if (persona.personality.trim() || persona.rules.trim()) {
@@ -332,20 +265,9 @@ export function registerChats(app: Hono): void {
       if (activeDocId) {
         const d = getDocument(activeDocId);
         systemParts.push(
-          `The user is currently editing the manuscript "${d?.title ?? "(unknown)"}" (id: ${activeDocId}). p_* tools without an explicit \`id\` act on it.`
+          `The user is currently editing the manuscript "${d?.title ?? "(unknown)"}" (id: ${activeDocId}). read/edit without an explicit \`id\` act on it.`
         );
       }
-      // Whole-corpus glimpse: compact metadata for EVERY source (one TSV row
-      // each) so the model always knows what exists and can cite by citekey or
-      // resolve a source via corpus_list/doc_read for full text. Sent every
-      // turn — it's cheap metadata and underpins the pins-on-change design
-      // (unchanged pins fall back to this index instead of re-injected text).
-      //
-      // Trimming: (a) drop placeholder refs (no authors AND no real title) —
-      // they're filename-derived stubs that add tokens and confuse citation;
-      // (b) dedupe by source_file_id so a stub citekey (e.g. `emo`) and a
-      // later real citekey (`Eshraghian2025`) for the SAME source don't both
-      // appear — the model would otherwise pass the stale citekey to doc_read.
       const allRefs = listReferences();
       const seenSrc = new Set<string>();
       const isPlaceholder = (r: Reference) =>
@@ -373,7 +295,7 @@ export function registerChats(app: Hono): void {
         systemParts.push(
           "",
           "# Corpus (entire library)",
-          "Every source in this project — TSV: citekey <TAB> title <TAB> year <TAB> authors. Cite inline as [@citekey]; call corpus_list({title}) or ({author}) to resolve a source id, then doc_read(id) for full text.",
+          "Every source in this project — TSV: citekey <TAB> title <TAB> year <TAB> authors. Cite inline as [@citekey]; call list({title}) or ({author}) to resolve a source id, then read(id) for full text.",
           "citekey\ttitle\tyear\tauthors",
           ...refRows,
         );
@@ -400,7 +322,7 @@ export function registerChats(app: Hono): void {
           a.length === b.length && a.every((x) => b.includes(x));
         if (sameSet(prevOpenFiles, openFiles)) {
           systemParts.push(
-            `\nPinned sources (UNCHANGED since last turn — full text already seen; call doc_read(id) to re-read): ${openFiles.map(labelOf).join("; ")}.`,
+            `\nPinned sources (UNCHANGED since last turn — full text already seen; call read(id) to re-read): ${openFiles.map(labelOf).join("; ")}.`,
           );
         } else if (ctx) {
           systemParts.push(
@@ -410,9 +332,6 @@ export function registerChats(app: Hono): void {
       }
       const messages: LoopMessage[] = [
         { role: "system", content: systemParts.join("\n") },
-        // Replay THIS chat's recent turns for conversational continuity (omit
-        // system rows; we synthesize our own above). Only text content is
-        // replayed — the tool-call trace lives in the current run only.
         ...recent.slice(-12).map(
           (m): LoopMessage => ({
             role: m.role === "assistant" ? "assistant" : "user",
@@ -424,22 +343,12 @@ export function registerChats(app: Hono): void {
 
       const ac = new AbortController();
       let aborted = false;
-      // Accumulate streamed text here (not from runAgentLoop's return value)
-      // so a throw on a LATER step (e.g. 429 on synthesis after the answer
-      // already streamed) still has the partial content to persist —
-      // otherwise the catch block saves a placeholder and the UI watches
-      // the streamed reply vanish on reload.
       let content = "";
       stream.onAbort(() => {
         aborted = true;
         ac.abort();
       });
 
-      // P5: single SSE fan-in. Every beat (deltas, tool calls/results, live
-      // edits, gui side-effects) flows through here as a named event.
-      // `toolTrace` mirrors the tool beats so the assistant turn's narration
-      // can be PERSISTED onto the message row (survives reload; visible even
-      // on a turn that errored before any text streamed).
       const toolTrace: (ToolTrace & { id: string })[] = [];
       const onEvent = async (e: AgentStreamEvent): Promise<void> => {
         switch (e.type) {
@@ -496,15 +405,6 @@ export function registerChats(app: Hono): void {
         }
       };
 
-      // Dev debug: surface exactly what's sent to the LLM. We wrap the
-      // streaming adapter so every agent step fires a `debug` SSE event with
-      // the model config, the full message array (roles + content + tool-call
-      // traces), and the tool advertisements. The API key is NOT in the
-      // payload (it travels only as a header).
-      //
-      // Also appended to `Dissertator/logs/agent.log` so a dev can `tail -f`
-      // the exact LLM payloads during local debugging. ON by default; set
-      // DEBUG=0 to disable (e.g. to keep the project folder quiet in prod).
       let debugStep = 0;
       const debugToFile = process.env.DEBUG !== "0";
       const wrapStream = (opts: Parameters<typeof streamOpenAIChat>[0]) => {
@@ -519,7 +419,6 @@ export function registerChats(app: Hono): void {
           tools: (opts.tools ?? []).map((t: ToolSpec) => t.function.name),
           messages: opts.messages,
         };
-        // Emit as a first-class SSE event the client can render in a dev panel.
         stream.writeSSE({ event: "debug", data: JSON.stringify(payload) }).catch(() => {});
         if (debugToFile) {
           try {
@@ -536,7 +435,6 @@ export function registerChats(app: Hono): void {
               }).catch(() => {});
             }
           } catch {
-            /* logging must never throw */
           }
         }
         return streamOpenAIChat(opts);
@@ -552,16 +450,6 @@ export function registerChats(app: Hono): void {
       let usage = { prompt: 0, completion: 0 };
       let toolCalls = 0;
       let capped = false;
-      // Keep the SSE connection alive across model "thinking" gaps and slow
-      // tool/embedding calls. Bun.serve's default idleTimeout (10s) drops an
-      // idle socket, and a reasoning model (e.g. glm-5.2) can spend >10s
-      // emitting nothing before its first token on a synthesis step. That gap
-      // looked exactly like the client giving up: Hono's stream.onAbort fired
-      // → ac.abort() → the in-flight model fetch aborted → empty reply.
-      // An SSE comment (`: ping`) every 3s keeps the socket warm and is
-      // silently ignored by the client's SSE parser (only `event:`/`data:`
-      // lines are dispatched). Mirrors the /events heartbeat on a tighter
-      // cadence (well under the 10s idle limit).
       const heartbeat = setInterval(() => {
         if (stream.aborted || stream.closed) return;
         stream.write(": ping\n\n").catch(() => {});
@@ -584,9 +472,6 @@ export function registerChats(app: Hono): void {
         aborted = aborted || res.aborted;
       } catch (e) {
         const errMsg = (e as Error)?.message ?? String(e);
-        // Dev debug: a throw or abort here leaves agent.log without a
-        // `[turn done]` line, which previously made failures look like the
-        // model simply stopped. Log the reason so it's grep-able.
         if (debugToFile) {
           try {
             const project = getCurrentProject();
@@ -601,14 +486,8 @@ export function registerChats(app: Hono): void {
               void import("node:fs/promises").then((fs) => fs.appendFile(logPath, line, "utf8")).catch(() => {});
             }
           } catch {
-            /* logging must never throw */
           }
         }
-        // Surface the error but still persist whatever streamed before the
-        // failure, so the transcript isn't lost. If the model ran tools but
-        // produced no text (e.g. it died on the synthesis step), still record
-        // a turn carrying the tool narration + a short error note — otherwise
-        // the user sees the tools vanish and nothing else.
         const traceForPersist = toolTrace.map(({ id: _id, ...rest }) => rest);
         const partial =
           content || traceForPersist.length
@@ -623,7 +502,6 @@ export function registerChats(app: Hono): void {
                 toolCalls: traceForPersist,
               })
             : null;
-        // Touch the chat's updated_at even on failure.
         updateChat(chatId, {});
         await stream.writeSSE({
           event: "error",
@@ -645,11 +523,7 @@ export function registerChats(app: Hono): void {
         costTokens: usage,
         toolCalls: toolTrace.map(({ id: _id, ...rest }) => rest),
       });
-      // Touch the chat's updated_at so it floats to the top of the sidebar.
       updateChat(chatId, {});
-      // Dev debug: append a one-line turn summary to agent.log so a dev can
-      // scan the tail of the log without expanding JSON blobs. (Full per-step
-      // payloads are appended by wrapStream above.)
       if (debugToFile) {
         try {
           const project = getCurrentProject();
@@ -664,7 +538,6 @@ export function registerChats(app: Hono): void {
             void import("node:fs/promises").then((fs) => fs.appendFile(logPath, summary, "utf8")).catch(() => {});
           }
         } catch {
-          /* logging must never throw */
         }
       }
       await stream.writeSSE({

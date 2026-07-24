@@ -6,6 +6,7 @@ import {
   getSourceById,
   getSourceText,
   listReferences,
+  setSourceNote,
   upsertReference,
 } from "../db";
 import { crossrefByDoi } from "./crossref.ts";
@@ -14,6 +15,7 @@ import { extractPdfMetadata } from "./pdfmeta.ts";
 import { extractReferenceViaLLM } from "./llmExtract.ts";
 import { titlesMatch } from "./titleMatch.ts";
 import { getChatKey } from "../db/globalDb.ts";
+import { digestSource } from "./digest.ts";
 
 export interface DetectResult {
   found: boolean;
@@ -128,6 +130,17 @@ export async function detectReference(
     }
     const saved = upsert(ref);
     log("doi stage: HIT", { doi, refId: saved.id });
+    if (!src.note || !src.note.trim()) {
+      void digestSource(id)
+        .then((n) => {
+          if (n) {
+            try {
+              setSourceNote(id, n);
+            } catch {}
+          }
+        })
+        .catch(() => {});
+    }
     return { found: true, reference: saved, doi, alreadyLinked, source: "doi" };
   }
   log("doi stage: exhausted, no hit");
@@ -136,6 +149,17 @@ export async function detectReference(
   if (pdfMetaHasTitle) {
     const saved = upsert(pdfMeta!);
     log("pdf-meta: complete hit (has title)", { refId: saved.id });
+    if (!src.note || !src.note.trim()) {
+      void digestSource(id)
+        .then((n) => {
+          if (n) {
+            try {
+              setSourceNote(id, n);
+            } catch {}
+          }
+        })
+        .catch(() => {});
+    }
     return { found: true, reference: saved, doi: null, alreadyLinked, source: "pdf-meta" };
   }
 
@@ -155,8 +179,14 @@ export async function detectReference(
       ref = null;
     }
     if (ref) {
-      const merged = { ...(pdfMeta ?? {}), ...ref };
+      const { note, ...refFields } = ref;
+      const merged = { ...(pdfMeta ?? {}), ...refFields };
       const saved = upsert(merged);
+      if (note) {
+        try {
+          setSourceNote(id, note);
+        } catch {}
+      }
       log("llm stage: HIT", {
         refId: saved.id,
         title: ref.title,
@@ -175,6 +205,17 @@ export async function detectReference(
   if (pdfMeta && pdfMeta.authors && pdfMeta.authors.length > 0) {
     const saved = upsert(pdfMeta);
     log("pdf-meta fallback: partial (authors only)", { refId: saved.id });
+    if (!src.note || !src.note.trim()) {
+      void digestSource(id)
+        .then((n) => {
+          if (n) {
+            try {
+              setSourceNote(id, n);
+            } catch {}
+          }
+        })
+        .catch(() => {});
+    }
     return { found: true, reference: saved, doi: null, alreadyLinked, source: "pdf-meta" };
   }
 

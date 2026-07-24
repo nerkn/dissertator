@@ -1,21 +1,3 @@
-// ChatPanel — the freeform, multi-chat agent interface.
-//
-// A chat is a persisted, document-UNBOUND thread. The user pins a set of
-// source files as per-chat context (`contextSources`); each send streams an
-// assistant reply (SSE) scoped to that chat. The frontend drives context: it
-// sends the chat's pinned source ids as `openFiles` on every `POST /chat`.
-//
-// Data flow:
-//   GET /chats                          → Chat[]           (most-recent first)
-//   POST /chats                         → Chat             (create)
-//   PUT  /chats/:id {contextSources}    → Chat             (persist picker)
-//   GET /chats/:id/messages             → ChatMessage[]    (transcript)
-//   POST /chat {chatId, message, openFiles} → SSE stream    (deltas → done)
-//   GET /prompts                        → Prompt[]         (from prompts.md)
-//
-// Quick-fire prompt buttons come from the per-project `Dissertator/prompts.md`
-// file; clicking one drops its text into the composer for review/send.
-
 import {
   forwardRef,
   useCallback,
@@ -65,30 +47,17 @@ import type { ToolBeat } from "./_bubbles";
 interface Props {
   configured: boolean;
   apiKey: string;
-  /** Embedding key for the agent's corpus_* vector tools. */
   embeddingApiKey?: string;
-  /** The agent wrote/changed a document — App refreshes its list + live-reloads. */
   onDocumentEdited?: (doc: Document) => void;
-  /** The agent asked the UI to open a source viewer (gui_doc_open). */
   onOpenSource?: (sourceId: string) => void;
-  /** The agent asked the UI to open a document editor (gui_p_open). */
   onOpenDocument?: (documentId: string) => void;
-  /** Open the Settings dialog (used by the not-configured nudge). */
   onOpenSettings?: () => void;
 }
 
-/**
- * Imperative API exposed via ref for the parent (App). The New Document
- * button in App needs to (a) start a fresh chat and (b) prefill that chat's
- * composer with the "New document" planning prompt — without App knowing any
- * chat internals or the prompt text. Resolved from the loaded prompts list,
- * with a built-in fallback if the user removed that prompt from prompts.md.
- */
 export interface ChatPanelHandle {
   startNewDocumentChat: () => Promise<void>;
 }
 
-/** Fallback prompt if the user deleted "New document" from prompts.md. */
 const NEW_DOCUMENT_PROMPT_FALLBACK =
   "I just created a new, empty document. Help me plan its structure. Ask me what kind of manuscript this is (journal article, thesis chapter, literature review, conference paper), my topic, and any structure I already have in mind. Then propose a clear heading outline we can refine before writing.";
 
@@ -104,17 +73,10 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   },
   ref,
 ) {
-  // --- chats + active chat -------------------------------------------------
-  // The document the user is currently editing (active doc tab) is derived
-  // from the tabs store; sent each turn as the default p_* target.
   const activeDocumentId = useActiveDocumentId();
   const sources = useSourceItems();
   const health = useSessionStore((s) => s.health);
-  // Project identity: chats live in the per-project DB, so the chat list
-  // must reload whenever the open project changes.
   const projectPath = useSessionStore((s) => s.project?.projectPath ?? null);
-  // Chat-flow UX toggles (Settings → Agent). Resolved onto defaults so the
-  // panel works before settings arrive; updates live when they do.
   const settings = useContentStore((s) => s.settings);
   const flow = useMemo(
     () => ({ ...DEFAULT_CHAT_FLOW, ...(settings?.chatFlow ?? {}) }),
@@ -132,18 +94,12 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     [chats, activeChatId],
   );
 
-  // source id → filename, for context chips + picker labels
   const fileNames = useMemo(() => {
     const m = new Map<string, string>();
     for (const s of sources) m.set(s.id, s.filename);
     return m;
   }, [sources]);
 
-  // Corpus size for the header badge: how many sources exist + how many
-  // chunks are embedded (semantic-search readiness). Cheap 5s poll so the
-  // badge stays accurate as the user ingests / embeds while chatting. The
-  // agent's corpus_list tool sees the same data, so this makes the “what the
-  // agent can reach” surface visible to the human too.
   const [embed, setEmbed] = useState<EmbeddingStatus | null>(null);
   useEffect(() => {
     if (health !== "up") return;
@@ -153,7 +109,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
         const e = await api.embedStatus();
         if (!stopped) setEmbed(e);
       } catch {
-        /* sidecar mid-restart; next tick retries */
       }
     };
     void tick();
@@ -187,12 +142,8 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     }
   }, []);
 
-  // First load: chats + prompts once configured. Auto-create a chat if none,
-  // so the user always lands on a writable surface.
   useEffect(() => {
     if (!configured) return;
-    // Project switched: drop the previous project's chat selection so
-    // stale messages don't linger while the new project's chats load.
     setActiveChatId(null);
     setMessages([]);
     setMessagesLoadedFor(null);
@@ -203,7 +154,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       try {
         if (!stopped) setPrompts(await api.listPrompts());
       } catch {
-        /* prompts.md absent → empty */
       }
       let next = list;
       if (!stopped && next.length === 0) {
@@ -214,7 +164,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             setChats(next);
           }
         } catch {
-          /* ignore — user can retry via New */
         }
       }
       if (!stopped && next.length > 0) setActiveChatId(next[0].id);
@@ -225,7 +174,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     };
   }, [configured, projectPath, refreshChats]);
 
-  // Reload messages when the active chat changes.
   useEffect(() => {
     if (activeChatId) void loadMessages(activeChatId);
     else setMessages([]);
@@ -234,21 +182,13 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   const [streaming, setStreaming] = useState(false);
   const [liveAssistant, setLiveAssistant] = useState("");
   const [error, setError] = useState<string | null>(null);
-  // P5 narration beats for the in-flight assistant turn (tool_call+result pairs).
   const [toolBeats, setToolBeats] = useState<ToolBeat[]>([]);
-  // Quick-reply chips the agent offered via gui_suggest_replies (cleared on next send).
   const [pendingOptions, setPendingOptions] = useState<GuiOption[] | null>(null);
-  // Ephemeral non-blocking beats the agent surfaced via gui_action.
   const [toasts, setToasts] = useState<ChatToast[]>([]);
-  // Dev: the LLM payloads captured this turn (one per agent step). Rendered in
-  // a collapsible panel only in dev builds (`import.meta.env.DEV`).
   const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([]);
   const [debugOpen, setDebugOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
-  // Last successfully-submitted text, so the Retry button can re-run a turn
-  // that errored without re-typing it.
   const lastSentRef = useRef<string>("");
-  // Chats we've already auto-greeted this session (opener fires once/chat).
   const greetedRef = useRef<Set<string>>(new Set());
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -287,16 +227,12 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     el.scrollTo({ top: el.scrollHeight, behavior: streaming ? "auto" : "smooth" });
   }, [messages, liveAssistant, toolBeats, pendingOptions, streaming]);
 
-  // New chats inherit the previous (active) chat's pinned sources when the
-  // toggle is on — preserves the user's working context across "New chat".
   const inheritSources = useCallback((): string[] | undefined => {
     if (!flow.inheritPins) return undefined;
     const pins = activeChat?.contextSources;
     return pins && pins.length ? pins : undefined;
   }, [flow.inheritPins, activeChat]);
 
-  // Auto-title (non-blocking): summarize a short title after the threshold
-  // turn. The server no-ops unless the title is still "New chat".
   const maybeAutotitle = useCallback(
     async (chatId: string) => {
       try {
@@ -304,15 +240,11 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
         if (updated)
           setChats((prev) => prev.map((c) => (c.id === chat.id ? chat : c)));
       } catch {
-        /* non-blocking */
       }
     },
     [apiKey],
   );
 
-  // OPENER: auto-greet a new/empty chat. The server injects an internal
-  // opener instruction; NO user row is persisted — only the greeting. Reuses
-  // the same streaming UI as a normal send (deltas, tool beats, gui events).
   const runOpener = useCallback(
     async (chatId: string) => {
       if (!apiKey || streaming) return;
@@ -364,6 +296,9 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             case "p_open":
               onOpenDocument?.(g.documentId);
               break;
+            case "source_edited":
+              useContentStore.getState().bumpSourceRevision(g.sourceId);
+              break;
             case "suggest_replies":
               setPendingOptions(g.options);
               break;
@@ -409,14 +344,10 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       lastSentRef.current = text;
       setError(null);
       if (!isRetry) setInput("");
-      // Stale quick-reply chips disappear the moment the user says anything else.
       setPendingOptions(null);
       setToolBeats([]);
       setDebugEvents([]);
 
-      // Optimistic user bubble (no id); replaced wholesale on reload.
-      // Skipped on RETRY — the existing user row is reused server-side, so a
-      // duplicate optimistic bubble would briefly show two copies.
       if (!isRetry) {
         const optimistic: ChatMessage = {
           id: `pending-${Date.now()}`,
@@ -455,10 +386,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             ),
           ),
         onEdit: (e) => {
-          // The edit event only carries title/bodyMd — preserve the doc's
-          // structural fields from its in-memory row. The store merges with
-          // {...d, ...doc}, so fabricated nulls would clobber docType/thesis/
-          // researchQuestions/focusPrompt on every agent edit.
           const existing = useContentStore
             .getState()
             .documents.find((d) => d.id === e.documentId);
@@ -480,6 +407,9 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
               break;
             case "p_open":
               onOpenDocument?.(g.documentId);
+              break;
+            case "source_edited":
+              useContentStore.getState().bumpSourceRevision(g.sourceId);
               break;
             case "suggest_replies":
               setPendingOptions(g.options);
@@ -504,10 +434,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       } else if (result.capped) {
         pushToast("warn", "Agent hit its step cap — it may not have finished.");
       }
-      // Reload canonical state (server persisted both turns, even on abort).
       const list = await loadMessages(activeChatId);
-      // Auto-title once the transcript crosses the configured turn threshold
-      // (only while still the default title — a manual rename opts out).
       if (
         flow.autoTitle &&
         activeChat?.title === "New chat" &&
@@ -539,7 +466,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     abortRef.current?.abort();
   }, []);
 
-  // Flush an in-flight stream if the user switches chat mid-reply.
   const selectChat = useCallback(
     (id: string) => {
       if (streaming) abortRef.current?.abort();
@@ -548,9 +474,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     [streaming],
   );
 
-  // Fire the opener when a new/empty chat is shown — once per chat/session.
-  // Guards: toggle on, a chat is active, not mid-stream, truly empty, and not
-  // already greeted (so switching away and back doesn't re-spend tokens).
   useEffect(() => {
     if (!flow.autoGreet) return;
     if (!activeChatId || streaming) return;
@@ -587,14 +510,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     }
   }, [selectChat, inheritSources]);
 
-  /**
-   * New Document flow (App → ChatPanel): create a fresh chat, switch to it,
-   * and prefill the composer with the "New document" planning prompt. Used by
-   * App's New Document button so the user lands in a chat ready to plan the
-   * doc they just created. The prompt is resolved from the loaded prompts
-   * list (so it tracks user edits to prompts.md); falls back to a constant if
-   * the user deleted that entry.
-   */
   const startNewDocumentChat = useCallback(async () => {
     try {
       const c = await api.createChat({ contextSources: inheritSources() });
@@ -604,14 +519,12 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
         (p) => p.label.toLowerCase() === "new document"
       );
       setInput(found?.prompt ?? NEW_DOCUMENT_PROMPT_FALLBACK);
-      // Focus after the new-chat re-render enables the textarea.
       requestAnimationFrame(() => inputRef.current?.focus());
     } catch (e) {
       setError((e as Error)?.message ?? String(e));
     }
   }, [prompts, selectChat, inheritSources]);
 
-  // Expose the imperative API to the parent (App's New Document button).
   useImperativeHandle(ref, () => ({ startNewDocumentChat }), [
     startNewDocumentChat,
   ]);
@@ -644,13 +557,8 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     if (!ok) return;
     try {
       await api.deleteChat(chat.id);
-      // Compute the next list OUTSIDE the setChats updater — React 18
-      // StrictMode double-invokes updaters in dev, so a side effect
-      // (api.createChat) inside one would fire twice and create a duplicate.
       const remaining = chats.filter((c) => c.id !== chat.id);
       setChats(remaining);
-      // Only reshuffle selection if the ACTIVE chat was deleted. Deleting a
-      // non-active row (from the switcher) just removes it.
       if (chat.id === activeChatId) {
         if (remaining.length > 0) {
           setActiveChatId(remaining[0].id);
@@ -661,7 +569,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             setChats([created]);
             setActiveChatId(created.id);
           } catch {
-            /* ignore — user can retry via New */
           }
         }
       }
@@ -670,10 +577,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     }
   }, [chats, activeChatId]);
 
-  // --- context picker ------------------------------------------------------
   const [pickerOpen, setPickerOpen] = useState(false);
-  // Chat switcher anchored panel (replaces the <select>): open near the
-  // trigger button; closes on outside click.
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const switcherRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -685,8 +589,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [switcherOpen]);
-  // Prompts section: open by default (Settings → Agent). Honor the stored
-  // preference once settings arrive, then let the user toggle freely.
   const [promptsOpen, setPromptsOpen] = useState(flow.promptsOpen);
   const promptsInitedRef = useRef(false);
   useEffect(() => {
@@ -704,7 +606,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       const next = has
         ? activeChat.contextSources.filter((s) => s !== sourceId)
         : [...activeChat.contextSources, sourceId];
-      // Optimistic local update; persist behind it.
       setChats((prev) =>
         prev.map((c) =>
           c.id === activeChat.id ? { ...c, contextSources: next } : c,
@@ -714,7 +615,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
         await api.updateChat(activeChat.id, { contextSources: next });
       } catch (e) {
         setError((e as Error)?.message ?? String(e));
-        // Revert on failure.
         setChats((prev) =>
           prev.map((c) =>
             c.id === activeChat.id
@@ -727,7 +627,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     [activeChat],
   );
 
-  // ------------------------------------------------------------------- render
   if (health !== "up") {
     return (
       <aside className="panel chat">
@@ -764,9 +663,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     );
   }
 
-  // One-line corpus summary for the header: source count + embedding
-  // readiness. Mirrors what corpus_list reports so the human and the agent
-  // share the same picture of “what's reachable”.
   const corpusLine = (() => {
     const n = sources.length;
     const parts = [`${n} source${n === 1 ? "" : "s"}`];
@@ -812,7 +708,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
           </button>
         </div>
       </div>
-      <div className="chat-corpus muted small" title="What the agent can reach via corpus_list">
+      <div className="chat-corpus muted small" title="What the agent can reach via list">
         📚 {corpusLine}
       </div>
 
@@ -894,7 +790,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             )}
           </div>
 
-          {/* Context picker — the per-chat pinned source set. */}
           <div className="chat-context">
             <button
               type="button"
@@ -968,7 +863,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             )}
           </div>
 
-          {/* Transcript. */}
           <div className="chat-transcript" ref={scrollRef}>
             {messages.length === 0 && !streaming && (
               <div className="muted small chat-empty">
@@ -987,8 +881,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             )}
           </div>
 
-          {/* Dev debug: the exact LLM payload per agent step. Shown only in
-              dev builds so it never clutters a real writing session. */}
           {import.meta.env.DEV && debugEvents.length > 0 && (
             <DevDebugPanel
               events={debugEvents}
@@ -998,8 +890,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             />
           )}
 
-          {/* Quick-reply chips the agent offered via gui_suggest_replies. Persist
-              after the turn until the user sends anything else (stale then). */}
           {pendingOptions && pendingOptions.length > 0 && !streaming && (
             <div className="option-chips">
               {pendingOptions.map((o, i) => (
@@ -1016,7 +906,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             </div>
           )}
 
-          {/* Ephemeral agent beats (gui_action): warn / celebrate / info. */}
           {toasts.length > 0 && (
             <div className="chat-toasts">
               {toasts.map((t) => (
@@ -1033,8 +922,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             </div>
           )}
 
-          {/* Prompts — quick-fire buttons from prompts.md. Collapsible
-              (collapsed by default) so they don't crowd the composer. */}
           {prompts.length > 0 && (
             <div className="chat-prompts">
               <button
@@ -1094,7 +981,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             </div>
           )}
 
-          {/* Composer. */}
           <div className="chat-composer">
             <textarea
               ref={inputRef}
@@ -1140,14 +1026,12 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   );
 });
 
-/** Ephemeral gui_action surface. */
 interface ChatToast {
   id: string;
   kind: "warn" | "celebrate" | "info";
   text: string;
 }
 
-/** Compact relative timestamp for the chat switcher rows. */
 function relTime(ts: number): string {
   const s = Math.max(1, Math.round((Date.now() - ts) / 1000));
   if (s < 60) return "just now";

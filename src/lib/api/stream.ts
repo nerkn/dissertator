@@ -29,11 +29,6 @@ export async function streamChat(
   apiKey: string,
   opts: {
     openFiles?: string[];
-    /** Document the user is currently editing (transient UI state, not a
-     *  binding — chats stay document-unbound). P5: the agent uses this as the
-     *  default target for `p_read`/`p_write`/`p_insert` when the tool's `id`
-     *  is omitted, and mentions it in the system prompt so the model knows
-     *  which manuscript it is co-authoring. */
     activeDocumentId?: string;
     /** OPENER: auto-greet a new/empty chat (no user message persisted). */
     opener?: boolean;

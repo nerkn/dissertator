@@ -25,12 +25,18 @@ const SYSTEM_PROMPT =
   "venue, DOI) — never metadata of cited works in its reference list. " +
   "Respond with ONLY a JSON object, no prose, in this exact shape:\n" +
   '{"title": string|null, "authors_text": string|null, ' +
-  '"year": number|null, "venue": string|null, "doi": string|null}.\n' +
+  '"year": number|null, "venue": string|null, "doi": string|null, ' +
+  '"note": string}.\n' +
   "Use null for unknown fields. `authors_text` is the author byline copied " +
   "CHARACTER-FOR-CHARACTER from the document, in the ORIGINAL order as " +
   "printed (the first author listed drives citation sorting). Do not split, " +
   "abbreviate, reorder, or normalize names — copy verbatim. DOI must be the " +
-  "bare `10.xxxx/...` form, lowercase, no URL prefix.";
+  "bare `10.xxxx/...` form, lowercase, no URL prefix. `note` is ONE concise " +
+  "line (<= 120 chars) summarizing what this source is (topic + type).";
+
+export interface LlmExtractResult extends Partial<Reference> {
+  note?: string;
+}
 
 export interface LlmExtractOpts {
   apiKey: string;
@@ -47,7 +53,7 @@ export interface LlmExtractOpts {
 export async function extractReferenceViaLLM(
   text: string,
   opts: LlmExtractOpts,
-): Promise<Partial<Reference> | null> {
+): Promise<LlmExtractResult | null> {
   const snippet = text.slice(0, MAX_INPUT_CHARS).trim();
   if (!snippet) return null;
 
@@ -84,7 +90,7 @@ export async function extractReferenceViaLLM(
  * on missing/invalid JSON or when neither a title nor any author survives
  * normalization. Exported for unit testing.
  */
-export function parseLlmReferenceJson(raw: string): Partial<Reference> | null {
+export function parseLlmReferenceJson(raw: string): LlmExtractResult | null {
   if (!raw) return null;
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
@@ -96,7 +102,7 @@ export function parseLlmReferenceJson(raw: string): Partial<Reference> | null {
     return null;
   }
 
-  const out: Partial<Reference> = {};
+  const out: LlmExtractResult = {};
   if (typeof obj.title === "string" && obj.title.trim()) {
     out.title = obj.title.trim();
   }
@@ -135,6 +141,10 @@ export function parseLlmReferenceJson(raw: string): Partial<Reference> | null {
     // Strip any URL prefix the model may have added despite instructions.
     const stripped = doi.replace(/^https?:\/\/(dx\.)?doi\.org\//, "");
     if (stripped.startsWith("10.")) out.doi = stripped;
+  }
+
+  if (typeof obj.note === "string" && obj.note.trim()) {
+    out.note = obj.note.trim();
   }
 
   // Must have at least a title or authors to count as a hit — a venue/year

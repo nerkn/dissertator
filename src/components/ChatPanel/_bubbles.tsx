@@ -22,30 +22,24 @@ interface ToolBeat {
   error?: string;
 }
 
-/** Human label for a tool call: `p_write` → “editing manuscript”, etc. */
 export function toolVerb(name: string): string {
   switch (name) {
-    case "corpus_list":
+    case "list":
       return "searching corpus";
-    case "corpus_write":
-      return "noting to corpus";
-    case "doc_read":
-      return "reading source";
-    case "p_read":
-      return "reading manuscript";
-    case "p_create":
-      return "creating document";
-    case "p_write":
-      return "editing manuscript";
-    case "p_insert":
-      return "inserting text";
-    case "gui_doc_open":
-    case "gui_p_open":
+    case "read":
+      return "reading";
+    case "create":
+      return "creating";
+    case "edit":
+      return "editing";
+    case "show":
       return "opening";
-    case "gui_suggest_replies":
-      return "asking";
-    case "gui_action":
-      return "noting";
+    case "suggest":
+      return "suggesting replies";
+    case "toast":
+      return "notifying";
+    case "pref_add":
+      return "remembering preference";
     default:
       return name;
   }

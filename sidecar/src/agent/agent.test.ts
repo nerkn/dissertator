@@ -1,11 +1,3 @@
-// P5 agent loop + tools integration tests.
-//
-// The loop is exercised with a SCRIPTED fake `streamFn` (no network) that
-// returns canned tool_calls then a final text answer, against a REAL temp
-// project (so p_create/p_write/p_insert actually mutate the DB and emit live
-// `edit` events). This pins the loop contract: tool calls → results → edits,
-// final text accumulation, step cap, and abort.
-
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,7 +49,7 @@ function scriptedStream(
 
 const CFG = { provider: "openai", apiUrl: "https://x.test", model: "test" } as const;
 
-test("loop: p_create then final answer emits tool_call + tool_result + edit + delta", async () => {
+test("loop: create then final answer emits tool_call + tool_result + edit + delta", async () => {
   const events: AgentStreamEvent[] = [];
   const stream = scriptedStream(
     [
@@ -67,7 +59,7 @@ test("loop: p_create then final answer emits tool_call + tool_result + edit + de
             id: "call_1",
             type: "function",
             function: {
-              name: "p_create",
+              name: "create",
               arguments: JSON.stringify({ title: "Test Doc", text: "# Hi\n" }),
             },
           },
@@ -111,7 +103,6 @@ test("loop: p_create then final answer emits tool_call + tool_result + edit + de
 });
 
 test("loop: multiple sequential tool calls in one round each execute", async () => {
-  // Round 0: model emits TWO tool calls at once (p_read then p_write).
   const doc = createDocument({ title: "Multi" });
   updateDocument(doc.id, { bodyMd: "alpha beta gamma" });
   const events: AgentStreamEvent[] = [];
@@ -123,7 +114,7 @@ test("loop: multiple sequential tool calls in one round each execute", async () 
             id: "c1",
             type: "function",
             function: {
-              name: "p_read",
+              name: "read",
               arguments: JSON.stringify({ id: doc.id }),
             },
           },
@@ -131,10 +122,11 @@ test("loop: multiple sequential tool calls in one round each execute", async () 
             id: "c2",
             type: "function",
             function: {
-              name: "p_write",
+              name: "edit",
               arguments: JSON.stringify({
                 id: doc.id,
-                oldtext: "beta",
+                op: "replace",
+                anchor: "beta",
                 text: "BETA",
               }),
             },
@@ -156,7 +148,6 @@ test("loop: multiple sequential tool calls in one round each execute", async () 
     streamFn: stream,
   });
 
-  // Two tool_calls, two tool_results, one edit (only p_write mutates).
   const calls = events.filter((e) => e.type === "tool_call");
   const results = events.filter((e) => e.type === "tool_result");
   expect(calls.length).toBe(2);
@@ -175,7 +166,7 @@ test("loop: step cap stops a tool-only loop and flags capped", async () => {
       {
         id: "c",
         type: "function",
-        function: { name: "gui_action", arguments: JSON.stringify({ action: "info", text: "x" }) },
+        function: { name: "toast", arguments: JSON.stringify({ action: "info", text: "x" }) },
       },
     ],
     finishReason: "tool_calls",
@@ -230,7 +221,7 @@ test("loop: watchdog does not trip while the provider is actively streaming", as
             id: "t1",
             type: "function",
             function: {
-              name: "gui_suggest_replies",
+              name: "suggest",
               arguments: JSON.stringify({
                 options: [{ short: "A", prompt: "a" }],
               }),
@@ -259,7 +250,7 @@ test("loop: watchdog does not trip while the provider is actively streaming", as
   expect(res.aborted).toBe(false);
 });
 
-test("loop: nudges the model to call gui_suggest_replies when it forgets", async () => {
+test("loop: nudges the model to call suggest when it forgets", async () => {
   // First call: text answer, no quick-reply buttons → loop must nudge once.
   // Second call: still no buttons → accepted (no infinite loop).
   let phase = 0;
@@ -274,7 +265,7 @@ test("loop: nudges the model to call gui_suggest_replies when it forgets", async
                 id: "t1",
                 type: "function",
                 function: {
-                  name: "gui_suggest_replies",
+                  name: "suggest",
                   arguments: JSON.stringify({
                     options: [{ short: "A", prompt: "a" }],
                   }),
@@ -300,7 +291,7 @@ test("loop: nudges the model to call gui_suggest_replies when it forgets", async
   expect(phase).toBeGreaterThanOrEqual(2);
   expect(
     events.some(
-      (e) => e.type === "tool_call" && e.name === "gui_suggest_replies",
+      (e) => e.type === "tool_call" && e.name === "suggest",
     ),
   ).toBe(true);
   expect(res.aborted).toBe(false);
@@ -308,12 +299,12 @@ test("loop: nudges the model to call gui_suggest_replies when it forgets", async
 
 // --- dispatchTool unit tests (no loop, no network) -----------------------
 
-test("dispatchTool p_write replaces first occurrence and returns the new body", async () => {
+test("dispatchTool edit replace replaces first occurrence and returns the new body", async () => {
   const d = createDocument({ title: "W" });
   updateDocument(d.id, { bodyMd: "one two three" });
   const r = await dispatchTool(
-    "p_write",
-    { id: d.id, oldtext: "two", text: "TWO" },
+    "edit",
+    { id: d.id, op: "replace", anchor: "two", text: "TWO" },
     ctxBase
   );
   expect(r.ok).toBe(true);
@@ -321,12 +312,12 @@ test("dispatchTool p_write replaces first occurrence and returns the new body", 
   expect(getDocument(d.id)?.bodyMd).toBe("one TWO three");
 });
 
-test("dispatchTool p_write fails when oldtext is absent (optimistic)", async () => {
+test("dispatchTool edit replace fails when anchor is absent (optimistic)", async () => {
   const d = createDocument({ title: "W2" });
   updateDocument(d.id, { bodyMd: "abc" });
   const r = await dispatchTool(
-    "p_write",
-    { id: d.id, oldtext: "xyz", text: "nope" },
+    "edit",
+    { id: d.id, op: "replace", anchor: "xyz", text: "nope" },
     ctxBase
   );
   expect(r.ok).toBe(false);
@@ -334,32 +325,32 @@ test("dispatchTool p_write fails when oldtext is absent (optimistic)", async () 
   expect(getDocument(d.id)?.bodyMd).toBe("abc"); // unchanged
 });
 
-test("dispatchTool p_write fixes over-escaped quotes in oldtext", async () => {
+test("dispatchTool edit replace fixes over-escaped quotes in anchor", async () => {
   const d = createDocument({ title: "W3" });
   updateDocument(d.id, { bodyMd: 'Atlas: "Sevil mi?" dedi' });
   const r = await dispatchTool(
-    "p_write",
-    { id: d.id, oldtext: '\\"Sevil mi?\\"', text: "OK" },
+    "edit",
+    { id: d.id, op: "replace", anchor: '\\"Sevil mi?\\"', text: "OK" },
     ctxBase
   );
   expect(r.ok).toBe(true);
   expect(r.document?.bodyMd).toBe("Atlas: OK dedi");
 });
 
-test("dispatchTool p_insert anchors after first match; empty anchor prepends", async () => {
+test("dispatchTool edit insert anchors after first match; empty anchor prepends", async () => {
   const d = createDocument({ title: "I" });
   updateDocument(d.id, { bodyMd: "head\nbody" });
   const r1 = await dispatchTool(
-    "p_insert",
-    { id: d.id, anchor: "head", text: "\nmiddle" },
+    "edit",
+    { id: d.id, op: "insert", anchor: "head", text: "\nmiddle" },
     ctxBase
   );
   expect(r1.ok).toBe(true);
   expect(r1.document?.bodyMd).toBe("head\nmiddle\nbody");
 
   const r2 = await dispatchTool(
-    "p_insert",
-    { id: d.id, anchor: "", text: "TOP\n" },
+    "edit",
+    { id: d.id, op: "insert", anchor: "", text: "TOP\n" },
     ctxBase
   );
   expect(r2.ok).toBe(true);
@@ -372,7 +363,7 @@ test("dispatchTool unknown tool returns ok=false", async () => {
   expect(r.error).toContain("unknown tool");
 });
 
-test("dispatchTool doc_read resolves a citekey to its linked source", async () => {
+test("dispatchTool read resolves a citekey to its linked source", async () => {
   const project = (await import("../db")).getCurrentProject()!;
   const sid = "src-docread-citekey-test";
   project.db
@@ -394,16 +385,101 @@ test("dispatchTool doc_read resolves a citekey to its linked source", async () =
     title: "Sample",
     source_file_id: sid,
   });
-  const byId = await dispatchTool("doc_read", { id: sid }, ctxBase);
+  const byId = await dispatchTool("read", { id: sid }, ctxBase);
   expect(byId.ok).toBe(true);
   const byCitekey = await dispatchTool(
-    "doc_read",
+    "read",
     { id: "CiteKey2025" },
     ctxBase,
   );
   expect(byCitekey.ok).toBe(true);
-  expect((byCitekey.data as { text: string }).text).toContain("hello body");
-  const missing = await dispatchTool("doc_read", { id: "nope" }, ctxBase);
+  expect(byCitekey.rawContent).toContain("hello body");
+  expect(
+    (byCitekey.data as { pages: { given: number; total: number } }).pages,
+  ).toEqual({ given: 1, total: 1 });
+  const missing = await dispatchTool("read", { id: "nope" }, ctxBase);
   expect(missing.ok).toBe(false);
   expect(missing.error).toContain("citekey");
+});
+
+test("dispatchTool edit replace on a DB document updates the body", async () => {
+  const d = createDocument({ title: "EditReplaceDoc" });
+  updateDocument(d.id, { bodyMd: "foo bar baz" });
+  const r = await dispatchTool(
+    "edit",
+    { id: d.id, op: "replace", anchor: "bar", text: "BAR" },
+    ctxBase
+  );
+  expect(r.ok).toBe(true);
+  expect(r.document?.bodyMd).toBe("foo BAR baz");
+  expect(getDocument(d.id)?.bodyMd).toBe("foo BAR baz");
+});
+
+test("dispatchTool edit insert on a DB document inserts after first match", async () => {
+  const d = createDocument({ title: "EditInsertDoc" });
+  updateDocument(d.id, { bodyMd: "head tail" });
+  const r = await dispatchTool(
+    "edit",
+    { id: d.id, op: "insert", anchor: "head", text: " MID" },
+    ctxBase
+  );
+  expect(r.ok).toBe(true);
+  expect(r.document?.bodyMd).toBe("head MID tail");
+  expect(getDocument(d.id)?.bodyMd).toBe("head MID tail");
+});
+
+test("dispatchTool read returns a char window on a document with data.window.total", async () => {
+  const body = "0123456789".repeat(100);
+  const d = createDocument({ title: "WindowDoc" });
+  updateDocument(d.id, { bodyMd: body });
+  const r = await dispatchTool(
+    "read",
+    { id: d.id, offset: 10, limit: 50 },
+    ctxBase
+  );
+  expect(r.ok).toBe(true);
+  expect(r.rawContent).toBe(body.slice(10, 60));
+  const win = (r.data as { window: { givenFrom: number; givenTo: number; total: number } }).window;
+  expect(win.total).toBe(body.length);
+  expect(win.givenFrom).toBe(10);
+  expect(win.givenTo).toBe(60);
+});
+
+test("dispatchTool list returns lean hits: filename===relPath and a string note", async () => {
+  const project = (await import("../db")).getCurrentProject()!;
+  const sid = "src-list-lean-test";
+  project.db
+    .prepare(
+      `INSERT OR REPLACE INTO source_files
+       (id, rel_path, filename, ext, kind, page_count, text_status, added_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(sid, "papers/lean.pdf", "lean.pdf", "pdf", "pdf", 0, "done", 1700000003);
+  const r = await dispatchTool("list", {}, ctxBase);
+  expect(r.ok).toBe(true);
+  const data = r.data as {
+    count: number;
+    corpusTotal: number;
+    hits: Array<{ filename: string; note: string; size: number | null }>;
+  };
+  const hit = data.hits.find((h) => h.filename === "papers/lean.pdf");
+  expect(hit).toBeTruthy();
+  expect(typeof hit!.note).toBe("string");
+  expect(hit!.note).toBe("");
+});
+
+test("dispatchTool retention: toast/show are ephemeral, list is keep", async () => {
+  const toast = await dispatchTool(
+    "toast",
+    { action: "info", text: "hi" },
+    ctxBase
+  );
+  expect(toast.retention).toBe("ephemeral");
+
+  const d = createDocument({ title: "ShowRetentionDoc" });
+  const show = await dispatchTool("show", { id: d.id }, ctxBase);
+  expect(show.retention).toBe("ephemeral");
+
+  const list = await dispatchTool("list", {}, ctxBase);
+  expect(list.retention).toBe("keep");
 });

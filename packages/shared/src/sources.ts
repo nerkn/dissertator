@@ -28,6 +28,7 @@ export interface SourceFile {
   pageCount: number | null;
   error: string | null;
   needsOcrReason: string | null;
+  note: string | null;
   addedAt: number;
 }
 

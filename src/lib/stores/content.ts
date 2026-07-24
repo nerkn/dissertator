@@ -31,6 +31,9 @@ interface ContentState {
   /** Per-document revision counters. Bumped whenever the agent edits a
    *  document so its editor live-reloads the new body. Keyed by document id. */
   docRevisions: Record<string, number>;
+  /** Per-source revision counters (markdown sources edited by the agent).
+   *  Bumped so an open source editor live-reloads the new body from disk. */
+  sourceRevisions: Record<string, number>;
 
   setSettings: (settings: Settings | null) => void;
   setSources: (sources: SourcesResponse | null) => void;
@@ -39,6 +42,10 @@ interface ContentState {
   /** The agent wrote/changed a document: upsert it into the list and bump its
    *  revision so its editor live-reloads. Pure reducer — no cross-domain deps. */
   handleDocumentEdited: (doc: Document) => void;
+  /** The agent wrote a markdown source file: bump its revision so an open
+   *  source editor live-reloads the new body. No store row (the file on disk
+   *  is the source of truth). */
+  bumpSourceRevision: (sourceId: string) => void;
   /** Re-fetch settings (after the Settings dialog persists selections/prompts)
    *  so the derived per-function keys + Library provider chips recompute. */
   handleSettingsChange: () => Promise<void>;
@@ -50,6 +57,7 @@ export const useContentStore = create<ContentState>((set) => ({
   documents: [],
   referencesBySource: null,
   docRevisions: {},
+  sourceRevisions: {},
 
   setSettings: (settings) => set({ settings }),
   setSources: (sources) => set({ sources }),
@@ -78,6 +86,14 @@ export const useContentStore = create<ContentState>((set) => ({
       /* sidecar mid-restart */
     }
   },
+
+  bumpSourceRevision: (sourceId) =>
+    set((s) => ({
+      sourceRevisions: {
+        ...s.sourceRevisions,
+        [sourceId]: (s.sourceRevisions[sourceId] ?? 0) + 1,
+      },
+    })),
 }));
 
 /** The current project's source list, or a stable empty array when no

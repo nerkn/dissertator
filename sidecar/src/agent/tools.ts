@@ -1,35 +1,13 @@
-// P5 agent tools — the `{domain}_{verb}` tool surface the LLM uses to read the
-// corpus, read/write the manuscript, and trigger user-facing side-effects.
-//
-// Each tool is (a) advertised to the model via TOOL_SPECS (OpenAI function
-// format) and (b) executed by `dispatchTool(name, args, ctx)`. Dispatch returns
-// a {@link ToolResult}: a short `summary` for the chat narration + a JSON
-// `data` payload that becomes the tool-result message the model sees next.
-//
-// Domains (DESIGN.md §10):
-//   corpus_* — the reference index (metadata + vector search)
-//   doc_*    — source bundles (read-only)
-//   p_*      — the manuscript (read/write; content-addressed via oldtext/anchor)
-//   gui_*    — user-facing side-effects (relayed as `gui` SSE events; no pause)
-//
-// Manuscript addressing: one document = one body_md blob (no sections). Writes
-// are CONTENT-ADDRESSED: `p_write` replaces the first occurrence of `oldtext`;
-// `p_insert` inserts after the first occurrence of `anchor`. This makes the
-// optimistic-concurrency check explicit (oldtext must still be present) without
-// line numbers that drift as the body changes.
-
 import type { Document, GuiEvent, Reference, SourceFile } from "@dissertator/shared";
 import type { ToolSpec } from "../chat/openai.ts";
 import {
   createDocument,
   getDocument,
   getReferenceByCitekey,
-  getReferenceById,
   listReferences,
   getSourceById,
   getSourceText,
   updateDocument,
-  upsertReference,
 } from "../db";
 import { listSources, readSourceMarkdown, writeSourceMarkdown } from "../ingest/index.ts";
 import { searchCorpus } from "../search.ts";
@@ -46,50 +24,36 @@ function looseIndex(body: string, needle: string): { idx: number; len: number } 
   return { idx: -1, len: 0 };
 }
 
-/** Per-run context handed to every tool. */
 export interface ToolContext {
-  /** Embedding API key (corpus_list vector search). Bearer-only, never logged. */
   embeddingApiKey?: string;
-  /** The document the user is editing — default `id` for p_* tools. */
   activeDocumentId?: string;
-  /** Relay a gui_* side-effect to the frontend (SSE `gui` event). */
   emitGui: (e: GuiEvent) => void;
 }
 
-/** Outcome of a tool call. `summary` is chat-narration; `data` is the model's
- *  observation. `document` (set by mutating p_* tools) lets the loop emit a
- *  live `edit` SSE event so the editor refreshes. */
 export interface ToolResult {
   ok: boolean;
   summary: string;
   data?: unknown;
   error?: string;
   rawContent?: string;
-  /** Present when a p_* tool mutated a document — the loop emits `edit`. */
+  retention?: "default" | "keep" | "ephemeral";
   document?: { id: string; title: string; bodyMd: string };
 }
-
-// ---------------------------------------------------------------------------
-// Tool advertisements (OpenAI function specs).
-// ---------------------------------------------------------------------------
 
 export const TOOL_SPECS: ToolSpec[] = [
   {
     type: "function",
     function: {
-      name: "corpus_list",
+      name: "list",
       description:
-        "List/search the CORPUS (your ingested source files). With `query`: " +
-        "semantic (vector) search over embedded chunks — each hit is a source " +
-        "file plus its best-matching `snippet`, `physicalPage`, and `score`. " +
-        "Without `query`: list source files, optionally filtered by `filename` " +
-        "substring. Every hit ALWAYS carries `sourceFileId` + `filename` (+ " +
-        "`kind`, `relPath`) so you can call doc_read(sourceFileId) next; " +
-        "`snippet`/`physicalPage`/`score` appear ONLY on semantic hits. " +
-        "Bibliographic fields (`citekey`, `authors`, `year`) are overlaid ONLY " +
-        "when a reference has been curated for that source — their ABSENCE " +
-        "does NOT mean the source is missing, only that no citation metadata " +
-        "exists yet. Use doc_read(sourceFileId) for a source's full text.",
+        "List/search the corpus (your ingested source files). With `query`: " +
+        "semantic (vector) search over embedded chunks. Without `query`: list " +
+        "source files, optionally filtered by `filename`/`author`/`title`. Each " +
+        "hit carries `filename` (the relative path — also the handle `read`/" +
+        "`show` take), `size`, and `note`; bibliographic fields (`title`, " +
+        "`authors`, `year`, `citekey`) appear ONLY when a reference exists for " +
+        "that source — their absence means no citation metadata yet, not a " +
+        "missing source. (keep this result for the rest of the turn).",
       parameters: {
         type: "object",
         properties: {
@@ -110,53 +74,36 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     type: "function",
     function: {
-      name: "corpus_write",
+      name: "read",
       description:
-        "Update a reference's metadata (title/authors/year/doi). The citekey " +
-        "is regenerated from author/year/title; existing `[@citekey]` tokens " +
-        "in manuscripts are rewritten to match. Use for cleaning up import errors.",
+        "Read the content of a manuscript OR a source file. `id` resolves via " +
+        "filename (relPath), source-file id, document id, or citekey; omit to " +
+        "read the manuscript the user is editing. Two modes by target: " +
+        "PAGINATED sources (PDF/docx — pageCount>0) return one page at a time " +
+        "(`page`, default 1, truncated past ~12k). MANUSCRIPTS and markdown " +
+        "sources return a char window (`offset`/`limit`, default 0..4000); " +
+        "`page` is ignored for these. Use the returned `pages`/`window` " +
+        "annotation to page or scroll.",
       parameters: {
         type: "object",
         properties: {
-          id: { type: "string", description: "Reference id." },
-          title: { type: "string" },
-          year: { type: "integer" },
-          doi: { type: "string" },
-        },
-        required: ["id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "doc_read",
-      description:
-        "Read a source bundle's extracted text (read-only). Returns the text, " +
-        "page-tagged as [p.N]. Optionally filter to one page. Truncated past " +
-        "~12k chars (pass `page` to page through). `id` accepts a source-file " +
-        "id OR a citekey (e.g. from the corpus index).",
-      parameters: {
-        type: "object",
-        properties: {
-          id: { type: "string", description: "Source-file id or citekey." },
-          page: { type: "integer", description: "Optional physical page." },
-        },
-        required: ["id"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "p_read",
-      description:
-        "Read the manuscript body (markdown). `id` defaults to the document " +
-        "the user is currently editing. Returns title + full body_md.",
-      parameters: {
-        type: "object",
-        properties: {
-          id: { type: "string", description: "Document id (default: active)." },
+          id: {
+            type: "string",
+            description:
+              "Document id, source-file id, filename (relPath), or citekey. Omit for the active manuscript.",
+          },
+          page: {
+            type: "integer",
+            description: "Physical page (paginated sources only; ignored for manuscripts/.md).",
+          },
+          offset: {
+            type: "integer",
+            description: "Char-window start (manuscripts/.md only; default 0).",
+          },
+          limit: {
+            type: "integer",
+            description: "Char-window size (manuscripts/.md only; default 4000).",
+          },
         },
       },
     },
@@ -164,11 +111,11 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     type: "function",
     function: {
-      name: "p_create",
+      name: "create",
       description:
         "Create a new manuscript document with a title (and optional initial " +
-        "body text). Returns the new document id. Follow with gui_p_open to " +
-        "show it to the user.",
+        "body text). Returns the new document id. Follow with `show` to " +
+        "display it to the user.",
       parameters: {
         type: "object",
         properties: {
@@ -185,57 +132,55 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     type: "function",
     function: {
-      name: "p_write",
+      name: "edit",
       description:
-        "Replace the FIRST occurrence of `oldtext` in the manuscript body with " +
-        "`text`. `oldtext` must be present verbatim (optimistic-concurrency " +
-        "check) — if the user edited the body, this fails and you should " +
-        "p_read again. `id` defaults to the active document.",
+        "Edit a manuscript OR a markdown source file (content-addressed). " +
+        "op=\"replace\": replace the FIRST occurrence of `anchor` with `text` " +
+        "(`anchor` required, must exist verbatim). op=\"insert\": insert `text` " +
+        "immediately AFTER the first occurrence of `anchor`; empty/omitted " +
+        "`anchor` prepends at the top. `id` resolves via filename (relPath), " +
+        "source-file id, document id, or citekey; omit for the active " +
+        "manuscript. Non-markdown sources (PDF, etc.) are not editable. If " +
+        "`anchor` isn't found, `read` again — the body may have changed.",
       parameters: {
         type: "object",
         properties: {
-          id: { type: "string", description: "Document id (default: active)." },
-          oldtext: {
+          id: {
             type: "string",
-            description: "Exact existing text to replace (must be present).",
+            description: "Document id, source-file id, filename (relPath), or citekey. Omit for the active manuscript.",
           },
-          text: { type: "string", description: "The replacement text." },
-        },
-        required: ["oldtext", "text"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "p_insert",
-      description:
-        "Insert `text` immediately AFTER the first occurrence of `anchor` in " +
-        "the manuscript body. `anchor` must be present verbatim. Omit/empty " +
-        "`anchor` to prepend at the very top. `id` defaults to the active " +
-        "document.",
-      parameters: {
-        type: "object",
-        properties: {
-          id: { type: "string", description: "Document id (default: active)." },
+          op: {
+            type: "string",
+            enum: ["replace", "insert"],
+            description: "replace = swap first anchor match; insert = add text after first anchor match (or top if anchor empty/omitted).",
+          },
           anchor: {
             type: "string",
-            description: "Existing text to insert after (empty = top).",
+            description: "Existing text to replace (op=replace) or insert after (op=insert). Required for replace; empty/omitted = top for insert.",
           },
-          text: { type: "string", description: "Text to insert." },
+          text: { type: "string", description: "Replacement (replace) or new (insert) text." },
         },
-        required: ["text"],
+        required: ["op", "text"],
       },
     },
   },
   {
     type: "function",
     function: {
-      name: "gui_doc_open",
-      description: "Open a source file in the user's viewer (pdf.js / text).",
+      name: "show",
+      description:
+        "Open a document or source file in the user's UI (editor for " +
+        "manuscripts, viewer for sources). `id` resolves via filename " +
+        "(relPath), source-file id, document id, or citekey. (result is " +
+        "ephemeral: not kept in context).",
       parameters: {
         type: "object",
-        properties: { id: { type: "string", description: "Source-file id." } },
+        properties: {
+          id: {
+            type: "string",
+            description: "Document id, source-file id, filename (relPath), or citekey.",
+          },
+        },
         required: ["id"],
       },
     },
@@ -243,27 +188,14 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     type: "function",
     function: {
-      name: "gui_p_open",
-      description:
-        "Open a manuscript document in the editor. `id` defaults to the active.",
-      parameters: {
-        type: "object",
-        properties: {
-          id: { type: "string", description: "Document id (default: active)." },
-        },
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "gui_suggest_replies",
+      name: "suggest",
       description:
         "Offer the user quick-reply buttons to close your turn. The run does " +
         "NOT pause — clicking a button sends its `prompt` as the user's next " +
         "message. This is how the user picks the next step; you MUST call this " +
         "at the end of essentially every turn (2–4 concrete next steps). Use " +
-        "for 'pick one of these directions' moments.",
+        "for 'pick one of these directions' moments. (result is ephemeral: not " +
+        "kept in context).",
       parameters: {
         type: "object",
         properties: {
@@ -287,10 +219,11 @@ export const TOOL_SPECS: ToolSpec[] = [
   {
     type: "function",
     function: {
-      name: "gui_action",
+      name: "toast",
       description:
         "Non-blocking narration beat (toast). Use sparingly for milestones: " +
-        "celebrate a finished draft, warn before a risky edit, info otherwise.",
+        "celebrate a finished draft, warn before a risky edit, info otherwise. " +
+        "(result is ephemeral: not kept in context).",
       parameters: {
         type: "object",
         properties: {
@@ -314,7 +247,7 @@ export const TOOL_SPECS: ToolSpec[] = [
         "when the user states a lasting preference (tone, format, citation style, " +
         "workflow, hard constraint) — NEVER for one-off or transient requests. " +
         "You cannot delete or rewrite; you only append. Keep `text` to one concise " +
-        "line.",
+        "line. (result is ephemeral: not kept in context).",
       parameters: {
         type: "object",
         properties: {
@@ -329,79 +262,106 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Helpers.
-// ---------------------------------------------------------------------------
-
 type EditTarget =
   | { kind: "document"; doc: Document }
   | { kind: "source"; source: SourceFile };
 
-function lookupEditTarget(id: string):
+type Handle =
   | { kind: "document"; doc: Document }
-  | { kind: "source"; source: SourceFile }
-  | { kind: "non-md-source"; source: SourceFile }
-  | null {
-  const doc = getDocument(id);
+  | { kind: "source"; source: SourceFile };
+
+function resolveHandle(
+  h: string,
+): Handle | { kind: "non-md-source"; source: SourceFile } | null {
+  if (!h) return null;
+  const doc = getDocument(h);
   if (doc) return { kind: "document", doc };
-  const source = getSourceById(id);
-  if (!source) return null;
-  if ((source.mimeType ?? "").toLowerCase() === "text/markdown") {
-    return { kind: "source", source };
+  const byId = getSourceById(h);
+  if (byId) return mdOrNot(byId);
+  const norm = h.replace(/\\/g, "/");
+  const sources = listSources();
+  const byRel = sources.find((s) => s.relPath.replace(/\\/g, "/") === norm);
+  if (byRel) return mdOrNot(byRel);
+  const byFile = sources.find((s) => s.filename.replace(/\\/g, "/") === norm);
+  if (byFile) return mdOrNot(byFile);
+  const ref = getReferenceByCitekey(h);
+  if (ref?.source_file_id) {
+    const s = getSourceById(ref.source_file_id);
+    if (s) return mdOrNot(s);
   }
-  return { kind: "non-md-source", source };
+  return null;
 }
 
-/** Cap on doc_read text returned to the model (keeps context window sane). */
-const DOC_READ_CAP = 12000;
+function mdOrNot(
+  s: SourceFile,
+): Handle | { kind: "non-md-source"; source: SourceFile } {
+  return (s.mimeType ?? "").toLowerCase() === "text/markdown"
+    ? { kind: "source", source: s }
+    : { kind: "non-md-source", source: s };
+}
 
-/** Format a reference as the short metadata shape returned by corpus_write. */
-function refShort(r: Reference): Record<string, unknown> {
+async function mutateBody(
+  target: EditTarget,
+  ctx: ToolContext,
+  summaryFor: (name: string) => string,
+  transform: (
+    body: string,
+  ) => { next: string } | { error: string },
+): Promise<ToolResult> {
+  let body: string;
+  try {
+    body =
+      target.kind === "document"
+        ? target.doc.bodyMd
+        : await readSourceMarkdown(target.source);
+  } catch (e) {
+    return { ok: false, summary: "⚠️ read failed", error: (e as Error)?.message ?? String(e) };
+  }
+  const res = transform(body);
+  if ("error" in res) return { ok: false, summary: "⚠️ edit failed", error: res.error };
+  if (target.kind === "document") {
+    const updated = updateDocument(target.doc.id, { bodyMd: res.next });
+    if (!updated) return { ok: false, summary: summaryFor(target.doc.title), error: "update returned null" };
+    return {
+      ok: true,
+      summary: summaryFor(updated.title),
+      data: { id: updated.id, title: updated.title, ok: true },
+      document: { id: updated.id, title: updated.title, bodyMd: updated.bodyMd },
+    };
+  }
+  try {
+    await writeSourceMarkdown(target.source, res.next);
+  } catch (e) {
+    return { ok: false, summary: "⚠️ write failed", error: (e as Error)?.message ?? String(e) };
+  }
+  ctx.emitGui({ kind: "source_edited", sourceId: target.source.id });
+  const title = target.source.filename.replace(/\.[^.]+$/, "");
   return {
-    id: r.id,
-    citekey: r.citekey,
-    title: r.title,
-    authors: r.authors.map((a) => [a.given, a.family].filter(Boolean).join(" ")),
-    year: r.year,
-    sourceFileId: r.source_file_id,
+    ok: true,
+    summary: summaryFor(title),
+    data: { id: target.source.id, title, ok: true },
   };
 }
 
-/**
- * A corpus hit: one source file, optionally enriched with the semantic match
- * (`snippet`/`physicalPage`/`score` — present only on `query` hits) and/or
- * curated reference metadata (`citekey`/`authors`/`year` — present only when a
- * `references` row exists for this source_file_id). `sourceFileId` +
- * `filename` are ALWAYS present so the model can call doc_read next.
- */
-interface CorpusHit {
-  sourceFileId: string;
+const DOC_READ_CAP = 12000;
+
+interface ListHit {
   filename: string;
-  relPath: string;
-  kind: string;
-  /** Semantic-only (present on `query` hits): */
-  score?: number;
-  physicalPage?: number | null;
-  printedPage?: string | null;
-  snippet?: string;
-  /** Reference overlay (present only when a reference row exists): */
-  referenceId?: string;
-  citekey?: string;
+  size: number | null;
   title?: string;
   authors?: string[];
   year?: number;
+  citekey?: string;
+  note: string;
 }
 
-/** Build a base CorpusHit from a source file (+ optional reference overlay). */
-function hitFromSource(s: SourceFile, r?: Reference): CorpusHit {
-  const h: CorpusHit = {
-    sourceFileId: s.id,
-    filename: s.filename,
-    relPath: s.relPath,
-    kind: s.kind,
+function hitFromSource(s: SourceFile, r?: Reference): ListHit {
+  const h: ListHit = {
+    filename: s.relPath,
+    size: s.fileSize,
+    note: s.note ?? "",
   };
   if (r) {
-    h.referenceId = r.id;
     h.citekey = r.citekey;
     if (typeof r.title === "string") h.title = r.title;
     h.authors = r.authors.map((a) =>
@@ -412,43 +372,13 @@ function hitFromSource(s: SourceFile, r?: Reference): CorpusHit {
   return h;
 }
 
-/** Resolve a source id from either a source-file id or a citekey. The corpus
- *  index advertises citekeys; if the model passes one to a doc_* tool, fall
- *  back to the reference row's linked source_file_id rather than failing.
- *  Returns the resolved source id, or null if neither matches. */
-function resolveSourceId(id: string): string | null {
-  if (!id) return null;
-  if (getSourceById(id)) return id;
-  const ref = getReferenceByCitekey(id);
-  return ref?.source_file_id ?? null;
-}
-
-/** Slice a page-tagged source text to one physical page (if present). */
 function slicePage(text: string, page: number): string {
-  // Segments look like "[p.12] ...text... [p.13] ...". Split keeping tags.
   const parts = text.split(/(?=\[p\.\d+\])/);
   const want = `[p.${page}]`;
   const seg = parts.find((p) => p.startsWith(want));
   return seg ?? "";
 }
 
-/** Resolve the document id for a p_* tool (explicit id wins, else active). */
-function resolveDocId(
-  args: { id?: string },
-  ctx: ToolContext
-): string | null {
-  return args.id?.trim() || ctx.activeDocumentId || null;
-}
-
-// ---------------------------------------------------------------------------
-// Dispatch.
-// ---------------------------------------------------------------------------
-
-/**
- * Execute one tool call. `args` is the already-parsed arguments object (the
- * loop handles JSON parse errors). Unknown tool names return ok=false with a
- * clear error so the model can self-correct on the next turn.
- */
 export async function dispatchTool(
   name: string,
   args: Record<string, unknown> | null,
@@ -457,28 +387,20 @@ export async function dispatchTool(
   const a = args ?? {};
   try {
     switch (name) {
-      case "corpus_list":
-        return await corpusList(a, ctx);
-      case "corpus_write":
-        return await corpusWrite(a);
-      case "doc_read":
-        return await docRead(a);
-      case "p_read":
-        return await pRead(a, ctx);
-      case "p_create":
-        return await pCreate(a);
-      case "p_write":
-        return await pWrite(a, ctx);
-      case "p_insert":
-        return await pInsert(a, ctx);
-      case "gui_doc_open":
-        return guiDocOpen(a, ctx);
-      case "gui_p_open":
-        return guiPOpen(a, ctx);
-      case "gui_suggest_replies":
-        return guiSuggestReplies(a, ctx);
-      case "gui_action":
-        return guiAction(a, ctx);
+      case "list":
+        return await listTool(a, ctx);
+      case "read":
+        return await readTool(a, ctx);
+      case "create":
+        return await createTool(a);
+      case "edit":
+        return await editTool(a, ctx);
+      case "show":
+        return showTool(a, ctx);
+      case "suggest":
+        return suggestTool(a, ctx);
+      case "toast":
+        return toastTool(a, ctx);
       case "pref_add":
         return await prefAdd(a);
       default:
@@ -490,17 +412,13 @@ export async function dispatchTool(
   }
 }
 
-async function corpusList(
+async function listTool(
   args: Record<string, unknown>,
   ctx: ToolContext
 ): Promise<ToolResult> {
   const query = (args.query as string | undefined)?.trim();
   const limit = Math.min(20, Math.max(1, (args.limit as number) || 10));
 
-  // The CORPUS = the source files (chunked + embedded). References are an
-  // OPTIONAL bibliographic overlay: build a source_file_id → Reference map so
-  // we can attach citekey/authors/year when a reference happens to exist, but
-  // NEVER drop a source just because it has no reference row.
   const allSources = listSources();
   const refBySrc = new Map<string, Reference>();
   for (const r of listReferences()) {
@@ -508,53 +426,36 @@ async function corpusList(
   }
 
   if (query) {
-    // Semantic vector search. searchCorpus returns chunk-level hits keyed by
-    // source_file_id; we de-dup to one hit per source and overlay reference
-    // metadata when available. We over-fetch (limit*4) so de-dup still fills
-    // the requested limit.
     const res = await searchCorpus(query, {
       apiKey: ctx.embeddingApiKey,
       limit: limit * 4,
     });
     const srcById = new Map(allSources.map((s) => [s.id, s] as const));
-    const hits: CorpusHit[] = [];
+    const hits: ListHit[] = [];
     const seen = new Set<string>();
     for (const h of res.hits) {
       if (seen.has(h.sourceId)) continue;
       const s = srcById.get(h.sourceId);
-      if (!s) continue; // stale chunk whose source_file was deleted
+      if (!s) continue;
       seen.add(h.sourceId);
-      const hit = hitFromSource(s, refBySrc.get(h.sourceId));
-      hit.score = Math.round(h.score * 1000) / 1000;
-      hit.physicalPage = h.physicalPage;
-      hit.printedPage = h.printedPage;
-      hit.snippet = h.text;
-      hits.push(hit);
+      hits.push(hitFromSource(s, refBySrc.get(h.sourceId)));
       if (hits.length >= limit) break;
     }
     const plural = (n: number) => (n === 1 ? "" : "s");
-    const note =
+    const summary =
       hits.length === 0
         ? res.embedded
-          ? `0 semantic hits (corpus has ${allSources.length} source${plural(allSources.length)}; list without query, or doc_read by id)`
-          : `corpus not embedded yet (${allSources.length} source${plural(allSources.length)} present; embed first, or list without query)`
-        : `${hits.length} semantic hit${plural(hits.length)}`;
+          ? `🔍 Searched "${query}" → 0 semantic hits (corpus has ${allSources.length} source${plural(allSources.length)}; list without query, or read by filename)`
+          : `🔍 Searched "${query}" → corpus not embedded yet (${allSources.length} source${plural(allSources.length)} present; embed first, or list without query)`
+        : `🔍 Searched "${query}" → ${hits.length} semantic hit${plural(hits.length)}`;
     return {
       ok: true,
-      summary: `🔍 Searched "${query}" → ${note}`,
-      data: {
-        count: hits.length,
-        embedded: res.embedded,
-        dimensions: res.dimensions,
-        corpusTotal: allSources.length,
-        hits,
-      },
+      summary,
+      retention: "keep",
+      data: { count: hits.length, corpusTotal: allSources.length, hits },
     };
   }
 
-  // No query → list/filter the corpus (source files). `filename` is the
-  // natural corpus filter; `author`/`title` are reference-based and only
-  // applied when references exist (so an uncurated corpus stays visible).
   const filename = (args.filename as string | undefined)?.toLowerCase().trim();
   const author = (args.author as string | undefined)?.toLowerCase().trim();
   const title = (args.title as string | undefined)?.toLowerCase().trim();
@@ -581,71 +482,103 @@ async function corpusList(
   return {
     ok: true,
     summary: `📚 Listed corpus → ${hits.length} source${plural(hits.length)} (of ${allSources.length})`,
+    retention: "keep",
     data: { count: hits.length, corpusTotal: allSources.length, hits },
   };
 }
 
-async function corpusWrite(args: Record<string, unknown>): Promise<ToolResult> {
-  const id = (args.id as string)?.trim();
-  if (!id) return { ok: false, summary: "corpus_write: id required", error: "id required" };
-  const existing = getReferenceById(id);
-  if (!existing) return { ok: false, summary: "corpus_write: not found", error: `reference ${id} not found` };
-  const patch: Partial<Reference> = { id };
-  if (typeof args.title === "string") patch.title = args.title;
-  if (typeof args.year === "number") patch.year = args.year;
-  if (typeof args.doi === "string") patch.doi = args.doi;
-  const updated = upsertReference(patch);
-  return {
-    ok: true,
-    summary: `✏️ Updated reference @${updated.citekey}`,
-    data: refShort(updated),
-  };
-}
-
-async function docRead(args: Record<string, unknown>): Promise<ToolResult> {
-  const raw = (args.id as string)?.trim();
-  if (!raw) return { ok: false, summary: "doc_read: id required", error: "id required" };
-  const id = resolveSourceId(raw);
-  if (!id) return { ok: false, summary: "doc_read: not found", error: `source ${raw} not found (pass a source-file id or citekey from corpus_list)` };
-  const src = getSourceById(id);
-  if (!src) return { ok: false, summary: "doc_read: not found", error: `source ${raw} not found` };
-  const { text, pageCount } = getSourceText(id);
-  const page = args.page as number | undefined;
-  const body = page ? slicePage(text, page) : text;
-  const capped = body.length > DOC_READ_CAP;
-  const shown = capped ? body.slice(0, DOC_READ_CAP) : body;
-  return {
-    ok: true,
-    summary: `📖 Read ${src.filename}${page ? ` p.${page}` : ""}${capped ? " (truncated)" : ""}`,
-    data: {
-      filename: src.filename,
-      pageCount,
-      ...(page ? { page } : {}),
-      truncated: capped,
-      text: shown,
-    },
-  };
-}
-
-async function pRead(
+async function readTool(
   args: Record<string, unknown>,
-  ctx: ToolContext
+  ctx: ToolContext,
 ): Promise<ToolResult> {
-  const id = resolveDocId(args as { id?: string }, ctx);
-  if (!id) return { ok: false, summary: "p_read: no document id", error: "no document id (pass `id` or open a document)" };
-  const doc = getDocument(id);
-  if (!doc) return { ok: false, summary: "p_read: not found", error: `document ${id} not found` };
+  const raw = (args.id as string | undefined)?.trim();
+  const pageArg = typeof args.page === "number" ? args.page : undefined;
+  const offset =
+    typeof args.offset === "number" ? Math.max(0, Math.floor(args.offset)) : 0;
+  const limit =
+    typeof args.limit === "number" ? Math.max(1, Math.floor(args.limit)) : 4000;
+
+  let handle: Handle | { kind: "non-md-source"; source: SourceFile };
+  if (raw) {
+    const h = resolveHandle(raw);
+    if (!h) {
+      return {
+        ok: false,
+        summary: "read: not found",
+        error: `id ${raw} not found (pass a document id, source-file id, filename, or citekey)`,
+      };
+    }
+    handle = h;
+  } else {
+    if (!ctx.activeDocumentId) {
+      return { ok: false, summary: "read: no id", error: "no id (pass `id`, or open a document)" };
+    }
+    const doc = getDocument(ctx.activeDocumentId);
+    if (!doc) {
+      return { ok: false, summary: "read: active missing", error: `active document ${ctx.activeDocumentId} not found` };
+    }
+    handle = { kind: "document", doc };
+  }
+
+  if (handle.kind !== "document" && (handle.source.pageCount ?? 0) > 0) {
+    const { text, pageCount } = getSourceText(handle.source.id);
+    const wantPage = pageArg ?? 1;
+    const body = slicePage(text, wantPage);
+    const capped = body.length > DOC_READ_CAP;
+    const shown = capped ? body.slice(0, DOC_READ_CAP) : body;
+    return {
+      ok: true,
+      summary: `📖 Read ${handle.source.filename} p.${wantPage}${capped ? " (truncated)" : ""}`,
+      retention: "default",
+      data: {
+        filename: handle.source.filename,
+        pages: { given: wantPage, total: pageCount },
+        truncated: capped,
+      },
+      rawContent: shown,
+    };
+  }
+
+  let body: string;
+  let title: string;
+  let id: string;
+  if (handle.kind === "document") {
+    body = handle.doc.bodyMd;
+    title = handle.doc.title;
+    id = handle.doc.id;
+  } else if (handle.kind === "source") {
+    try {
+      body = await readSourceMarkdown(handle.source);
+    } catch (e) {
+      return { ok: false, summary: "read: read failed", error: (e as Error)?.message ?? String(e) };
+    }
+    title = handle.source.filename;
+    id = handle.source.id;
+  } else {
+    const { text } = getSourceText(handle.source.id);
+    body = text;
+    title = handle.source.filename;
+    id = handle.source.id;
+  }
+
+  const end = Math.min(offset + limit, body.length);
+  const shown = body.slice(offset, end);
   return {
     ok: true,
-    summary: `📄 Read manuscript "${doc.title}"`,
-    data: { id: doc.id, title: doc.title, bodyMd: doc.bodyMd },
-    rawContent: doc.bodyMd,
+    summary: `📄 Read "${title}" (${shown.length}/${body.length} chars)`,
+    retention: "default",
+    data: {
+      id,
+      title,
+      window: { givenFrom: offset, givenTo: end, total: body.length },
+    },
+    rawContent: shown,
   };
 }
 
-async function pCreate(args: Record<string, unknown>): Promise<ToolResult> {
+async function createTool(args: Record<string, unknown>): Promise<ToolResult> {
   const title = (args.title as string)?.trim();
-  if (!title) return { ok: false, summary: "p_create: title required", error: "title required" };
+  if (!title) return { ok: false, summary: "create: title required", error: "title required" };
   const text = typeof args.text === "string" ? args.text : "";
   const doc = createDocument({ title });
   const updated = text ? updateDocument(doc.id, { bodyMd: text }) : doc;
@@ -653,97 +586,70 @@ async function pCreate(args: Record<string, unknown>): Promise<ToolResult> {
   return {
     ok: true,
     summary: `📄 Created manuscript "${fin.title}"`,
+    retention: "default",
     data: { id: fin.id, title: fin.title, bodyMd: fin.bodyMd },
     document: { id: fin.id, title: fin.title, bodyMd: fin.bodyMd },
   };
 }
 
-async function pWrite(
+async function editTool(
   args: Record<string, unknown>,
-  ctx: ToolContext
+  ctx: ToolContext,
 ): Promise<ToolResult> {
-  const id = resolveDocId(args as { id?: string }, ctx);
-  if (!id) return { ok: false, summary: "p_write: no document id", error: "no document id (pass `id` or open a document)" };
-  const oldtext = args.oldtext as string | undefined;
+  const op = args.op as "replace" | "insert" | undefined;
+  if (op !== "replace" && op !== "insert")
+    return { ok: false, summary: "edit: bad op", error: "op must be replace|insert" };
   const text = args.text as string | undefined;
-  if (oldtext === undefined || text === undefined)
-    return { ok: false, summary: "p_write: oldtext + text required", error: "oldtext and text required" };
-  const doc = getDocument(id);
-  if (!doc) return { ok: false, summary: "p_write: not found", error: `document ${id} not found` };
-  const { idx, len } = looseIndex(doc.bodyMd, oldtext);
-  if (idx === -1) {
-    return {
-      ok: false,
-      summary: `⚠️ p_write: oldtext not found (body changed?)`,
-      error: "oldtext not found in body — the user may have edited it; p_read again",
-    };
-  }
-  const next = doc.bodyMd.slice(0, idx) + text + doc.bodyMd.slice(idx + len);
-  const updated = updateDocument(id, { bodyMd: next });
-  if (!updated) return { ok: false, summary: "p_write: update failed", error: "update returned null" };
-  return {
-    ok: true,
-    summary: `✏️ Replaced text in "${updated.title}"`,
-    data: { id: updated.id, title: updated.title, ok: true },
-    document: { id: updated.id, title: updated.title, bodyMd: updated.bodyMd },
-  };
-}
-
-async function pInsert(
-  args: Record<string, unknown>,
-  ctx: ToolContext
-): Promise<ToolResult> {
-  const id = resolveDocId(args as { id?: string }, ctx);
-  if (!id) return { ok: false, summary: "p_insert: no document id", error: "no document id (pass `id` or open a document)" };
-  const text = args.text as string | undefined;
-  if (text === undefined) return { ok: false, summary: "p_insert: text required", error: "text required" };
+  if (text === undefined) return { ok: false, summary: "edit: text required", error: "text required" };
   const anchor = typeof args.anchor === "string" ? args.anchor : "";
-  const doc = getDocument(id);
-  if (!doc) return { ok: false, summary: "p_insert: not found", error: `document ${id} not found` };
-  let next: string;
-  if (!anchor.trim()) {
-    // Empty anchor → prepend at the very top.
-    next = text + (text.endsWith("\n") ? "" : "\n") + doc.bodyMd;
+  const raw = (args.id as string | undefined)?.trim();
+  let target: EditTarget | { kind: "non-md-source"; source: SourceFile };
+  if (raw) {
+    const h = resolveHandle(raw);
+    if (!h) return { ok: false, summary: "edit: not found", error: `id ${raw} not found` };
+    target = h;
   } else {
-    const { idx, len } = looseIndex(doc.bodyMd, anchor);
-    if (idx === -1) {
-      return {
-        ok: false,
-        summary: `⚠️ p_insert: anchor not found`,
-        error: "anchor not found in body — p_read to see current text",
-      };
-    }
-    const insertAt = idx + len;
-    next = doc.bodyMd.slice(0, insertAt) + text + doc.bodyMd.slice(insertAt);
+    if (!ctx.activeDocumentId) return { ok: false, summary: "edit: no id", error: "no id (pass `id`, or open a document)" };
+    const doc = getDocument(ctx.activeDocumentId);
+    if (!doc) return { ok: false, summary: "edit: active missing", error: `active document ${ctx.activeDocumentId} not found` };
+    target = { kind: "document", doc };
   }
-  const updated = updateDocument(id, { bodyMd: next });
-  if (!updated) return { ok: false, summary: "p_insert: update failed", error: "update returned null" };
-  return {
-    ok: true,
-    summary: `✏️ Inserted text into "${updated.title}"`,
-    data: { id: updated.id, title: updated.title, ok: true },
-    document: { id: updated.id, title: updated.title, bodyMd: updated.bodyMd },
-  };
+  if (target.kind === "non-md-source") {
+    return { ok: false, summary: "edit: not editable", error: `${target.source.filename} is not a markdown file; only manuscripts and .md sources are editable` };
+  }
+  const summaryFor = (n: string) =>
+    op === "replace" ? `✏️ Replaced text in "${n}"` : `✏️ Inserted text into "${n}"`;
+  return mutateBody(target, ctx, summaryFor, (body) => {
+    if (op === "replace") {
+      if (!anchor) return { error: "anchor required for replace" };
+      const { idx, len } = looseIndex(body, anchor);
+      if (idx === -1) return { error: "anchor not found in body — the user may have edited it; read again" };
+      return { next: body.slice(0, idx) + text + body.slice(idx + len) };
+    }
+    if (!anchor.trim()) {
+      return { next: text + (text.endsWith("\n") ? "" : "\n") + body };
+    }
+    const { idx, len } = looseIndex(body, anchor);
+    if (idx === -1) return { error: "anchor not found in body — read to see current text" };
+    const insertAt = idx + len;
+    return { next: body.slice(0, insertAt) + text + body.slice(insertAt) };
+  });
 }
 
-function guiDocOpen(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
-  const raw = (args.id as string)?.trim();
-  if (!raw) return { ok: false, summary: "gui_doc_open: id required", error: "id required" };
-  const id = resolveSourceId(raw) ?? raw;
-  const src = getSourceById(id);
-  ctx.emitGui({ kind: "doc_open", sourceId: id });
-  return { ok: true, summary: `📂 Opened source "${src?.filename ?? raw}"`, data: { opened: true } };
+function showTool(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
+  const raw = (args.id as string | undefined)?.trim();
+  if (!raw) return { ok: false, summary: "show: id required", error: "id required" };
+  const h = resolveHandle(raw);
+  if (!h) return { ok: false, summary: "show: not found", error: `id ${raw} not found` };
+  if (h.kind === "document") {
+    ctx.emitGui({ kind: "p_open", documentId: h.doc.id });
+    return { ok: true, summary: `📂 Opened manuscript "${h.doc.title}"`, retention: "ephemeral", data: { opened: true } };
+  }
+  ctx.emitGui({ kind: "doc_open", sourceId: h.source.id });
+  return { ok: true, summary: `📂 Opened source "${h.source.filename}"`, retention: "ephemeral", data: { opened: true } };
 }
 
-function guiPOpen(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
-  const id = resolveDocId(args as { id?: string }, ctx);
-  if (!id) return { ok: false, summary: "gui_p_open: no document id", error: "no document id" };
-  const doc = getDocument(id);
-  ctx.emitGui({ kind: "p_open", documentId: id });
-  return { ok: true, summary: `📂 Opened manuscript "${doc?.title ?? id}"`, data: { opened: true } };
-}
-
-function guiSuggestReplies(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
+function suggestTool(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
   const raw = Array.isArray(args.options) ? args.options : [];
   const options = raw
     .filter((o): o is { short: string; prompt: string } =>
@@ -752,24 +658,24 @@ function guiSuggestReplies(args: Record<string, unknown>, ctx: ToolContext): Too
     .slice(0, 5)
     .map((o) => ({ short: o.short, prompt: o.prompt }));
   if (options.length === 0)
-    return { ok: false, summary: "gui_suggest_replies: no valid options", error: "options must be a non-empty array of {short, prompt}" };
+    return { ok: false, summary: "suggest: no valid options", error: "options must be a non-empty array of {short, prompt}" };
   ctx.emitGui({ kind: "suggest_replies", options });
-  return { ok: true, summary: `🔘 Offered ${options.length} option${options.length === 1 ? "" : "s"}`, data: { offered: options.length } };
+  return { ok: true, summary: `🔘 Offered ${options.length} option${options.length === 1 ? "" : "s"}`, retention: "ephemeral", data: { offered: options.length } };
 }
 
-function guiAction(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
+function toastTool(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
   const action = args.action as "warn" | "celebrate" | "info" | undefined;
   const text = args.text as string | undefined;
-  if (!action || !text) return { ok: false, summary: "gui_action: action + text required", error: "action and text required" };
+  if (!action || !text) return { ok: false, summary: "toast: action + text required", error: "action and text required" };
   if (action !== "warn" && action !== "celebrate" && action !== "info")
-    return { ok: false, summary: "gui_action: bad action", error: `action must be warn|celebrate|info` };
+    return { ok: false, summary: "toast: bad action", error: `action must be warn|celebrate|info` };
   ctx.emitGui({ kind: "action", action, text });
-  return { ok: true, summary: `${action === "celebrate" ? "🎉" : action === "warn" ? "⚠️" : "ℹ️"} ${text}`, data: { narrated: true } };
+  return { ok: true, summary: `${action === "celebrate" ? "🎉" : action === "warn" ? "⚠️" : "ℹ️"} ${text}`, retention: "ephemeral", data: { narrated: true } };
 }
 
 async function prefAdd(args: Record<string, unknown>): Promise<ToolResult> {
   const text = typeof args.text === "string" ? args.text.trim() : "";
   if (!text) return { ok: false, summary: "pref_add: text required", error: "text required" };
   await appendPreference(text);
-  return { ok: true, summary: `📝 Noted preference`, data: { recorded: true } };
+  return { ok: true, summary: `📝 Noted preference`, retention: "ephemeral", data: { recorded: true } };
 }

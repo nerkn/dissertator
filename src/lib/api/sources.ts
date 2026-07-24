@@ -41,6 +41,12 @@ export const sourcesApi = {
       { method: "PUT", body: JSON.stringify({ bodyMd }) },
     ),
 
+  setSourceNote: (id: string, note: string) =>
+    req<{ ok: true }>(`/sources/${encodeURIComponent(id)}/note`, {
+      method: "PUT",
+      body: JSON.stringify({ note }),
+    }),
+
   /** Force a rescan of the project root; returns count of newly enqueued files. */
   rescan: () => req<{ enqueued: number }>("/ingest", { method: "POST" }),
 

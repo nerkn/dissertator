@@ -6,6 +6,7 @@ import {
   getSettings,
   getSourceById,
   getSourceText,
+  setSourceNote,
 } from "../db";
 import { detectReference } from "../cite/detect.ts";
 import {
@@ -15,8 +16,10 @@ import {
   listAttention,
   listSources,
   ocrSource,
+  readSourceMarkdown,
   scanAll,
   transcribeSource,
+  writeSourceMarkdown,
 } from "../ingest/index.ts";
 import type { OcrEngine, OcrOptions } from "../ocr/index.ts";
 
@@ -24,26 +27,6 @@ import type { OcrEngine, OcrOptions } from "../ocr/index.ts";
 // Ingest surface (Track F): sources / ingest / attention / ocr / events.
 // Every route below requires an open project (returns 400 otherwise).
 // ---------------------------------------------------------------------------
-
-// Per-relPath settle timer for editor-driven reingests. The manuscript
-// editor's autosave (frontend) lands a PUT every few seconds during active
-// typing; without settling, each PUT would trigger a full rechunk + embedding
-// invalidation. Coalesce a burst of writes into one trailing reingest.
-const REINGEST_SETTLE_MS = 10000;
-const pendingReingests = new Map<string, ReturnType<typeof setTimeout>>();
-
-function scheduleReingest(relPath: string): void {
-  const norm = relPath.replace(/\\/g, "/");
-  const existing = pendingReingests.get(norm);
-  if (existing) clearTimeout(existing);
-  pendingReingests.set(
-    norm,
-    setTimeout(() => {
-      pendingReingests.delete(norm);
-      enqueuePath(norm);
-    }, REINGEST_SETTLE_MS),
-  );
-}
 
 export function registerSources(app: Hono): void {
   app.get("/sources", (c) => {
@@ -194,16 +177,17 @@ export function registerSources(app: Hono): void {
     if (mime !== "text/markdown") {
       return c.json({ error: "not a markdown source" }, 400);
     }
-    const absPath = join(getCurrentProject()!.projectPath, src.relPath);
-    const file = Bun.file(absPath);
-    if (!(await file.exists())) {
-      return c.json({ error: "file missing on disk" }, 404);
+    let bodyMd: string;
+    try {
+      bodyMd = await readSourceMarkdown(src);
+    } catch (e) {
+      return c.json({ error: (e as Error)?.message ?? String(e) }, 404);
     }
     return c.json({
       id: src.id,
       filename: src.filename,
       title: src.filename.replace(/\.[^.]+$/, ""),
-      bodyMd: await file.text(),
+      bodyMd,
     });
   });
 
@@ -226,22 +210,30 @@ export function registerSources(app: Hono): void {
     if (body.bodyMd === undefined) {
       return c.json({ error: "bodyMd required" }, 400);
     }
-    const project = getCurrentProject()!;
-    const absPath = join(project.projectPath, src.relPath);
-    const { writeFile } = await import("node:fs/promises");
     try {
-      await writeFile(absPath, body.bodyMd, "utf8");
+      await writeSourceMarkdown(src, body.bodyMd);
     } catch (e) {
       return c.json({ error: (e as Error)?.message ?? String(e) }, 500);
     }
-    // Schedule a SETTLED reingest so a burst of editor saves coalesces into
-    // one chunk/embedding refresh. The file watcher (when the path isn't
-    // excluded, e.g. not under documents/) may also fire on these writes —
-    // that's fine: enqueuePath's inFlight dedup + ingestFile's content_hash
-    // dedup make the overlapping work a no-op. This scheduled call is the
-    // guarantee for excluded paths and a trailing safety net for the rest.
-    scheduleReingest(src.relPath);
     return c.json({ ok: true, id: src.id });
+  });
+
+  app.put("/sources/:id/note", async (c) => {
+    if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+    const id = c.req.param("id");
+    if (!getSourceById(id)) return c.json({ error: "not found" }, 404);
+    const body = await c.req.json<{ note?: string }>().catch(
+      () => ({}) as { note?: string },
+    );
+    if (body.note === undefined) {
+      return c.json({ error: "note required" }, 400);
+    }
+    try {
+      setSourceNote(id, body.note);
+      return c.json({ ok: true });
+    } catch (e) {
+      return c.json({ error: (e as Error)?.message ?? String(e) }, 500);
+    }
   });
 
   app.get("/attention", (c) => {

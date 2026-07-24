@@ -1,20 +1,3 @@
-// P5 agent loop — the tool-using LLM loop that powers `POST /chat`.
-//
-// Replaces the P3 single round-trip with an iterate-until-text loop:
-//   stream(model with tools)
-//     → if it returned tool_calls: execute each, feed results back, re-stream
-//     → if it returned text: that's the final answer (already streamed), done
-//
-// Capped at `maxSteps` (default 12) so a tool-happy model can't loop forever.
-// Every interesting beat is surfaced via {@link onEvent} so the route can fan
-// it into the SSE stream: text deltas, tool calls + results, live manuscript
-// edits (the editor refreshes), and gui_* side-effects.
-//
-// The loop is provider-agnostic: it only depends on the OpenAI-compatible
-// streaming adapter (`streamOpenAIChat`) which assembles fragmented tool-call
-// deltas. Persistence (user msg up-front, final assistant msg on completion)
-// lives in the route, not here — the loop is pure orchestration.
-
 import type { GuiEvent, ChatEndpointConfig } from "@dissertator/shared";
 import {
   streamOpenAIChat,
@@ -30,7 +13,6 @@ import {
   type ToolResult,
 } from "./tools.ts";
 
-/** Events the loop emits; the route fans each into a named SSE event. */
 export type AgentStreamEvent =
   | { type: "delta"; text: string }
   | {
@@ -58,52 +40,24 @@ export type AgentStreamEvent =
 export interface RunAgentOptions {
   apiKey: string;
   config: ChatEndpointConfig;
-  /** Initial messages (system + replayed history + new user message). */
   messages: LoopMessage[];
-  /** Tool advertisements; defaults to the full P5 {@link TOOL_SPECS}. */
   tools?: ToolSpec[];
-  /** Per-run context for tool execution (embedding key, active doc, gui emit). */
   toolContext: ToolContext;
-  /** Aborts the whole run (in-flight fetch + further steps). */
   signal?: AbortSignal;
-  /** Fan-in for all stream events (text, tool calls, edits, gui). */
   onEvent: (e: AgentStreamEvent) => Promise<void> | void;
-  /** Step cap (default 12). One step = one model round-trip. */
   maxSteps?: number;
-  /**
-   * No-activity watchdog per step (default 600000ms). If the provider emits
-   * nothing (no delta) for this long, the in-flight fetch is aborted and the
-   * step throws — surfacing a clear "timed out" instead of hanging forever.
-   * Resets on every token, so a slow-but-streaming reasoning model is never
-   * cut off; only a stalled connection trips it.
-   */
   stepTimeoutMs?: number;
-  /**
-   * Injectable streaming primitive (test seam). Defaults to the real
-   * {@link streamOpenAIChat}; tests pass a fake that returns canned tool_calls
-   * + text without touching the network.
-   */
   streamFn?: (opts: StreamChatOptions) => Promise<StreamResult>;
 }
 
 export interface RunAgentResult {
-  /** Full assembled assistant text across all steps this run. */
   content: string;
-  /** Tool calls executed. */
   toolCalls: number;
-  /** True if aborted via signal. */
   aborted: boolean;
-  /** Cumulative token usage across steps (provider-reported; may be partial). */
   usage: { prompt: number; completion: number };
-  /** True if the loop hit the step cap with tool calls still pending. */
   capped: boolean;
 }
 
-/**
- * Run the agent loop to completion (or abort / step cap). Text deltas, tool
- * calls/results, manuscript edits, and gui events flow through `onEvent` as
- * they happen; the final assistant text is returned for persistence.
- */
 export async function runAgentLoop(
   opts: RunAgentOptions
 ): Promise<RunAgentResult> {
@@ -122,16 +76,26 @@ export async function runAgentLoop(
   let nudged = false;
   const usage = { prompt: 0, completion: 0 };
 
+  const ephemeralIds = new Set<string>();
+  let prevStepIds = new Set<string>();
+
   for (let step = 0; step < maxSteps; step++) {
     if (opts.signal?.aborted) {
       aborted = true;
       break;
     }
+
+    for (const m of messages) {
+      if (
+        m.role === "tool" &&
+        ephemeralIds.has(m.tool_call_id) &&
+        !prevStepIds.has(m.tool_call_id)
+      ) {
+        m.content = "ok";
+      }
+    }
+
     let stepText = "";
-    // No-activity watchdog: abort the provider fetch if it emits nothing for
-    // `stepTimeoutMs`. Catches the "model hangs before its first token"
-    // failure that previously surfaced as a silent empty reply. Resets on
-    // every delta, so a slow-but-streaming response is never cut off.
     const stepCtl = new AbortController();
     const onOuterAbort = () => stepCtl.abort();
     opts.signal?.addEventListener("abort", onOuterAbort);
@@ -175,11 +139,6 @@ export async function runAgentLoop(
     if (aborted) break;
 
     if (res.toolCalls.length === 0) {
-      // Final text answer — but enforce the turn-closing habit: if the model
-      // produced its answer and never offered quick-reply buttons, nudge it
-      // exactly once to call gui_suggest_replies now. Keeps the model author
-      // the buttons; one extra round-trip only when it forgets. Second miss
-      // is accepted (no infinite loop).
       if (!suggestedReplies && !nudged) {
         nudged = true;
         if (stepText) {
@@ -188,7 +147,7 @@ export async function runAgentLoop(
         messages.push({
           role: "user",
           content:
-            "You ended this turn without calling gui_suggest_replies. Do not re-explain or re-state your answer in prose. Reply with ONLY a single gui_suggest_replies tool call offering 2–4 concrete next-step buttons ({short, prompt}).",
+            "You ended this turn without calling suggest. Do not re-explain or re-state your answer in prose. Reply with ONLY a single suggest tool call offering 2–4 concrete next-step buttons ({short, prompt}).",
         });
         continue;
       }
@@ -196,13 +155,13 @@ export async function runAgentLoop(
       break;
     }
 
-    // Record the assistant turn WITH its tool calls (content may be empty).
     messages.push({
       role: "assistant",
       content: stepText || null,
       tool_calls: res.toolCalls,
     });
 
+    const currentStepIds = new Set<string>();
     for (const tc of res.toolCalls) {
       toolCallCount++;
       let parsed: Record<string, unknown> | null = null;
@@ -219,7 +178,7 @@ export async function runAgentLoop(
         args: parsed,
       });
 
-      if (tc.function.name === "gui_suggest_replies") suggestedReplies = true;
+      if (tc.function.name === "suggest") suggestedReplies = true;
 
       let result: ToolResult;
       if (parseError) {
@@ -250,7 +209,9 @@ export async function runAgentLoop(
         });
       }
 
-      // The observation the model receives: success payload or {ok,error}.
+      if (result.retention === "ephemeral") ephemeralIds.add(tc.id);
+      currentStepIds.add(tc.id);
+
       messages.push({
         role: "tool",
         tool_call_id: tc.id,
@@ -265,10 +226,7 @@ export async function runAgentLoop(
               ),
       });
     }
-    // Loop: the model now sees the tool results and continues. The for-
-    // condition `step < maxSteps` caps total round-trips; if we exit there
-    // with tool calls still live (no final text answer, not aborted), the
-    // flag below tells the caller the run was truncated.
+    prevStepIds = currentStepIds;
   }
   if (!aborted && !finalAnswer) capped = true;
   return { content, toolCalls: toolCallCount, aborted, usage, capped };

@@ -33,6 +33,8 @@ export function ReferenceEditDialog({ sourceId, onClose, onChanged }: Props) {
   const [draft, setDraft] = useState<ReferenceDraft>({});
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [note, setNote] = useState("");
+  const [noteBusy, setNoteBusy] = useState(false);
 
   // Load the reference linked to this source (one-shot per sourceId).
   useEffect(() => {
@@ -68,6 +70,20 @@ export function ReferenceEditDialog({ sourceId, onClose, onChanged }: Props) {
     };
   }, [sourceId]);
 
+  useEffect(() => {
+    let aborted = false;
+    api
+      .getSources()
+      .then((s) => {
+        if (!aborted)
+          setNote(s.items.find((x) => x.id === sourceId)?.note ?? "");
+      })
+      .catch(() => {});
+    return () => {
+      aborted = true;
+    };
+  }, [sourceId]);
+
   // Close on Escape (overlay click is handled inline).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -76,6 +92,16 @@ export function ReferenceEditDialog({ sourceId, onClose, onChanged }: Props) {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  const saveNote = async () => {
+    setNoteBusy(true);
+    try {
+      await api.setSourceNote(sourceId, note);
+    } catch {
+    } finally {
+      setNoteBusy(false);
+    }
+  };
 
   const isNew = !ref;
 
@@ -142,6 +168,17 @@ export function ReferenceEditDialog({ sourceId, onClose, onChanged }: Props) {
                 setDraft={setDraft}
                 citekeyEditable={isNew}
                 disabled={saving}
+              />
+              <label className="ref-edit-dialog-note-label muted small">
+                Note (source)
+              </label>
+              <textarea
+                className="ref-edit-dialog-note"
+                value={note}
+                onChange={(e) => setNote(e.target.value)}
+                onBlur={saveNote}
+                placeholder="Note about this source…"
+                disabled={noteBusy}
               />
               {error && <div className="note-popup-error">{error}</div>}
               <button

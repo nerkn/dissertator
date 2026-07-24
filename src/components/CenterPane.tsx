@@ -41,6 +41,7 @@ export function CenterPane({
   const openSource = useTabsStore((s) => s.openSource);
   const sources = useSourceItems();
   const docRevisions = useContentStore((s) => s.docRevisions);
+  const sourceRevisions = useContentStore((s) => s.sourceRevisions);
 
   const active = tabs.find((t) => t.sourceId === activeTabId) ?? null;
   const hasTabs = tabs.length > 0;
@@ -235,7 +236,11 @@ export function CenterPane({
                 <ManuscriptEditor
                   mode={t.kind === "md-source" ? "source" : "document"}
                   documentId={t.sourceId}
-                  revision={docRevisions?.[t.sourceId] ?? 0}
+                  revision={
+                    (t.kind === "md-source"
+                      ? sourceRevisions?.[t.sourceId]
+                      : docRevisions?.[t.sourceId]) ?? 0
+                  }
                   onCitationClick={onCitationClick}
                 />
               </div>

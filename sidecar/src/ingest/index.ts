@@ -36,6 +36,7 @@ import {
   ensureReferenceForSource,
   getCurrentProject,
   getSettings,
+  getSourceById,
   lockDimensions,
   mapSourceFile,
   type SourceFileRow,
@@ -399,6 +400,40 @@ export function enqueuePath(relPath: string): void {
       inFlight.delete(norm);
     }
   });
+}
+
+const REINGEST_SETTLE_MS = 10000;
+const pendingReingests = new Map<string, ReturnType<typeof setTimeout>>();
+
+export function scheduleReingest(relPath: string): void {
+  const norm = relPath.replace(/\\/g, "/");
+  const existing = pendingReingests.get(norm);
+  if (existing) clearTimeout(existing);
+  pendingReingests.set(
+    norm,
+    setTimeout(() => {
+      pendingReingests.delete(norm);
+      enqueuePath(norm);
+    }, REINGEST_SETTLE_MS),
+  );
+}
+
+export async function readSourceMarkdown(src: SourceFile): Promise<string> {
+  const absPath = join(getCurrentProject()!.projectPath, src.relPath);
+  const file = Bun.file(absPath);
+  if (!(await file.exists())) {
+    throw new Error(`file missing on disk: ${src.relPath}`);
+  }
+  return file.text();
+}
+
+export async function writeSourceMarkdown(
+  src: SourceFile,
+  bodyMd: string,
+): Promise<void> {
+  const absPath = join(getCurrentProject()!.projectPath, src.relPath);
+  await writeFile(absPath, bodyMd, "utf8");
+  scheduleReingest(src.relPath);
 }
 
 /**

@@ -108,6 +108,7 @@ export const SOURCE_FILE_NEW_COLUMNS: Array<{ name: string; type: string }> = [
   { name: "page_count", type: "INTEGER" },
   { name: "extracted_path", type: "TEXT" },
   { name: "needs_ocr_reason", type: "TEXT" },
+  { name: "note", type: "TEXT" },
 ];
 
 /**
@@ -277,7 +278,7 @@ export function migrate(db: Database): void {
   }
   // Idempotent schema-version bump (P0 → '2', P2 → '3', P6 → '4').
   db.prepare(
-    "INSERT INTO meta(key, value) VALUES ('schema_version', '4') " +
+    "INSERT INTO meta(key, value) VALUES ('schema_version', '5') " +
       "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
   ).run();
 

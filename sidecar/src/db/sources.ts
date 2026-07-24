@@ -25,6 +25,7 @@ export interface SourceFileRow {
   page_count: number | null;
   error: string | null;
   needs_ocr_reason: string | null;
+  note: string | null;
   added_at: number;
 }
 
@@ -48,8 +49,16 @@ export function mapSourceFile(row: SourceFileRow): SourceFile {
     pageCount: row.page_count ?? null,
     error: row.error ?? null,
     needsOcrReason: row.needs_ocr_reason ?? null,
+    note: row.note ?? null,
     addedAt: row.added_at,
   };
+}
+
+export function setSourceNote(id: string, note: string): void {
+  if (!current) throw new Error("no project initialized");
+  current.db
+    .prepare("UPDATE source_files SET note = ? WHERE id = ?")
+    .run(note, id);
 }
 
 /** Fetch a single source file by id, or null if not found. Used by the
