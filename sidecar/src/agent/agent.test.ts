@@ -428,21 +428,20 @@ test("dispatchTool edit insert on a DB document inserts after first match", asyn
   expect(getDocument(d.id)?.bodyMd).toBe("head MID tail");
 });
 
-test("dispatchTool read returns a char window on a document with data.window.total", async () => {
+test("dispatchTool read returns a page on a document with data.pages.total", async () => {
   const body = "0123456789".repeat(100);
   const d = createDocument({ title: "WindowDoc" });
   updateDocument(d.id, { bodyMd: body });
   const r = await dispatchTool(
     "read",
-    { id: d.id, offset: 10, limit: 50 },
+    { id: d.id },
     ctxBase
   );
   expect(r.ok).toBe(true);
-  expect(r.rawContent).toBe(body.slice(10, 60));
-  const win = (r.data as { window: { givenFrom: number; givenTo: number; total: number } }).window;
-  expect(win.total).toBe(body.length);
-  expect(win.givenFrom).toBe(10);
-  expect(win.givenTo).toBe(60);
+  expect(r.rawContent).toBe(body.slice(0, 4000));
+  const pages = (r.data as { pages: { given: number; total: number } }).pages;
+  expect(pages.given).toBe(1);
+  expect(pages.total).toBe(Math.ceil(body.length / 4000));
 });
 
 test("dispatchTool list returns lean hits: filename===relPath and a string note", async () => {

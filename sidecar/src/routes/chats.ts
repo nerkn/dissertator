@@ -12,6 +12,7 @@ import {
   getDocument,
   getSettings,
   insertChatMessage,
+  listDocuments,
   listChatMessages,
   listChats,
   listReferences,
@@ -231,7 +232,7 @@ export function registerChats(app: Hono): void {
         "",
         "You have tools — use them proactively:",
         "- list({query?}) semantic-searches the embedded corpus; ({author,title,filename,limit}) filters the reference index. Returns lean metadata + each source's handle (`filename`); call read for full text.",
-        "- read({id?, page?} | {id?, offset?, limit?}) reads text. Paginated sources (PDF/docx) take `page`; the manuscript or any `.md` source takes an `offset`+`limit` char window. `id` defaults to the active document.",
+        "- read({id?, page?}) reads one page of a manuscript or source. `id` defaults to the active document; use the returned `pages.total` to page through.",
         "- create({title, text?}) creates a new manuscript and returns its id + body.",
         "- edit({id?, op, anchor?, text}) mutates the manuscript or a `.md` source. `op:\"replace\"` swaps the first verbatim `anchor` for `text`; `op:\"insert\"` inserts `text` after the first `anchor` (empty/omitted anchor = top). `id` defaults to the active document; non-markdown sources are read-only via read.",
         "- show({id}) opens a document or source in the UI for the user to view.",
@@ -262,11 +263,19 @@ export function registerChats(app: Hono): void {
           prefs.trim(),
         );
       }
-      if (activeDocId) {
-        const d = getDocument(activeDocId);
-        systemParts.push(
-          `The user is currently editing the manuscript "${d?.title ?? "(unknown)"}" (id: ${activeDocId}). read/edit without an explicit \`id\` act on it.`
-        );
+      {
+        const docs = listDocuments();
+        if (docs.length) {
+          const lines = docs.map((doc) => {
+            const title = doc.title?.trim() || "(untitled)";
+            const bullet = activeDocId === doc.id ? `* "${title}" (id: ${doc.id})` : `- "${title}" (id: ${doc.id})`;
+            return bullet;
+          });
+          const note = activeDocId
+            ? `read/edit without an explicit \`id\` act on the *active manuscript.`
+            : `No manuscript is currently active; the user must open one before you can read/edit a manuscript.`;
+          systemParts.push("", "# Manuscripts", ...lines, note);
+        }
       }
       const allRefs = listReferences();
       const seenSrc = new Set<string>();
@@ -322,11 +331,11 @@ export function registerChats(app: Hono): void {
           a.length === b.length && a.every((x) => b.includes(x));
         if (sameSet(prevOpenFiles, openFiles)) {
           systemParts.push(
-            `\nPinned sources (UNCHANGED since last turn — full text already seen; call read(id) to re-read): ${openFiles.map(labelOf).join("; ")}.`,
+            `\nOpen sources (UNCHANGED since last turn — full text already seen; call read(id) to re-read): ${openFiles.map(labelOf).join("; ")}.`,
           );
         } else if (ctx) {
           systemParts.push(
-            `\nThe user has pinned these source files (full text below) as grounding context:\n\n${ctx}`,
+            `\nThe user has these source files open (full text below) as grounding context:\n\n${ctx}`,
           );
         }
       }

@@ -46,14 +46,11 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "list",
       description:
-        "List/search the corpus (your ingested source files). With `query`: " +
-        "semantic (vector) search over embedded chunks. Without `query`: list " +
-        "source files, optionally filtered by `filename`/`author`/`title`. Each " +
-        "hit carries `filename` (the relative path — also the handle `read`/" +
+        "List/search the corpus. With `query`: search over embedded chunks. " +
+        "Without `query`: list source files, optionally filtered by `filename`/`author`/`title`. " +
+        "Each hit carries `filename` (the relative path — also the handle `read`/" +
         "`show` take), `size`, and `note`; bibliographic fields (`title`, " +
-        "`authors`, `year`, `citekey`) appear ONLY when a reference exists for " +
-        "that source — their absence means no citation metadata yet, not a " +
-        "missing source. (keep this result for the rest of the turn).",
+        "`authors`, `year`, `citekey`) appear ONLY when a reference exists.",
       parameters: {
         type: "object",
         properties: {
@@ -76,14 +73,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "read",
       description:
-        "Read the content of a manuscript OR a source file. `id` resolves via " +
-        "filename (relPath), source-file id, document id, or citekey; omit to " +
-        "read the manuscript the user is editing. Two modes by target: " +
-        "PAGINATED sources (PDF/docx — pageCount>0) return one page at a time " +
-        "(`page`, default 1, truncated past ~12k). MANUSCRIPTS and markdown " +
-        "sources return a char window (`offset`/`limit`, default 0..4000); " +
-        "`page` is ignored for these. Use the returned `pages`/`window` " +
-        "annotation to page or scroll.",
+        "Read a manuscript or source file, one page at a time. `id` resolves via filename, source-file id, document id, or citekey; omit for the active manuscript. `page` (default 1) selects the page; use the returned `pages.total` to page through.",
       parameters: {
         type: "object",
         properties: {
@@ -94,15 +84,7 @@ export const TOOL_SPECS: ToolSpec[] = [
           },
           page: {
             type: "integer",
-            description: "Physical page (paginated sources only; ignored for manuscripts/.md).",
-          },
-          offset: {
-            type: "integer",
-            description: "Char-window start (manuscripts/.md only; default 0).",
-          },
-          limit: {
-            type: "integer",
-            description: "Char-window size (manuscripts/.md only; default 4000).",
+            description: "Page number (default 1).",
           },
         },
       },
@@ -113,9 +95,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "create",
       description:
-        "Create a new manuscript document with a title (and optional initial " +
-        "body text). Returns the new document id. Follow with `show` to " +
-        "display it to the user.",
+        "Create a new manuscript with a `title` and optional initial `text`. Returns its id; follow with `show` to display it to user.",
       parameters: {
         type: "object",
         properties: {
@@ -134,20 +114,13 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "edit",
       description:
-        "Edit a manuscript OR a markdown source file (content-addressed). " +
-        "op=\"replace\": replace the FIRST occurrence of `anchor` with `text` " +
-        "(`anchor` required, must exist verbatim). op=\"insert\": insert `text` " +
-        "immediately AFTER the first occurrence of `anchor`; empty/omitted " +
-        "`anchor` prepends at the top. `id` resolves via filename (relPath), " +
-        "source-file id, document id, or citekey; omit for the active " +
-        "manuscript. Non-markdown sources (PDF, etc.) are not editable. If " +
-        "`anchor` isn't found, `read` again — the body may have changed.",
+        "`op`=\"replace\": swap the first verbatim `anchor` for `text`. `op`=\"insert\": add `text` after the first `anchor` (empty/omitted `anchor` = top). `id` is filename. "",
       parameters: {
         type: "object",
         properties: {
           id: {
             type: "string",
-            description: "Document id, source-file id, filename (relPath), or citekey. Omit for the active manuscript.",
+            description: "filename.",
           },
           op: {
             type: "string",
@@ -169,16 +142,13 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "show",
       description:
-        "Open a document or source file in the user's UI (editor for " +
-        "manuscripts, viewer for sources). `id` resolves via filename " +
-        "(relPath), source-file id, document id, or citekey. (result is " +
-        "ephemeral: not kept in context).",
+        "Open a document or source in the user's UI. id is filename.",
       parameters: {
         type: "object",
         properties: {
           id: {
             type: "string",
-            description: "Document id, source-file id, filename (relPath), or citekey.",
+            description: "filename",
           },
         },
         required: ["id"],
@@ -190,12 +160,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "suggest",
       description:
-        "Offer the user quick-reply buttons to close your turn. The run does " +
-        "NOT pause — clicking a button sends its `prompt` as the user's next " +
-        "message. This is how the user picks the next step; you MUST call this " +
-        "at the end of essentially every turn (2–4 concrete next steps). Use " +
-        "for 'pick one of these directions' moments. (result is ephemeral: not " +
-        "kept in context).",
+        "Offer quick-reply buttons to close your turn (2–4 concrete next steps).  Use them! at the end of turn.",
       parameters: {
         type: "object",
         properties: {
@@ -221,9 +186,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "toast",
       description:
-        "Non-blocking narration beat (toast). Use sparingly for milestones: " +
-        "celebrate a finished draft, warn before a risky edit, info otherwise. " +
-        "(result is ephemeral: not kept in context).",
+        "Non-blocking toast for milestones: `celebrate` a finished draft, `warn` before a risky edit, `info` otherwise.",
       parameters: {
         type: "object",
         properties: {
@@ -242,12 +205,8 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "pref_add",
       description:
-        "Record ONE durable user preference or correction as a single bullet in " +
-        "the project's preferences file (read into every future chat). Call ONLY " +
-        "when the user states a lasting preference (tone, format, citation style, " +
-        "workflow, hard constraint) — NEVER for one-off or transient requests. " +
-        "You cannot delete or rewrite; you only append. Keep `text` to one concise " +
-        "line. (result is ephemeral: not kept in context).",
+        "Append ONE durable user preference/correction as a bullet (read into every future chat). Call only for lasting " +
+        "preferences (tone, format, citation style, workflow, hard constraint) — never one-offs. Append-only; keep `text` to one line.",
       parameters: {
         type: "object",
         properties: {
@@ -344,6 +303,7 @@ async function mutateBody(
 }
 
 const DOC_READ_CAP = 12000;
+const BODY_PAGE_SIZE = 4000;
 
 interface ListHit {
   filename: string;
@@ -492,11 +452,8 @@ async function readTool(
   ctx: ToolContext,
 ): Promise<ToolResult> {
   const raw = (args.id as string | undefined)?.trim();
-  const pageArg = typeof args.page === "number" ? args.page : undefined;
-  const offset =
-    typeof args.offset === "number" ? Math.max(0, Math.floor(args.offset)) : 0;
-  const limit =
-    typeof args.limit === "number" ? Math.max(1, Math.floor(args.limit)) : 4000;
+  const wantPage =
+    (typeof args.page === "number" ? args.page : 1) || 1;
 
   let handle: Handle | { kind: "non-md-source"; source: SourceFile };
   if (raw) {
@@ -522,55 +479,65 @@ async function readTool(
 
   if (handle.kind !== "document" && (handle.source.pageCount ?? 0) > 0) {
     const { text, pageCount } = getSourceText(handle.source.id);
-    const wantPage = pageArg ?? 1;
-    const body = slicePage(text, wantPage);
-    const capped = body.length > DOC_READ_CAP;
-    const shown = capped ? body.slice(0, DOC_READ_CAP) : body;
+    const total = pageCount;
+    const page = Math.min(Math.max(1, wantPage), total);
+    let shown = slicePage(text, page);
+    const truncated = shown.length > DOC_READ_CAP;
+    if (truncated) shown = shown.slice(0, DOC_READ_CAP);
     return {
       ok: true,
-      summary: `📖 Read ${handle.source.filename} p.${wantPage}${capped ? " (truncated)" : ""}`,
+      summary: `📖 Read ${handle.source.filename} p.${page}${truncated ? " (truncated)" : ""}`,
       retention: "default",
       data: {
         filename: handle.source.filename,
-        pages: { given: wantPage, total: pageCount },
-        truncated: capped,
+        pages: { given: page, total },
+        truncated,
       },
       rawContent: shown,
     };
   }
 
-  let body: string;
-  let title: string;
-  let id: string;
+  let text: string;
   if (handle.kind === "document") {
-    body = handle.doc.bodyMd;
-    title = handle.doc.title;
-    id = handle.doc.id;
+    text = handle.doc.bodyMd;
   } else if (handle.kind === "source") {
     try {
-      body = await readSourceMarkdown(handle.source);
+      text = await readSourceMarkdown(handle.source);
     } catch (e) {
       return { ok: false, summary: "read: read failed", error: (e as Error)?.message ?? String(e) };
     }
-    title = handle.source.filename;
-    id = handle.source.id;
   } else {
-    const { text } = getSourceText(handle.source.id);
-    body = text;
-    title = handle.source.filename;
-    id = handle.source.id;
+    text = getSourceText(handle.source.id).text;
   }
 
-  const end = Math.min(offset + limit, body.length);
-  const shown = body.slice(offset, end);
+  const total = Math.max(1, Math.ceil(text.length / BODY_PAGE_SIZE));
+  const page = Math.min(Math.max(1, wantPage), total);
+  let shown = text.slice((page - 1) * BODY_PAGE_SIZE, page * BODY_PAGE_SIZE);
+  const truncated = shown.length > DOC_READ_CAP;
+  if (truncated) shown = shown.slice(0, DOC_READ_CAP);
+
+  if (handle.kind === "document") {
+    return {
+      ok: true,
+      summary: `📄 Read "${handle.doc.title}" p.${page}/${total}`,
+      retention: "default",
+      data: {
+        id: handle.doc.id,
+        title: handle.doc.title,
+        pages: { given: page, total },
+        truncated,
+      },
+      rawContent: shown,
+    };
+  }
   return {
     ok: true,
-    summary: `📄 Read "${title}" (${shown.length}/${body.length} chars)`,
+    summary: `📄 Read "${handle.source.filename}" p.${page}/${total}`,
     retention: "default",
     data: {
-      id,
-      title,
-      window: { givenFrom: offset, givenTo: end, total: body.length },
+      filename: handle.source.filename,
+      pages: { given: page, total },
+      truncated,
     },
     rawContent: shown,
   };
