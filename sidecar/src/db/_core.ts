@@ -11,6 +11,9 @@
 // `setChatProviderId`) that are referenced from more than one entity module.
 
 import type { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { type AiFunction } from "@dissertator/shared";
 // schema.sql is embedded into the compiled binary at build time via the
 // `type:"text"` import attribute, so it never touches the filesystem at
@@ -120,11 +123,21 @@ export const CHUNK_NEW_COLUMNS: Array<{ name: string; type: string }> = [
   { name: "embedding_status", type: "TEXT NOT NULL DEFAULT 'pending'" },
 ];
 
+/** lowercase, trim, collapse non-[a-z0-9] runs to '-', strip edges; 'untitled' if empty. */
+export function slugify(title: string): string {
+  const s = (title ?? "")
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return s || "untitled";
+}
+
 /**
  * Idempotent migration: add any missing `source_files` + `chunks` columns
- * and stamp `meta.schema_version = '3'`. Safe to run on every `initProject`.
+ * and stamp `meta.schema_version = '6'`. Safe to run on every `initProject`.
  */
-export function migrate(db: Database): void {
+export function migrate(db: Database, projectPath: string): void {
   // source_files (P1 columns).
   const sfCols = db
     .prepare("PRAGMA table_info(source_files)")
@@ -180,25 +193,6 @@ export function migrate(db: Database): void {
           (e as Error)?.message
         );
       }
-    }
-  }
-  // documents (P3 → P3.1): the manuscript body moved ONTO the document row.
-  // The `sections` subsystem was removed — a Document is ONE body, not a tree
-  // of sections. Existing project DBs gain `documents.body_md`; the now-orphan
-  // `sections` table is dropped (safe: nothing references it via FK except
-  // agent_runs.section_id, which is a free-text column with no constraint).
-  const docCols = db
-    .prepare("PRAGMA table_info(documents)")
-    .all() as Array<{ name: string }>;
-  const docHave = new Set(docCols.map((c) => c.name));
-  if (!docHave.has("body_md")) {
-    try {
-      db.exec("ALTER TABLE documents ADD COLUMN body_md TEXT");
-    } catch (e) {
-      console.warn(
-        "[db] migrate: could not add column body_md:",
-        (e as Error)?.message
-      );
     }
   }
   db.exec("DROP TABLE IF EXISTS sections");
@@ -276,10 +270,60 @@ export function migrate(db: Database): void {
       `[db] migrate: backfilled ${orphanCount.c} chat_messages to "General" chat`
     );
   }
-  // Idempotent schema-version bump (P0 → '2', P2 → '3', P6 → '4').
+  // documents → papers/<slug>.md source_files (schema v6). One-time:
+  // each manuscripts row becomes a text/markdown source under papers/, body
+  // written to disk; then the documents table is dropped. Guarded on table
+  // existence so it converts exactly once (after DROP, later inits skip).
+  // Safe on a fresh DB (table absent). Migrated rows are chunked later when
+  // the ingest watcher's scanAll walks papers/.
+  const docsTable = db
+    .prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='documents'",
+    )
+    .get() as { name?: string } | null;
+  if (docsTable?.name) {
+    const rows = db
+      .prepare("SELECT title, body_md, created_at FROM documents")
+      .all() as Array<{
+      title: string;
+      body_md: string | null;
+      created_at: number;
+    }>;
+    if (rows.length > 0) {
+      const papersDir = join(projectPath, "papers");
+      mkdirSync(papersDir, { recursive: true });
+      const findSrc = db.prepare(
+        "SELECT id FROM source_files WHERE rel_path = ?",
+      );
+      const insertSrc = db.prepare(
+        "INSERT INTO source_files (id, rel_path, filename, ext, kind, mime_type, content_hash, file_size, page_count, mtime, text_status, ocr_method, extracted_path, error, needs_ocr_reason, note, added_at) " +
+          "VALUES (?, ?, ?, 'md', 'text', 'text/markdown', NULL, ?, NULL, NULL, 'new', NULL, NULL, NULL, NULL, NULL, ?)",
+      );
+      for (const row of rows) {
+        const slug = slugify(row.title);
+        const relPath = `papers/${slug}.md`;
+        if (
+          (findSrc.get(relPath) as { id?: string } | undefined)?.id
+        )
+          continue;
+        const body = row.body_md ?? "";
+        writeFileSync(join(papersDir, `${slug}.md`), body, "utf8");
+        insertSrc.run(
+          randomUUID(),
+          relPath,
+          `${slug}.md`,
+          Buffer.byteLength(body, "utf8"),
+          row.created_at,
+        );
+      }
+    }
+    db.exec("DROP TABLE documents");
+  }
+
+  // Idempotent schema-version bump (P0 → '2', P2 → '3', P6 → '4', papers → '6').
   db.prepare(
-    "INSERT INTO meta(key, value) VALUES ('schema_version', '5') " +
-      "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    "INSERT INTO meta(key, value) VALUES ('schema_version', '6') " +
+      "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
   ).run();
 
   // -----------------------------------------------------------------------

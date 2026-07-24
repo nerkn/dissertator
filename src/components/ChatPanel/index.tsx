@@ -281,20 +281,13 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             id: e.documentId,
             title: e.title,
             bodyMd: e.bodyMd,
-            docType: existing?.docType ?? null,
-            thesis: existing?.thesis ?? null,
-            researchQuestions: existing?.researchQuestions ?? [],
-            focusPrompt: existing?.focusPrompt ?? null,
             createdAt: existing?.createdAt ?? Date.now(),
           });
         },
         onGui: (g: GuiEvent) => {
           switch (g.kind) {
-            case "doc_open":
+            case "open":
               onOpenSource?.(g.sourceId);
-              break;
-            case "p_open":
-              onOpenDocument?.(g.documentId);
               break;
             case "source_edited":
               useContentStore.getState().bumpSourceRevision(g.sourceId);
@@ -393,20 +386,13 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             id: e.documentId,
             title: e.title,
             bodyMd: e.bodyMd,
-            docType: existing?.docType ?? null,
-            thesis: existing?.thesis ?? null,
-            researchQuestions: existing?.researchQuestions ?? [],
-            focusPrompt: existing?.focusPrompt ?? null,
             createdAt: existing?.createdAt ?? Date.now(),
           });
         },
         onGui: (g: GuiEvent) => {
           switch (g.kind) {
-            case "doc_open":
+            case "open":
               onOpenSource?.(g.sourceId);
-              break;
-            case "p_open":
-              onOpenDocument?.(g.documentId);
               break;
             case "source_edited":
               useContentStore.getState().bumpSourceRevision(g.sourceId);

@@ -90,17 +90,6 @@ CREATE TABLE IF NOT EXISTS "references" (
   source_file_id TEXT REFERENCES source_files(id) ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS documents (
-  id                 TEXT PRIMARY KEY,
-  title              TEXT NOT NULL,
-  doc_type           TEXT,
-  thesis             TEXT,
-  research_questions TEXT,       -- JSON array
-  focus_prompt       TEXT,
-  body_md            TEXT,       -- the manuscript body (single markdown blob)
-  created_at         INTEGER NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS chats (
   id              TEXT PRIMARY KEY,
   title           TEXT NOT NULL,
@@ -122,7 +111,7 @@ CREATE TABLE IF NOT EXISTS chat_messages (
 
 CREATE TABLE IF NOT EXISTS agent_runs (
   id          TEXT PRIMARY KEY,
-  document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+  document_id TEXT,
   section_id  TEXT,
   mode        TEXT NOT NULL DEFAULT 'accept_all',
   status      TEXT NOT NULL DEFAULT 'running',

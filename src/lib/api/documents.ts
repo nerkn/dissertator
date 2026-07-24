@@ -1,4 +1,4 @@
-import type { DocType, Document } from "@dissertator/shared";
+import type { Document } from "@dissertator/shared";
 import { base, req } from "./_client";
 
 export const documentsApi = {
@@ -70,10 +70,6 @@ export const documentsApi = {
   /** Create a document with an empty body. `title` required. */
   createDocument: (input: {
     title: string;
-    docType?: DocType;
-    thesis?: string;
-    researchQuestions?: string[];
-    focusPrompt?: string;
   }) =>
     req<Document>("/documents", {
       method: "POST",
@@ -90,10 +86,6 @@ export const documentsApi = {
     id: string,
     patch: Partial<{
       title: string;
-      docType: DocType | null;
-      thesis: string | null;
-      researchQuestions: string[];
-      focusPrompt: string | null;
       bodyMd: string;
     }>,
   ) =>

@@ -1,32 +1,7 @@
-// ---------------------------------------------------------------------------
-// Documents (editor) (P3)
-// ---------------------------------------------------------------------------
-
-/** The structural template a document is authored against. */
-export type DocType = "paper" | "thesis" | "lit_review" | "chapters" | "free";
-
-/**
- * A manuscript document (paper / thesis / lit review / chapters).
- *
- * A Document is ONE body, not a tree of sections: markdown headers (`## intro`)
- * are just lines in {@link bodyMd}. "Stats" (line count, header positions)
- * are computed by the frontend by parsing the body; nothing structural is
- * stored beyond the body itself.
- */
 export interface Document {
   id: string;
   title: string;
-  docType: DocType | null;
-  thesis: string | null;
-  /** Parsed from the JSON `research_questions` column. */
-  researchQuestions: string[];
-  focusPrompt: string | null;
-  /**
-   * The manuscript body — a single markdown blob. Holds `[@citekey:page]`
-   * tokens; always at least `""` (the app never stores null).
-   */
   bodyMd: string;
-  /** Unix epoch ms (INTEGER column). */
   createdAt: number;
 }
 

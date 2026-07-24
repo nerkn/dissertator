@@ -1,5 +1,4 @@
 import type { Hono } from "hono";
-import type { DocType } from "@dissertator/shared";
 import {
   createDocument,
   deleteDocument,
@@ -9,51 +8,22 @@ import {
   updateDocument,
 } from "../db";
 
-// ---------------------------------------------------------------------------
-// Documents (editor) (P3): manuscript editor CRUD.
-//
-// A Document is ONE body: the manuscript markdown lives on the document row
-// as `bodyMd`. There are no section rows — markdown headers are just lines in
-// the body, and "stats" are computed by the frontend by parsing the body. The
-// manuscript editor loads `GET /documents/:id` and autosaves the body via
-// `PUT /documents/:id` (typically just `{ bodyMd }`). Same guards / body-parse
-// / 404 / 201 conventions as /references.
-// ---------------------------------------------------------------------------
-
 export function registerDocuments(app: Hono): void {
-  app.get("/documents", (c) => {
+  app.get("/documents", async (c) => {
     if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
-    return c.json(listDocuments());
+    return c.json(await listDocuments());
   });
 
   app.post("/documents", async (c) => {
     if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
     const body = await c.req
-      .json<{
-        title?: string;
-        docType?: DocType;
-        thesis?: string;
-        researchQuestions?: string[];
-        focusPrompt?: string;
-      }>()
-      .catch(
-        () =>
-          ({}) as {
-            title?: string;
-            docType?: DocType;
-            thesis?: string;
-            researchQuestions?: string[];
-            focusPrompt?: string;
-          }
-      );
+      .json<{ title?: string; text?: string }>()
+      .catch(() => ({}) as { title?: string; text?: string });
     if (!body.title) return c.json({ error: "title required" }, 400);
     try {
-      const doc = createDocument({
+      const doc = await createDocument({
         title: body.title,
-        docType: body.docType,
-        thesis: body.thesis,
-        researchQuestions: body.researchQuestions,
-        focusPrompt: body.focusPrompt,
+        bodyMd: typeof body.text === "string" ? body.text : undefined,
       });
       return c.json(doc, 201);
     } catch (e) {
@@ -61,10 +31,10 @@ export function registerDocuments(app: Hono): void {
     }
   });
 
-  app.get("/documents/:id", (c) => {
+  app.get("/documents/:id", async (c) => {
     if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
     const id = c.req.param("id");
-    const doc = getDocument(id);
+    const doc = await getDocument(id);
     if (!doc) return c.json({ error: "not found" }, 404);
     return c.json(doc);
   });
@@ -73,24 +43,17 @@ export function registerDocuments(app: Hono): void {
     if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
     const id = c.req.param("id");
     const body = await c.req
-      .json<{
-        title?: string;
-        docType?: DocType | null;
-        thesis?: string | null;
-        researchQuestions?: string[];
-        focusPrompt?: string | null;
-        bodyMd?: string;
-      }>()
+      .json<{ title?: string; bodyMd?: string }>()
       .catch(() => ({}) as Record<string, never>);
-    const doc = updateDocument(id, body);
+    const doc = await updateDocument(id, body);
     if (!doc) return c.json({ error: "not found" }, 404);
     return c.json(doc);
   });
 
-  app.delete("/documents/:id", (c) => {
+  app.delete("/documents/:id", async (c) => {
     if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
     const id = c.req.param("id");
-    deleteDocument(id);
+    await deleteDocument(id);
     return c.json({ ok: true });
   });
 }

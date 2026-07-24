@@ -121,7 +121,7 @@ export async function initProject(
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec("PRAGMA synchronous = NORMAL;");
   db.exec(await readSchema());
-  migrate(db);
+  migrate(db, projectPath);
 
   // Load sqlite-vec (vec0 virtual table) so embeddings can be stored and
   // searched as dense vectors. Linux/Windows load out of the box; macOS needs
@@ -235,7 +235,13 @@ export function getProjectStatus(): ProjectStatus {
     createdAt,
     counts: {
       sourceFiles: count(db, "source_files"),
-      documents: count(db, "documents"),
+      documents: (
+        db
+          .prepare(
+            "SELECT COUNT(*) AS c FROM source_files WHERE rel_path LIKE 'papers/%.md'",
+          )
+          .get() as { c: number }
+      ).c,
       references: count(db, '"references"'),
     },
   };

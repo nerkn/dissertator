@@ -40,8 +40,7 @@ export interface GuiOption {
 }
 
 export type GuiEvent =
-  | { kind: "doc_open"; sourceId: string }
-  | { kind: "p_open"; documentId: string }
+  | { kind: "open"; sourceId: string }
   | { kind: "source_edited"; sourceId: string }
   | { kind: "suggest_replies"; options: GuiOption[] }
   | { kind: "action"; action: "warn" | "celebrate" | "info"; text: string };

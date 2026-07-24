@@ -9,7 +9,6 @@ import {
   deleteChatMessage,
   getChat,
   getCurrentProject,
-  getDocument,
   getSettings,
   insertChatMessage,
   listDocuments,
@@ -264,7 +263,7 @@ export function registerChats(app: Hono): void {
         );
       }
       {
-        const docs = listDocuments();
+        const docs = await listDocuments();
         if (docs.length) {
           const lines = docs.map((doc) => {
             const title = doc.title?.trim() || "(untitled)";

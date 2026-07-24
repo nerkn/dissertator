@@ -31,7 +31,7 @@ import type { OcrEngine, OcrOptions } from "../ocr/index.ts";
 export function registerSources(app: Hono): void {
   app.get("/sources", (c) => {
     if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
-    return c.json({ items: listSources(), counts: getSourceCounts() });
+    return c.json({ items: listSources().filter((s) => !s.relPath.startsWith("papers/")), counts: getSourceCounts() });
   });
 
   // Raw file bytes for PDF/image viewing in the frontend. The Tauri asset

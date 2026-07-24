@@ -1,13 +1,11 @@
-import type { Document, GuiEvent, Reference, SourceFile } from "@dissertator/shared";
+import type { GuiEvent, Reference, SourceFile } from "@dissertator/shared";
 import type { ToolSpec } from "../chat/openai.ts";
 import {
   createDocument,
-  getDocument,
   getReferenceByCitekey,
   listReferences,
   getSourceById,
   getSourceText,
-  updateDocument,
 } from "../db";
 import { listSources, readSourceMarkdown, writeSourceMarkdown } from "../ingest/index.ts";
 import { searchCorpus } from "../search.ts";
@@ -73,18 +71,14 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "read",
       description:
-        "Read a manuscript or source file, one page at a time. `id` resolves via filename, source-file id, document id, or citekey; omit for the active manuscript. `page` (default 1) selects the page; use the returned `pages.total` to page through.",
+        "Read a manuscript or source file, one page at a time. `id` resolves via filename, source id, or citekey; omit for the active manuscript. `page` (default 1) selects the page; use the returned `pages.total` to page through.",
       parameters: {
         type: "object",
         properties: {
-          id: {
-            type: "string",
-            description:
-              "Document id, source-file id, filename (relPath), or citekey. Omit for the active manuscript.",
-          },
+          id: { type: "string", description: "filename.",},
           page: {
             type: "integer",
-            description: "Page number (default 1).",
+            description: "Page number",
           },
         },
       },
@@ -114,7 +108,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "edit",
       description:
-        "`op`=\"replace\": swap the first verbatim `anchor` for `text`. `op`=\"insert\": add `text` after the first `anchor` (empty/omitted `anchor` = top). `id` is filename. "",
+        "Edit a `.md` source (content-addressed). `op`=\"replace\": swap the first verbatim `anchor` for `text`. `op`=\"insert\": add `text` after the first `anchor` (empty/omitted `anchor` = top). `id` resolves via filename, source id, or citekey; omit for the active manuscript. Non-markdown sources aren't editable. If `anchor` isn't found, `read` again.",
       parameters: {
         type: "object",
         properties: {
@@ -160,7 +154,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "suggest",
       description:
-        "Offer quick-reply buttons to close your turn (2–4 concrete next steps).  Use them! at the end of turn.",
+        "Offer quick-reply buttons to close your turn (2–4 concrete next steps). The run does not pause; a click sends the button's `prompt` as the next user message. Call at the end of every turn.",
       parameters: {
         type: "object",
         properties: {
@@ -221,20 +215,12 @@ export const TOOL_SPECS: ToolSpec[] = [
   },
 ];
 
-type EditTarget =
-  | { kind: "document"; doc: Document }
-  | { kind: "source"; source: SourceFile };
-
 type Handle =
-  | { kind: "document"; doc: Document }
-  | { kind: "source"; source: SourceFile };
+  | { kind: "source"; source: SourceFile }
+  | { kind: "non-md-source"; source: SourceFile };
 
-function resolveHandle(
-  h: string,
-): Handle | { kind: "non-md-source"; source: SourceFile } | null {
+function resolveHandle(h: string): Handle | null {
   if (!h) return null;
-  const doc = getDocument(h);
-  if (doc) return { kind: "document", doc };
   const byId = getSourceById(h);
   if (byId) return mdOrNot(byId);
   const norm = h.replace(/\\/g, "/");
@@ -260,34 +246,24 @@ function mdOrNot(
 }
 
 async function mutateBody(
-  target: EditTarget,
+  target: Handle,
   ctx: ToolContext,
   summaryFor: (name: string) => string,
   transform: (
     body: string,
   ) => { next: string } | { error: string },
 ): Promise<ToolResult> {
+  if (target.kind === "non-md-source") {
+    return { ok: false, summary: "⚠️ not editable", error: `${target.source.filename} is not a markdown file; only manuscripts and .md sources are editable` };
+  }
   let body: string;
   try {
-    body =
-      target.kind === "document"
-        ? target.doc.bodyMd
-        : await readSourceMarkdown(target.source);
+    body = await readSourceMarkdown(target.source);
   } catch (e) {
     return { ok: false, summary: "⚠️ read failed", error: (e as Error)?.message ?? String(e) };
   }
   const res = transform(body);
   if ("error" in res) return { ok: false, summary: "⚠️ edit failed", error: res.error };
-  if (target.kind === "document") {
-    const updated = updateDocument(target.doc.id, { bodyMd: res.next });
-    if (!updated) return { ok: false, summary: summaryFor(target.doc.title), error: "update returned null" };
-    return {
-      ok: true,
-      summary: summaryFor(updated.title),
-      data: { id: updated.id, title: updated.title, ok: true },
-      document: { id: updated.id, title: updated.title, bodyMd: updated.bodyMd },
-    };
-  }
   try {
     await writeSourceMarkdown(target.source, res.next);
   } catch (e) {
@@ -295,10 +271,14 @@ async function mutateBody(
   }
   ctx.emitGui({ kind: "source_edited", sourceId: target.source.id });
   const title = target.source.filename.replace(/\.[^.]+$/, "");
+  const isManuscript = target.source.relPath.replace(/\\/g, "/").startsWith("papers/");
   return {
     ok: true,
     summary: summaryFor(title),
     data: { id: target.source.id, title, ok: true },
+    ...(isManuscript
+      ? { document: { id: target.source.id, title, bodyMd: res.next } }
+      : {}),
   };
 }
 
@@ -455,14 +435,14 @@ async function readTool(
   const wantPage =
     (typeof args.page === "number" ? args.page : 1) || 1;
 
-  let handle: Handle | { kind: "non-md-source"; source: SourceFile };
+  let handle: Handle;
   if (raw) {
     const h = resolveHandle(raw);
     if (!h) {
       return {
         ok: false,
         summary: "read: not found",
-        error: `id ${raw} not found (pass a document id, source-file id, filename, or citekey)`,
+        error: `id ${raw} not found (pass a source-file id, filename, or citekey)`,
       };
     }
     handle = h;
@@ -470,14 +450,14 @@ async function readTool(
     if (!ctx.activeDocumentId) {
       return { ok: false, summary: "read: no id", error: "no id (pass `id`, or open a document)" };
     }
-    const doc = getDocument(ctx.activeDocumentId);
-    if (!doc) {
-      return { ok: false, summary: "read: active missing", error: `active document ${ctx.activeDocumentId} not found` };
+    const src = getSourceById(ctx.activeDocumentId);
+    if (!src) {
+      return { ok: false, summary: "read: active missing", error: `active manuscript ${ctx.activeDocumentId} not found` };
     }
-    handle = { kind: "document", doc };
+    handle = mdOrNot(src);
   }
 
-  if (handle.kind !== "document" && (handle.source.pageCount ?? 0) > 0) {
+  if (handle.kind === "non-md-source" && (handle.source.pageCount ?? 0) > 0) {
     const { text, pageCount } = getSourceText(handle.source.id);
     const total = pageCount;
     const page = Math.min(Math.max(1, wantPage), total);
@@ -498,9 +478,7 @@ async function readTool(
   }
 
   let text: string;
-  if (handle.kind === "document") {
-    text = handle.doc.bodyMd;
-  } else if (handle.kind === "source") {
+  if (handle.kind === "source") {
     try {
       text = await readSourceMarkdown(handle.source);
     } catch (e) {
@@ -516,20 +494,6 @@ async function readTool(
   const truncated = shown.length > DOC_READ_CAP;
   if (truncated) shown = shown.slice(0, DOC_READ_CAP);
 
-  if (handle.kind === "document") {
-    return {
-      ok: true,
-      summary: `📄 Read "${handle.doc.title}" p.${page}/${total}`,
-      retention: "default",
-      data: {
-        id: handle.doc.id,
-        title: handle.doc.title,
-        pages: { given: page, total },
-        truncated,
-      },
-      rawContent: shown,
-    };
-  }
   return {
     ok: true,
     summary: `📄 Read "${handle.source.filename}" p.${page}/${total}`,
@@ -547,15 +511,13 @@ async function createTool(args: Record<string, unknown>): Promise<ToolResult> {
   const title = (args.title as string)?.trim();
   if (!title) return { ok: false, summary: "create: title required", error: "title required" };
   const text = typeof args.text === "string" ? args.text : "";
-  const doc = createDocument({ title });
-  const updated = text ? updateDocument(doc.id, { bodyMd: text }) : doc;
-  const fin = updated ?? doc;
+  const doc = await createDocument({ title, bodyMd: text });
   return {
     ok: true,
-    summary: `📄 Created manuscript "${fin.title}"`,
+    summary: `📄 Created manuscript "${doc.title}"`,
     retention: "default",
-    data: { id: fin.id, title: fin.title, bodyMd: fin.bodyMd },
-    document: { id: fin.id, title: fin.title, bodyMd: fin.bodyMd },
+    data: { id: doc.id, title: doc.title, bodyMd: doc.bodyMd },
+    document: { id: doc.id, title: doc.title, bodyMd: doc.bodyMd },
   };
 }
 
@@ -570,19 +532,16 @@ async function editTool(
   if (text === undefined) return { ok: false, summary: "edit: text required", error: "text required" };
   const anchor = typeof args.anchor === "string" ? args.anchor : "";
   const raw = (args.id as string | undefined)?.trim();
-  let target: EditTarget | { kind: "non-md-source"; source: SourceFile };
+  let target: Handle;
   if (raw) {
     const h = resolveHandle(raw);
     if (!h) return { ok: false, summary: "edit: not found", error: `id ${raw} not found` };
     target = h;
   } else {
     if (!ctx.activeDocumentId) return { ok: false, summary: "edit: no id", error: "no id (pass `id`, or open a document)" };
-    const doc = getDocument(ctx.activeDocumentId);
-    if (!doc) return { ok: false, summary: "edit: active missing", error: `active document ${ctx.activeDocumentId} not found` };
-    target = { kind: "document", doc };
-  }
-  if (target.kind === "non-md-source") {
-    return { ok: false, summary: "edit: not editable", error: `${target.source.filename} is not a markdown file; only manuscripts and .md sources are editable` };
+    const src = getSourceById(ctx.activeDocumentId);
+    if (!src) return { ok: false, summary: "edit: active missing", error: `active manuscript ${ctx.activeDocumentId} not found` };
+    target = mdOrNot(src);
   }
   const summaryFor = (n: string) =>
     op === "replace" ? `✏️ Replaced text in "${n}"` : `✏️ Inserted text into "${n}"`;
@@ -608,12 +567,14 @@ function showTool(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
   if (!raw) return { ok: false, summary: "show: id required", error: "id required" };
   const h = resolveHandle(raw);
   if (!h) return { ok: false, summary: "show: not found", error: `id ${raw} not found` };
-  if (h.kind === "document") {
-    ctx.emitGui({ kind: "p_open", documentId: h.doc.id });
-    return { ok: true, summary: `📂 Opened manuscript "${h.doc.title}"`, retention: "ephemeral", data: { opened: true } };
-  }
-  ctx.emitGui({ kind: "doc_open", sourceId: h.source.id });
-  return { ok: true, summary: `📂 Opened source "${h.source.filename}"`, retention: "ephemeral", data: { opened: true } };
+  const isManuscript =
+    h.source.relPath.replace(/\\/g, "/").startsWith("papers/") &&
+    (h.source.mimeType ?? "").toLowerCase() === "text/markdown";
+  ctx.emitGui({ kind: "open", sourceId: h.source.id });
+  const label = isManuscript
+    ? h.source.filename.replace(/\.[^.]+$/, "")
+    : h.source.filename;
+  return { ok: true, summary: `📂 Opened "${label}"`, retention: "ephemeral", data: { opened: true } };
 }
 
 function suggestTool(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
