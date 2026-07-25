@@ -26,7 +26,7 @@ import { StatusBar } from "./StatusBar";
 import type { CitationClickHandler, SaveState } from "./_shared";
 
 interface InnerProps {
-  document: { id: string; title: string };
+  source: { id: string; title: string };
   initialMarkdown: string;
   onCitationClick?: CitationClickHandler;
 }
@@ -38,7 +38,7 @@ const AUTOSAVE_DEBOUNCE_MS = 3000;
 // "chunks dirty" indicator in the status bar.
 const REINGEST_SETTLE_MS = 10000;
 
-export function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps) {
+export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerProps) {
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [showSource, setShowSource] = useState<boolean>(false);
   const [staleExternal, setStaleExternal] = useState<boolean>(false);
@@ -71,7 +71,10 @@ export function EditorInner({ document, initialMarkdown, onCitationClick }: Inne
     async (md: string) => {
       setSaveState("saving");
       try {
-        await api.updateSourceMarkdown(document.id, md);
+        await api.updateSourceMarkdown(source.id, md);
+        window.dispatchEvent(
+          new CustomEvent("dissertator:source-saved", { detail: source.id }),
+        );
         setChunksDirty(true);
         if (chunksDirtyTimer.current) clearTimeout(chunksDirtyTimer.current);
         chunksDirtyTimer.current = setTimeout(() => {
@@ -83,7 +86,7 @@ export function EditorInner({ document, initialMarkdown, onCitationClick }: Inne
         setSaveState("error");
       }
     },
-    [document.id],
+    [source.id],
   );
 
   // Record the freshly-saved body so a revision bump comparing against it can
@@ -249,7 +252,7 @@ export function EditorInner({ document, initialMarkdown, onCitationClick }: Inne
 
   // Import one real file (path from drag-drop or file picker) and insert the
   // right thing at the cursor: image → ![](images/…), audio → link + note,
-  // document → just add to the library (watcher ingests it).
+  // other file → just add to the library (watcher ingests it).
   const handleAssetPath = useCallback(
     async (absPath: string) => {
       const filename = absPath.split(/[/\\]/).pop() || "file";
@@ -416,7 +419,7 @@ export function EditorInner({ document, initialMarkdown, onCitationClick }: Inne
       {staleExternal && (
         <div className="editor-stale-banner">
           <span>
-            The agent edited this document. You have unsaved changes that would
+            The agent edited this manuscript. You have unsaved changes that would
             be lost.
           </span>
           <button
@@ -437,7 +440,7 @@ export function EditorInner({ document, initialMarkdown, onCitationClick }: Inne
       )}
       <Toolbar
         getEditor={get}
-        title={document.title}
+        title={source.title}
         saveState={saveState}
         showSource={showSource}
         onToggleSource={() => setShowSource((v) => !v)}

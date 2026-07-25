@@ -3,7 +3,7 @@
 import type { SourceFile } from "@dissertator/shared";
 
 /** A source file lives in the Manuscripts group (editable markdown) rather
- *  than the Documents group (read-only corpus). Matches `kindForSource`. */
+ *  than the Sources group (read-only corpus). Matches `kindForSource`. */
 export function isMdSource(s: { ext: string }): boolean {
   const e = s.ext.toLowerCase();
   return e === "md" || e === "markdown";

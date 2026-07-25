@@ -24,7 +24,7 @@ function looseIndex(body: string, needle: string): { idx: number; len: number } 
 
 export interface ToolContext {
   embeddingApiKey?: string;
-  activeDocumentId?: string;
+  activeSourceId?: string;
   emitGui: (e: GuiEvent) => void;
 }
 
@@ -35,7 +35,7 @@ export interface ToolResult {
   error?: string;
   rawContent?: string;
   retention?: "default" | "keep" | "ephemeral";
-  document?: { id: string; title: string; bodyMd: string };
+  source?: { id: string; title: string; bodyMd: string };
 }
 
 export const TOOL_SPECS: ToolSpec[] = [
@@ -136,7 +136,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "show",
       description:
-        "Open a document or source in the user's UI. id is filename.",
+        "Open a source in the user's UI. id is filename.",
       parameters: {
         type: "object",
         properties: {
@@ -277,7 +277,7 @@ async function mutateBody(
     ok: true,
     summary: summaryFor(title),
     data: { id: target.source.id, title, ok: true, bodyMd: res.next },
-    document: { id: target.source.id, title, bodyMd: res.next },
+    source: { id: target.source.id, title, bodyMd: res.next },
   };
 }
 
@@ -446,12 +446,12 @@ async function readTool(
     }
     handle = h;
   } else {
-    if (!ctx.activeDocumentId) {
-      return { ok: false, summary: "read: no id", error: "no id (pass `id`, or open a document)" };
+    if (!ctx.activeSourceId) {
+      return { ok: false, summary: "read: no id", error: "no id (pass `id`, or open a source)" };
     }
-    const src = getSourceById(ctx.activeDocumentId);
+    const src = getSourceById(ctx.activeSourceId);
     if (!src) {
-      return { ok: false, summary: "read: active missing", error: `active manuscript ${ctx.activeDocumentId} not found` };
+      return { ok: false, summary: "read: active missing", error: `active manuscript ${ctx.activeSourceId} not found` };
     }
     handle = mdOrNot(src);
   }
@@ -517,7 +517,7 @@ async function createTool(args: Record<string, unknown>): Promise<ToolResult> {
     summary: `📄 Created manuscript "${t}"`,
     retention: "default",
     data: { id: src.id, title: t, bodyMd: text },
-    document: { id: src.id, title: t, bodyMd: text },
+    source: { id: src.id, title: t, bodyMd: text },
   };
 }
 
@@ -538,9 +538,9 @@ async function editTool(
     if (!h) return { ok: false, summary: "edit: not found", error: `id ${raw} not found` };
     target = h;
   } else {
-    if (!ctx.activeDocumentId) return { ok: false, summary: "edit: no id", error: "no id (pass `id`, or open a document)" };
-    const src = getSourceById(ctx.activeDocumentId);
-    if (!src) return { ok: false, summary: "edit: active missing", error: `active manuscript ${ctx.activeDocumentId} not found` };
+    if (!ctx.activeSourceId) return { ok: false, summary: "edit: no id", error: "no id (pass `id`, or open a source)" };
+    const src = getSourceById(ctx.activeSourceId);
+    if (!src) return { ok: false, summary: "edit: active missing", error: `active manuscript ${ctx.activeSourceId} not found` };
     target = mdOrNot(src);
   }
   const summaryFor = (n: string) =>

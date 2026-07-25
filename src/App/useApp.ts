@@ -18,6 +18,9 @@ import type { CitationClickHandler } from "../lib/citationPlugin";
 // All application state + handlers live here; App() is a thin JSX shell.
 // Lifted verbatim from the original App() body — hook call order preserved.
 
+const AUTO_EMBED_DEBOUNCE_MS = 5 * 60 * 1000;
+const autoEmbedTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
 export function useApp() {
   const health = useSessionStore((s) => s.health);
   const project = useSessionStore((s) => s.project);
@@ -32,7 +35,7 @@ export function useApp() {
   // needed for working-set persistence below, and the open/close actions are
   // returned to the shell + used by the composition handlers further down.
   // CenterPane reads tabs/activeTabId + the navigation actions from the store
-  // directly; ChatPanel derives activeDocumentId via its own hook.
+  // directly; ChatPanel derives activeSourceId via its own hook.
   const tabs = useTabsStore((s) => s.tabs);
   const activeTabId = useTabsStore((s) => s.activeTabId);
   const setTabs = useTabsStore((s) => s.setTabs);
@@ -310,6 +313,31 @@ export function useApp() {
   const visionImageKey = useMemo(() => keyFor("vision_image"), [keyFor]);
   const sttKey = useMemo(() => keyFor("stt"), [keyFor]);
 
+  const scheduleAutoEmbed = useCallback(
+    (sourceId: string) => {
+      if (!embeddingApiKey) return;
+      const existing = autoEmbedTimers.get(sourceId);
+      if (existing) clearTimeout(existing);
+      autoEmbedTimers.set(
+        sourceId,
+        setTimeout(() => {
+          autoEmbedTimers.delete(sourceId);
+          void api.embedSource(sourceId, embeddingApiKey).catch(() => {});
+        }, AUTO_EMBED_DEBOUNCE_MS),
+      );
+    },
+    [embeddingApiKey],
+  );
+
+  useEffect(() => {
+    const h = (e: Event) => {
+      const id = (e as CustomEvent<string>).detail;
+      if (typeof id === "string") scheduleAutoEmbed(id);
+    };
+    window.addEventListener("dissertator:source-saved", h);
+    return () => window.removeEventListener("dissertator:source-saved", h);
+  }, [scheduleAutoEmbed]);
+
   // --- SSE: live updates as files ingest -----------------------------------
   // Open a single EventSource once the sidecar is up and a project is open.
   // Re-bursts of `ingest` events are debounced so a scan of N files doesn't
@@ -389,9 +417,9 @@ export function useApp() {
   const handleNewDocument = async () => {
     setError(null);
     const title = await promptDialog({
-      title: "New document",
-      label: "Document title",
-      defaultValue: "Untitled document",
+      title: "New manuscript",
+      label: "Manuscript title",
+      defaultValue: "Untitled manuscript",
       okLabel: "Create",
     });
     if (title == null) return; // cancelled

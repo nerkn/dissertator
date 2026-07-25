@@ -96,19 +96,19 @@ export function CenterPane({
       <section className="panel center">
         {initialized ? (
           <div className="placeholder">
-            <h2>No document open</h2>
+            <h2>No manuscript open</h2>
             <p className="muted">
               Click a source in the Library to open it here, or start writing a
-              new document grounded in your corpus.
+              new manuscript grounded in your corpus.
             </p>
             <button
               className="btn primary"
               onClick={onNewDocument}
               disabled={!onNewDocument}
-              title="Create a blank document and open the editor"
+              title="Create a blank manuscript and open the editor"
             >
               <Sparkle size={16} weight="fill" />
-              New Document
+              New Manuscript
             </button>
             <div className="muted small">
               PDF viewer &amp; citation tools arrive next.
@@ -212,15 +212,14 @@ export function CenterPane({
 
         {/* Manuscript editors are stateful and expensive to rebuild
             (Milkdown/ProseMirror instance, undo history, caret, scroll
-            position). Keep every open document mounted and hide the inactive
+            position). Keep every open manuscript mounted and hide the inactive
             ones with `display:none`, so switching to a PDF and back preserves
             cursor, scroll, and undo history. Closing a tab removes it from
             this list, which unmounts it (ManuscriptEditor flushes any pending
             autosave on unmount).
 
-            Both `doc` (a Document in the DB) and `md-source` (a .md source
-            file edited in place on disk) render through ManuscriptEditor —
-            only the load/save backend differs. */}
+            `md-source` files are edited in place on disk via
+            ManuscriptEditor. */}
         {tabs
           .filter((t) => t.kind === "md-source")
           .map((t) => {

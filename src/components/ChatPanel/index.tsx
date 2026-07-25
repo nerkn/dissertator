@@ -31,7 +31,7 @@ import type {
 import { DEFAULT_CHAT_FLOW } from "@dissertator/shared";
 import { api, streamChat } from "../../lib/api";
 import type { DebugEvent } from "../../lib/api";
-import { useActiveDocumentId } from "../../lib/stores/tabs";
+import { useActiveSourceId } from "../../lib/stores/tabs";
 import { useContentStore, useSourceItems } from "../../lib/stores/content";
 import { useSessionStore } from "../../lib/stores/session";
 import { useChatInputStore } from "../../lib/stores/chatInput";
@@ -68,7 +68,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   },
   ref,
 ) {
-  const activeDocumentId = useActiveDocumentId();
+  const activeSourceId = useActiveSourceId();
   const sources = useSourceItems();
   const health = useSessionStore((s) => s.health);
   const projectPath = useSessionStore((s) => s.project?.projectPath ?? null);
@@ -252,7 +252,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       const result = await streamChat(chatId, "", apiKey, {
         opener: true,
         openFiles: activeChat?.contextSources ?? [],
-        activeDocumentId,
+        activeSourceId,
         embeddingApiKey,
         onDelta: onDeltaBundled,
         onToolCall: (e) =>
@@ -269,7 +269,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             ),
           ),
         onEdit: (e) => {
-          useContentStore.getState().bumpSourceRevision(e.documentId);
+          useContentStore.getState().bumpSourceRevision(e.sourceId);
         },
         onGui: (g: GuiEvent) => {
           switch (g.kind) {
@@ -306,7 +306,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       apiKey,
       streaming,
       activeChat,
-      activeDocumentId,
+      activeSourceId,
       embeddingApiKey,
       loadMessages,
       onOpenSource,
@@ -346,7 +346,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
 
       const result = await streamChat(activeChatId, text, apiKey, {
         openFiles: activeChat?.contextSources ?? [],
-        activeDocumentId,
+        activeSourceId,
         embeddingApiKey,
         ...(isRetry ? { retry: true } : {}),
         onDelta: onDeltaBundled,
@@ -364,7 +364,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             ),
           ),
         onEdit: (e) => {
-          useContentStore.getState().bumpSourceRevision(e.documentId);
+          useContentStore.getState().bumpSourceRevision(e.sourceId);
         },
         onGui: (g: GuiEvent) => {
           switch (g.kind) {
@@ -413,7 +413,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       activeChat,
       apiKey,
       loadMessages,
-      activeDocumentId,
+      activeSourceId,
       embeddingApiKey,
       onOpenSource,
       pushToast,

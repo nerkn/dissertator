@@ -154,4 +154,13 @@ export const sourcesApi = {
       method: "POST",
       headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
     }),
+
+  embedSource: (id: string, apiKey?: string) =>
+    req<{ embedded: number; failed: number }>(
+      `/sources/${encodeURIComponent(id)}/embed`,
+      {
+        method: "POST",
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+      },
+    ),
 };

@@ -61,7 +61,7 @@ export function ManuscriptEditor({
   return (
     <MilkdownProvider>
       <EditorInner
-        document={doc}
+        source={doc}
         initialMarkdown={doc.bodyMd ?? ""}
         onCitationClick={onCitationClick}
       />

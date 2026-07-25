@@ -16,9 +16,9 @@ export interface ToolResultEvent {
   error?: string;
 }
 
-/** `edit` event: the agent mutated a document; live-reload the editor. */
+/** `edit` event: the agent mutated a source; live-reload the editor. */
 export interface EditEvent {
-  documentId: string;
+  sourceId: string;
   title: string;
   bodyMd: string;
 }

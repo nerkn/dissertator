@@ -13,6 +13,7 @@ import {
 import { detectReference } from "../cite/detect.ts";
 import {
   describeImageSource,
+  embedSource,
   enqueuePath,
   getSourceCounts,
   listAttention,
@@ -187,6 +188,21 @@ export function registerSources(app: Hono): void {
     const id = c.req.param("id");
     const ok = await deleteSource(id);
     return c.json({ ok });
+  });
+
+  app.post("/sources/:id/embed", async (c) => {
+    if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+    const id = c.req.param("id");
+    const src = getSourceById(id);
+    if (!src) return c.json({ error: "not found" }, 404);
+    const auth = c.req.header("Authorization") ?? "";
+    const apiKey = auth.startsWith("Bearer ") ? auth.slice(7) : undefined;
+    try {
+      const res = await embedSource(id, { apiKey });
+      return c.json(res);
+    } catch (e) {
+      return c.json({ error: (e as Error)?.message ?? String(e) }, 500);
+    }
   });
 
   // Raw markdown body of a text/markdown source file (NO page markers),

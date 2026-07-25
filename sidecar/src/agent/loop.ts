@@ -31,7 +31,7 @@ export type AgentStreamEvent =
     }
   | {
       type: "edit";
-      documentId: string;
+      sourceId: string;
       title: string;
       bodyMd: string;
     }
@@ -200,12 +200,12 @@ export async function runAgentLoop(
         ...(result.error ? { error: result.error } : {}),
       });
 
-      if (result.document) {
+      if (result.source) {
         await opts.onEvent({
           type: "edit",
-          documentId: result.document.id,
-          title: result.document.title,
-          bodyMd: result.document.bodyMd,
+          sourceId: result.source.id,
+          title: result.source.title,
+          bodyMd: result.source.bodyMd,
         });
       }
 

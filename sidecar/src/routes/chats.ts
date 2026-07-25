@@ -185,7 +185,7 @@ export function registerChats(app: Hono): void {
     const apiKey = auth.startsWith("Bearer ") ? auth.slice(7) : undefined;
     if (!apiKey) return c.json({ error: "chat api key required" }, 400);
 
-    const activeDocId = (body.activeDocumentId ?? "").trim() || undefined;
+    const activeDocId = (body.activeSourceId ?? "").trim() || undefined;
     const embedKeyRaw = c.req.header("X-Embedding-Key") ?? "";
     const embeddingApiKey = embedKeyRaw.trim() || undefined;
 
@@ -231,10 +231,10 @@ export function registerChats(app: Hono): void {
         "",
         "You have tools — use them proactively:",
         "- list({query?}) semantic-searches the embedded corpus; ({author,title,filename,limit}) filters the reference index. Returns lean metadata + each source's handle (`filename`); call read for full text.",
-        "- read({id?, page?}) reads one page of a manuscript or source. `id` defaults to the active document; use the returned `pages.total` to page through.",
+        "- read({id?, page?}) reads one page of a manuscript or source. `id` defaults to the active source; use the returned `pages.total` to page through.",
         "- create({title, text?}) creates a new manuscript and returns its id + body.",
-        "- edit({id?, op, anchor?, text}) mutates the manuscript or a `.md` source. `op:\"replace\"` swaps the first verbatim `anchor` for `text`; `op:\"insert\"` inserts `text` after the first `anchor` (empty/omitted anchor = top). `id` defaults to the active document; non-markdown sources are read-only via read.",
-        "- show({id}) opens a document or source in the UI for the user to view.",
+        "- edit({id?, op, anchor?, text}) mutates the manuscript or a `.md` source. `op:\"replace\"` swaps the first verbatim `anchor` for `text`; `op:\"insert\"` inserts `text` after the first `anchor` (empty/omitted anchor = top). `id` defaults to the active source; non-markdown sources are read-only via read.",
+        "- show({id}) opens a source in the UI for the user to view.",
         "- suggest({options:[{short,prompt}]}) offers quick-reply buttons the user taps to choose the next step (the run does NOT pause). This is your DEFAULT turn-ending action — see \"Response pattern\" below. Think of it as \"suggested replies\" (like Gmail/Slack), NOT configuration.",
         "- pref_add({ text }) records ONE durable user preference or correction as a bullet (read into every future chat). Call it the moment the user expresses a LASTING preference OR corrects you / shows frustration — distill it into one forward rule (what TO do). NEVER for one-off or transient requests.",
         "- toast({action, text}) narrates a milestone (action: \"warn\" | \"celebrate\" | \"info\").",
@@ -398,7 +398,7 @@ export function registerChats(app: Hono): void {
             await stream.writeSSE({
               event: "edit",
               data: JSON.stringify({
-                documentId: e.documentId,
+                sourceId: e.sourceId,
                 title: e.title,
                 bodyMd: e.bodyMd,
               }),
@@ -449,7 +449,7 @@ export function registerChats(app: Hono): void {
       };
       const toolContext: ToolContext = {
         embeddingApiKey,
-        activeDocumentId: activeDocId,
+        activeSourceId: activeDocId,
         emitGui: (gui) => {
           void onEvent({ type: "gui", gui });
         },

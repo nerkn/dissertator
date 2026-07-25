@@ -29,7 +29,7 @@ export interface ChatRequest {
   chatId: string;
   message: string;
   openFiles?: string[];
-  activeDocumentId?: string;
+  activeSourceId?: string;
   opener?: boolean;
   retry?: boolean;
 }

@@ -29,7 +29,7 @@ export async function streamChat(
   apiKey: string,
   opts: {
     openFiles?: string[];
-    activeDocumentId?: string;
+    activeSourceId?: string;
     /** OPENER: auto-greet a new/empty chat (no user message persisted). */
     opener?: boolean;
     /** RETRY: re-run the last user turn (no new user row; failed assistant
@@ -77,7 +77,7 @@ export async function streamChat(
         chatId,
         message,
         openFiles: opts.openFiles ?? [],
-        ...(opts.activeDocumentId ? { activeDocumentId: opts.activeDocumentId } : {}),
+        ...(opts.activeSourceId ? { activeSourceId: opts.activeSourceId } : {}),
         ...(opts.opener ? { opener: true } : {}),
         ...(opts.retry ? { retry: true } : {}),
       }),

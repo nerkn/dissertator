@@ -324,7 +324,7 @@ async function ingestFile(relPath: string): Promise<void> {
   // the free stages (PDF /info + DOI/Crossref) run first, the LLM stage only
   // for sources they miss. Documents only (pdf/docx/xlsx/text) — images
   // aren't papers. Re-emit "done" on success so the UI refreshes the display.
-  if (kind !== "image") {
+  if (kind !== "image" && ext !== "md") {
     void detectReference(id)
       .then((res) => {
         if (res.found) emit({ sourceFileId: id, status: "done" });
@@ -668,7 +668,7 @@ export function getSourceCounts(): SourceCounts {
     return { total: 0, done: 0, needsOcr: 0, failed: 0, extracting: 0 };
   }
   const rows = project.db
-    .query("SELECT text_status AS s, COUNT(*) AS c FROM source_files GROUP BY text_status")
+    .query("SELECT text_status AS s, COUNT(*) AS c FROM source_files WHERE rel_path NOT LIKE 'papers/%' GROUP BY text_status")
     .all() as { s: string; c: number }[];
   const counts: SourceCounts = {
     total: 0,
@@ -772,21 +772,24 @@ const sleep = (ms: number): Promise<void> =>
  * via `opts.apiKey` (HTTP → keychain); never stored or logged.
  */
 async function processEmbedPage(
-  opts: { apiKey?: string } = {}
+  opts: { apiKey?: string; sourceId?: string } = {}
 ): Promise<EmbedPageResult> {
   const project = getCurrentProject();
   if (!project) throw new Error("no project initialized");
   const { db } = project;
   const { engine, apiUrl, model } = resolveEmbedBinding();
 
-  // Pull the backlog (bounded). `text != ''` skips degenerate chunks.
-  const pending = db
-    .prepare(
-      "SELECT id, text FROM chunks " +
-        "WHERE embedding_status = 'pending' AND text != '' " +
-        "ORDER BY id LIMIT ?"
-    )
-    .all(EMBED_MAX_CHUNKS_PER_RUN) as { id: string; text: string }[];
+  const pending = opts.sourceId
+    ? (db.prepare(
+        "SELECT id, text FROM chunks " +
+          "WHERE embedding_status = 'pending' AND text != '' AND source_file_id = ? " +
+          "ORDER BY id LIMIT ?",
+      ).all(opts.sourceId, EMBED_MAX_CHUNKS_PER_RUN) as { id: string; text: string }[])
+    : (db.prepare(
+        "SELECT id, text FROM chunks " +
+          "WHERE embedding_status = 'pending' AND text != '' " +
+          "ORDER BY id LIMIT ?",
+      ).all(EMBED_MAX_CHUNKS_PER_RUN) as { id: string; text: string }[]);
 
   if (pending.length === 0) {
     return { embedded: 0, failed: 0, drained: true, fatal: false };
@@ -870,10 +873,25 @@ async function processEmbedPage(
  * background drain.
  */
 export async function embedPending(
-  opts: { apiKey?: string } = {}
+  opts: { apiKey?: string; sourceId?: string } = {}
 ): Promise<EmbedPendingResult> {
   const r = await processEmbedPage(opts);
   return { embedded: r.embedded, failed: r.failed };
+}
+
+export async function embedSource(
+  sourceId: string,
+  opts: { apiKey?: string } = {}
+): Promise<EmbedPendingResult> {
+  let embedded = 0;
+  let failed = 0;
+  for (;;) {
+    const r = await processEmbedPage({ ...opts, sourceId });
+    embedded += r.embedded;
+    failed += r.failed;
+    if (r.drained || r.embedded === 0) break;
+  }
+  return { embedded, failed };
 }
 
 // --- Background full-corpus drain -----------------------------------------

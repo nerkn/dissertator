@@ -1,4 +1,4 @@
-// SourcesGroup — the 🔵 Documents section of the Library panel.
+// SourcesGroup — the 🔵 Sources section of the Library panel.
 //
 // Owns its own state: the collapse toggle, the corpus-wide embedding poll +
 // "Embed now" action, and the client-side filter against the panel-level
@@ -290,7 +290,7 @@ export function SourcesGroup({
   const needsOcrCount = sc ? sc.needsOcr : null;
   const failedCount = sc ? sc.failed : null;
   const extractingCount = sc ? sc.extracting : null;
-  const sourceCount = sc ? Math.min(sc.total, nonMdTotal) : nonMdTotal;
+  const sourceCount = sc ? sc.total : nonMdTotal;
 
   // One-line aggregate embedding summary (corpus-wide). Hidden until we have
   // a status fetch back; degrades to nothing rather than "0/0".
@@ -324,7 +324,7 @@ export function SourcesGroup({
           ) : (
             <CaretRight size={13} weight="bold" />
           )}
-          Documents
+          Sources
         </span>
         <div className="sources-head-menu">
           <button
@@ -606,7 +606,7 @@ export function SourcesGroup({
             </>
           ) : (
             <div className="count-popover-row muted">
-              PDFs, DOCX, XLSX, CSV, MD, TXT, images
+              PDFs, DOCX, XLSX, CSV, TXT, images
             </div>
           )}
         </div>

@@ -99,10 +99,10 @@ export const useTabsStore = create<TabsState>((set) => ({
 }));
 
 /**
- * The document the user is currently editing (the active `doc`-kind tab), if
- * any. Sent each chat turn as the default target for the agent's p_* tools.
+ * The source the user is currently editing (the active `md-source` tab), if
+ * any. Sent each chat turn as the default target for the agent's tools.
  */
-export function useActiveDocumentId(): string | undefined {
+export function useActiveSourceId(): string | undefined {
   return useTabsStore((s) => {
     if (!s.activeTabId) return undefined;
     const tab = s.tabs.find((t) => t.sourceId === s.activeTabId);

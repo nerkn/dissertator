@@ -21,7 +21,7 @@ import { dispatchTool, type ToolContext } from "./tools.ts";
 let dir: string;
 const ctxBase: ToolContext = {
   embeddingApiKey: undefined,
-  activeDocumentId: undefined,
+  activeSourceId: undefined,
   emitGui: () => {},
 };
 
@@ -102,7 +102,7 @@ test("loop: create then final answer emits tool_call + tool_result + edit + delt
   const edit = events.find((e) => e.type === "edit")!;
   expect(edit.type === "edit" && edit.bodyMd).toBe("# Hi\n");
   // The doc really was created.
-  const docId = (edit as { documentId: string }).documentId;
+  const docId = (edit as { sourceId: string }).sourceId;
   expect(getSourceById(docId)?.filename.replace(/\.[^.]+$/, "")).toBe("Test Doc");
   expect(await getBody(docId)).toBe("# Hi\n");
 });
@@ -148,7 +148,7 @@ test("loop: multiple sequential tool calls in one round each execute", async () 
     apiKey: "k",
     config: CFG,
     messages: [] as LoopMessage[],
-    toolContext: { ...ctxBase, activeDocumentId: doc.id },
+    toolContext: { ...ctxBase, activeSourceId: doc.id },
     onEvent: (e) => { events.push(e); },
     streamFn: stream,
   });
@@ -313,7 +313,7 @@ test("dispatchTool edit replace replaces first occurrence and returns the new bo
     ctxBase
   );
   expect(r.ok).toBe(true);
-  expect(r.document?.bodyMd).toBe("one TWO three");
+  expect(r.source?.bodyMd).toBe("one TWO three");
   expect((await getBody(d.id))).toBe("one TWO three");
 });
 
@@ -339,7 +339,7 @@ test("dispatchTool edit replace fixes over-escaped quotes in anchor", async () =
     ctxBase
   );
   expect(r.ok).toBe(true);
-  expect(r.document?.bodyMd).toBe("Atlas: OK dedi");
+  expect(r.source?.bodyMd).toBe("Atlas: OK dedi");
 });
 
 test("dispatchTool edit insert anchors after first match; empty anchor prepends", async () => {
@@ -351,7 +351,7 @@ test("dispatchTool edit insert anchors after first match; empty anchor prepends"
     ctxBase
   );
   expect(r1.ok).toBe(true);
-  expect(r1.document?.bodyMd).toBe("head\nmiddle\nbody");
+  expect(r1.source?.bodyMd).toBe("head\nmiddle\nbody");
 
   const r2 = await dispatchTool(
     "edit",
@@ -416,7 +416,7 @@ test("dispatchTool edit replace on a DB document updates the body", async () => 
     ctxBase
   );
   expect(r.ok).toBe(true);
-  expect(r.document?.bodyMd).toBe("foo BAR baz");
+  expect(r.source?.bodyMd).toBe("foo BAR baz");
   expect((await getBody(d.id))).toBe("foo BAR baz");
 });
 
@@ -429,7 +429,7 @@ test("dispatchTool edit insert on a DB document inserts after first match", asyn
     ctxBase
   );
   expect(r.ok).toBe(true);
-  expect(r.document?.bodyMd).toBe("head MID tail");
+  expect(r.source?.bodyMd).toBe("head MID tail");
   expect((await getBody(d.id))).toBe("head MID tail");
 });
 
