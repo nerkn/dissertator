@@ -5,7 +5,7 @@
 // on project open + debounced save) lives in useApp.
 
 import { create } from "zustand";
-import type { Document, SourceFile } from "@dissertator/shared";
+import type { SourceFile } from "@dissertator/shared";
 import { kindForSource, REFERENCES_TAB_ID, type Tab } from "../tabs";
 
 interface TabsState {
@@ -20,8 +20,6 @@ interface TabsState {
    *  clicks). Bumps an existing tab's `initialPage`; creates one seeded with
    *  the page otherwise. A missing page leaves an existing initialPage. */
   openSourceAtPage: (src: SourceFile, page?: number) => void;
-  /** Open a manuscript document in a new editor tab (one per doc id). */
-  openDocument: (doc: Document) => void;
   /** Open the bibliography manager as a singleton center-pane tab. */
   openReferencesView: () => void;
   closeTab: (sourceId: string) => void;
@@ -71,14 +69,6 @@ export const useTabsStore = create<TabsState>((set) => ({
       return { tabs, activeTabId: src.id };
     }),
 
-  openDocument: (doc) =>
-    set((s) => ({
-      tabs: s.tabs.some((t) => t.sourceId === doc.id)
-        ? s.tabs
-        : [...s.tabs, { sourceId: doc.id, kind: "doc" as const, title: doc.title }],
-      activeTabId: doc.id,
-    })),
-
   openReferencesView: () =>
     set((s) => ({
       tabs: s.tabs.some((t) => t.sourceId === REFERENCES_TAB_ID)
@@ -116,6 +106,6 @@ export function useActiveDocumentId(): string | undefined {
   return useTabsStore((s) => {
     if (!s.activeTabId) return undefined;
     const tab = s.tabs.find((t) => t.sourceId === s.activeTabId);
-    return tab && tab.kind === "doc" ? tab.sourceId : undefined;
+    return tab && tab.kind === "md-source" ? tab.sourceId : undefined;
   });
 }

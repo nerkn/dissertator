@@ -3,6 +3,8 @@
 // read side used by routes and the agent loop.)
 
 import { type SourceFile, type TextStatus } from "@dissertator/shared";
+import { unlink } from "node:fs/promises";
+import { join } from "node:path";
 import { current } from "./_core.ts";
 
 /**
@@ -159,4 +161,19 @@ export function getSourceText(id: string): {
     text,
     pageCount: src.page_count ?? 0,
   };
+}
+
+export async function deleteSource(id: string): Promise<boolean> {
+  if (!current) throw new Error("no project initialized");
+  const row = current.db
+    .prepare("SELECT rel_path FROM source_files WHERE id = ?")
+    .get(id) as { rel_path: string } | undefined;
+  if (!row) return false;
+  try {
+    await unlink(join(current.projectPath, row.rel_path));
+  } catch {
+    /* file already gone */
+  }
+  const res = current.db.prepare("DELETE FROM source_files WHERE id = ?").run(id);
+  return res.changes > 0;
 }

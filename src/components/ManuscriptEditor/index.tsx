@@ -1,31 +1,3 @@
-// ManuscriptEditor — the writable, Word-like editor for a Dissertation
-// `Document` (a paper / thesis being authored). Built on Milkdown 7 (a
-// markdown-first WYSIWYG on ProseMirror) so the user sees formatted text and
-// never has to know markdown — yet the stored source of truth is the document's
-// `body_md` column, which is what the agent contract and pandoc export consume.
-//
-// Data flow (DESIGN.md §3 + docs/tools.md §4):
-//   GET /documents/:id  → Document (with bodyMd)   (load once per documentId)
-//   edit the body in Milkdown
-//   on every change → debounced (800ms) PUT /documents/:id { bodyMd }   (autosave)
-//
-// The editor is keyed by `documentId` in CenterPane, so switching documents
-// remounts a fresh instance with the right initial markdown — no in-place
-// content swapping, no save/replace guard needed.
-//
-// A Document is ONE body. Markdown headers (`## intro`) are just lines in
-// the body, not separate rows — structural stats (line count, header
-// positions) are computed by parsing the body, never stored.
-//
-// Citation tokens `[@citekey:printedPage]` (DESIGN.md §11 #8) are rendered as
-// clickable "chips" by a ProseMirror decorations plugin (see
-// `citationPlugin`) — the raw token stays editable text so the agent, autosave
-// and pandoc export all see clean markdown. Clicking a chip resolves the
-// citation (open the linked PDF at the page, or pop up the reference card).
-//
-// Source-MD toggle: a read-only peek at the underlying markdown for power
-// users / debugging (the user-facing surface stays WYSIWYG by default).
-
 import "../../lib/milkdown-theme.css";
 import "@milkdown/theme-nord/style.css";
 
@@ -36,19 +8,8 @@ import { EditorInner } from "./EditorInner";
 import type { CitationClickHandler } from "./_shared";
 
 interface Props {
-  /** When "document" (default), `documentId` is a Document id loaded via
-   *  GET /documents/:id and autosaved via PUT /documents/:id. When "source",
-   *  `documentId` is a SourceFile id loaded via GET /sources/:id/markdown and
-   *  autosaved via PUT /sources/:id/markdown (writes the .md file to disk +
-   *  re-ingests). This makes .md source files editable manuscripts. */
-  mode?: "document" | "source";
-  documentId: string;
-  /** P5: bumps whenever the agent edits this document. The editor refetches
-   *  on change and live-swaps the body via `replaceAll` when it has no unsaved
-   *  local edits (otherwise it shows a stale banner the user can accept). */
+  sourceId: string;
   revision?: number;
-  /** Citation-chip click handler. When omitted, chips still render (styled)
-   *  but are inert. */
   onCitationClick?: CitationClickHandler;
 }
 
@@ -56,12 +17,10 @@ interface LoadedDoc {
   id: string;
   title: string;
   bodyMd: string;
-  _mode?: "document" | "source";
 }
 
 export function ManuscriptEditor({
-  mode = "document",
-  documentId,
+  sourceId,
   revision = 0,
   onCitationClick,
 }: Props) {
@@ -69,15 +28,9 @@ export function ManuscriptEditor({
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  // First mount (no doc yet OR the document itself changed) shows the
-  // loading screen. A revision bump (agent edited the open doc) refetches
-  // silently: we keep the current doc mounted so EditorInner can live-swap
-  // the body in place and preserve caret + scroll position. Wiping to a
-  // "Loading…" screen on every agent edit would scroll the user back to top.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     let aborted = false;
-    const coldStart = !doc || doc.id !== documentId || doc._mode !== mode;
+    const coldStart = !doc || doc.id !== sourceId;
     if (coldStart) {
       setLoading(true);
       setError(null);
@@ -85,12 +38,9 @@ export function ManuscriptEditor({
     }
     (async () => {
       try {
-        const d =
-          mode === "source"
-            ? await api.getSourceMarkdown(documentId)
-            : await api.getDocument(documentId);
+        const d = await api.getSourceMarkdown(sourceId);
         if (aborted) return;
-        setDoc({ ...d, _mode: mode });
+        setDoc({ id: d.id, title: d.title, bodyMd: d.bodyMd });
         setLoading(false);
       } catch (e) {
         if (aborted) return;
@@ -101,17 +51,16 @@ export function ManuscriptEditor({
     return () => {
       aborted = true;
     };
-  }, [documentId, mode, revision]);
+  }, [sourceId, revision]);
 
-  if (loading) return <div className="editor-status">Loading document…</div>;
+  if (loading) return <div className="editor-status">Loading manuscript…</div>;
   if (error)
-    return <div className="editor-error">Failed to load document: {error}</div>;
+    return <div className="editor-error">Failed to load manuscript: {error}</div>;
   if (!doc) return null;
 
   return (
     <MilkdownProvider>
       <EditorInner
-        mode={mode}
         document={doc}
         initialMarkdown={doc.bodyMd ?? ""}
         onCitationClick={onCitationClick}

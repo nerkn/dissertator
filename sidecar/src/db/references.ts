@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { type Author, type Reference } from "@dissertator/shared";
 import { alphaSuffix, generateCitekey } from "../cite/citekey.ts";
 import { current } from "./_core.ts";
-import { rewriteCitekeyInBodies } from "./documents.ts";
+import { rewriteCitekeyInBodies } from "./manuscripts.ts";
 
 /**
  * Snake_case shape of a `references` row as returned by `bun:sqlite`.

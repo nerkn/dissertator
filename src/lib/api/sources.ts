@@ -13,6 +13,19 @@ export const sourcesApi = {
   /** All source files + live counts. */
   getSources: () => req<SourcesResponse>("/sources"),
 
+  /** Create a new editable manuscript (a `papers/<slug>.md` source). */
+  createManuscript: (title: string, text?: string) =>
+    req<SourceFile>("/sources/manuscript", {
+      method: "POST",
+      body: JSON.stringify({ title, text }),
+    }),
+
+  /** Delete a source file (unlinks the file + drops its row + chunks). */
+  deleteSource: (id: string) =>
+    req<{ ok: boolean }>(`/sources/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+
   /** Raw file-byte URL for PDF/image viewing (sidecar streams bytes). */
   fileUrl: (id: string) => `${sidecarBase()}/files/${encodeURIComponent(id)}`,
 

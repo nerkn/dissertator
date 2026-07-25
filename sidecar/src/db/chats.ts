@@ -50,9 +50,9 @@ export function mapChat(row: ChatRow): Chat {
 }
 
 /**
- * List all chats, most-recently-touched first (`updated_at` DESC). Mirrors
- * {@link listDocuments} ordering intent, but keyed on `updated_at` so the
- * chat the user just used floats to the top of the sidebar.
+ * List all chats, most-recently-touched first (`updated_at` DESC). Keyed
+ * on `updated_at` so the chat the user just used floats to the top of the
+ * sidebar.
  */
 export function listChats(): Chat[] {
   if (!current) throw new Error("no project initialized");
@@ -98,7 +98,7 @@ export function getChat(id: string): Chat | null {
 
 /**
  * Partial-patch a chat by id. Omitted fields keep their DB value (`!==
- * undefined` discipline — mirrors {@link updateDocument}). ANY update (even an
+ * undefined` discipline). ANY update (even an
  * empty patch) stamps `updated_at = Date.now()`, which is how POST /chat
  * touches a chat's recency. Returns null if the chat id is unknown (404-style).
  */
@@ -187,8 +187,7 @@ function mapChatMessage(row: ChatMessageRow): ChatMessage {
 /**
  * Insert a chat message scoped to a chat (`chat_id` REQUIRED). `costTokens`
  * is optional (assistant turns); only `.completion` is persisted to the
- * INTEGER column (mirrors the original single-number behavior). Mirrors
- * {@link createDocument}'s insert-then-return-row shape.
+ * INTEGER column.
  */
 export function insertChatMessage(msg: {
   chatId: string;

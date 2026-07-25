@@ -18,5 +18,5 @@ export * from "./sources.ts";
 export * from "./references.ts";
 export * from "./lists.ts";
 export * from "./notes.ts";
-export * from "./documents.ts";
+export * from "./manuscripts.ts";
 export * from "./chats.ts";

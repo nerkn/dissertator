@@ -9,7 +9,6 @@
 
 import { useState } from "react";
 import type {
-  Document,
   OcrStrategy,
   SourceFile,
 } from "@dissertator/shared";
@@ -42,10 +41,8 @@ interface Props {
   chatKey?: string;
   /** Open a source in the CenterPane viewer (click-to-open). */
   onOpen?: (src: SourceFile) => void;
-  /** Create + open a new document. */
+  /** Create + open a new manuscript. */
   onNewDocument?: () => void;
-  /** Open an existing document in the editor. */
-  onOpenDocument?: (doc: Document) => void;
   /** Open the Settings dialog (used by the embedding no-key nudge). */
   onOpenSettings?: () => void;
   /** Open the bibliography manager as a center-pane tab. Fired by the
@@ -68,7 +65,6 @@ export function LibraryPanel({
   chatKey,
   onOpen,
   onNewDocument,
-  onOpenDocument,
   onOpenSettings,
   onOpenReferences,
   onOpenNote,
@@ -77,7 +73,6 @@ export function LibraryPanel({
   const [query, setQuery] = useState("");
 
   const sources = useContentStore((s) => s.sources);
-  const documents = useContentStore((s) => s.documents);
   const project = useSessionStore((s) => s.project);
   const busy = useSessionStore((s) => s.busy);
 
@@ -110,10 +105,8 @@ export function LibraryPanel({
       </div>
 
       <ManuscriptsGroup
-        documents={documents ?? []}
         mdSources={mdSources}
-        onOpenDocument={onOpenDocument}
-        onOpenMd={onOpen}
+        onOpen={onOpen}
         onNewDocument={onNewDocument}
       />
 

@@ -39,23 +39,19 @@ export function useApp() {
   const setActiveTabId = useTabsStore((s) => s.setActiveTabId);
   const openSource = useTabsStore((s) => s.openSource);
   const openSourceAtPage = useTabsStore((s) => s.openSourceAtPage);
-  const openDocument = useTabsStore((s) => s.openDocument);
   const openReferencesView = useTabsStore((s) => s.openReferencesView);
   // The open project's content (settings/sources/documents + per-doc
   // revision counters) lives in the content store (split out of this hook).
-  // We subscribe to the data + raw setters here; refreshSources /
-  // refreshDocuments stay in this orchestrator (they need the project guard
-  // + setError), and handleDocumentEdited / handleSettingsChange are store
-  // actions. The panels read sources/documents/docRevisions from the store
+  // We subscribe to the data + raw setters here; refreshSources stays in
+  // this orchestrator (it needs the project guard + setError), and
+  // handleSettingsChange is a store action. The panels read sources from the
+  // store
   // directly; settings stays returned for the Settings dialog + provider chips.
   const settings = useContentStore((s) => s.settings);
   const sources = useContentStore((s) => s.sources);
-  const documents = useContentStore((s) => s.documents);
   const setSettings = useContentStore((s) => s.setSettings);
   const setSources = useContentStore((s) => s.setSources);
-  const setDocuments = useContentStore((s) => s.setDocuments);
   const setReferences = useContentStore((s) => s.setReferences);
-  const handleDocumentEdited = useContentStore((s) => s.handleDocumentEdited);
   const handleSettingsChange = useContentStore((s) => s.handleSettingsChange);
   // P6: provider rows + their API keys live in the provider store (split out
   // of this hook). We subscribe to the data here so the derived per-function
@@ -102,16 +98,12 @@ export function useApp() {
       try {
         // Validate against a FRESH fetch so we don't race the reactive
         // sources/documents loads (which may land in either order).
-        const [saved, srcs, docs] = await Promise.all([
+        const [saved, srcs] = await Promise.all([
           api.getUiTabs(),
           api.getSources(),
-          api.listDocuments(),
         ]);
         if (stopped) return;
-        const validIds = new Set<string>([
-          ...srcs.items.map((s) => s.id),
-          ...docs.map((d) => d.id),
-        ]);
+        const validIds = new Set<string>(srcs.items.map((s) => s.id));
         const restored = saved.tabs.filter((t) =>
           validIds.has(t.sourceId),
         ) as Tab[];
@@ -272,20 +264,7 @@ export function useApp() {
     })();
   }, [health, providersLoaded, hasChatKey, project?.initialized, refreshStatus]);
 
-  // Refresh the document list (same triggers as sources).
-  const refreshDocuments = useCallback(async () => {
-    if (!project?.initialized) return;
-    try {
-      setDocuments(await api.listDocuments());
-    } catch {
-      /* sidecar mid-restart; UI degrades to an empty list */
-    }
-  }, [project?.initialized, setDocuments]);
-  useEffect(() => {
-    if (project?.initialized) refreshDocuments();
-  }, [project?.initialized, project?.projectPath, refreshDocuments]);
-
-  // Refresh the reference list (same triggers as sources/documents). The
+  // Refresh the reference list (same triggers as sources). The
   // map is keyed by source_file_id and powers tab-title resolution in the
   // CenterPane (PDF tab shows the paper title, not the filename).
   const refreshReferences = useCallback(async () => {
@@ -420,11 +399,9 @@ export function useApp() {
     if (!trimmed) return;
     setBusy(true);
     try {
-      const doc = await api.createDocument({ title: trimmed });
-      await refreshDocuments();
-      openDocument(doc);
-      // Kick off a fresh chat seeded with the New Document planning prompt
-      // so the user can talk through structure with the agent.
+      const src = await api.createManuscript(trimmed);
+      await refreshSources();
+      openSource(src);
       void chatPanelRef.current?.startNewDocumentChat();
     } catch (e) {
       setError((e as Error)?.message ?? String(e));
@@ -478,31 +455,6 @@ export function useApp() {
     [sources, openSourceAtPage],
   );
 
-  const handleOpenDocumentById = useCallback(
-    (documentId: string) => {
-      const doc = documents.find((d) => d.id === documentId);
-      if (doc) {
-        openDocument(doc);
-        return;
-      }
-      // Not in the loaded list yet (e.g. the agent just created it) — fetch.
-      void api
-        .getDocument(documentId)
-        .then((d) => {
-          setDocuments(
-            documents.some((x) => x.id === d.id)
-              ? documents
-              : [...documents, d],
-          );
-          openDocument(d);
-        })
-        .catch(() => {
-          /* ignore — the doc may not exist */
-        });
-    },
-    [documents, openDocument],
-  );
-
   const configured = !!settings && !!apiKey;
 
   return {
@@ -525,13 +477,10 @@ export function useApp() {
     handleRescan,
     handleNewDocument,
     openSource,
-    openDocument,
     openReferencesView,
     openSourceByIdAtPage,
     handleCitationClick,
-    handleDocumentEdited,
     handleOpenSourceById,
-    handleOpenDocumentById,
     handleSettingsChange,
     refreshSources,
   };

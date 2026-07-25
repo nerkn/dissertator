@@ -2,6 +2,8 @@ import type { Hono } from "hono";
 import { join } from "node:path";
 import { TESSERACT_TYPE } from "@dissertator/shared";
 import {
+  createManuscript,
+  deleteSource,
   getCurrentProject,
   getSettings,
   getSourceById,
@@ -31,7 +33,7 @@ import type { OcrEngine, OcrOptions } from "../ocr/index.ts";
 export function registerSources(app: Hono): void {
   app.get("/sources", (c) => {
     if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
-    return c.json({ items: listSources().filter((s) => !s.relPath.startsWith("papers/")), counts: getSourceCounts() });
+    return c.json({ items: listSources(), counts: getSourceCounts() });
   });
 
   // Raw file bytes for PDF/image viewing in the frontend. The Tauri asset
@@ -161,6 +163,30 @@ export function registerSources(app: Hono): void {
     const kind =
       dest === "images" ? "image" : dest === "audio" ? "audio" : "document";
     return c.json({ ok: true, relPath, absPath, kind });
+  });
+
+  app.post("/sources/manuscript", async (c) => {
+    if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+    const body = await c.req
+      .json<{ title?: string; text?: string }>()
+      .catch(() => ({}) as { title?: string; text?: string });
+    if (!body.title) return c.json({ error: "title required" }, 400);
+    try {
+      const src = await createManuscript({
+        title: body.title,
+        bodyMd: typeof body.text === "string" ? body.text : undefined,
+      });
+      return c.json(src, 201);
+    } catch (e) {
+      return c.json({ error: (e as Error)?.message ?? String(e) }, 500);
+    }
+  });
+
+  app.delete("/sources/:id", async (c) => {
+    if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+    const id = c.req.param("id");
+    const ok = await deleteSource(id);
+    return c.json({ ok });
   });
 
   // Raw markdown body of a text/markdown source file (NO page markers),

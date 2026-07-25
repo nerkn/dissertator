@@ -40,7 +40,6 @@ export function CenterPane({
   const onClose = useTabsStore((s) => s.closeTab);
   const openSource = useTabsStore((s) => s.openSource);
   const sources = useSourceItems();
-  const docRevisions = useContentStore((s) => s.docRevisions);
   const sourceRevisions = useContentStore((s) => s.sourceRevisions);
 
   const active = tabs.find((t) => t.sourceId === activeTabId) ?? null;
@@ -223,7 +222,7 @@ export function CenterPane({
             file edited in place on disk) render through ManuscriptEditor —
             only the load/save backend differs. */}
         {tabs
-          .filter((t) => t.kind === "doc" || t.kind === "md-source")
+          .filter((t) => t.kind === "md-source")
           .map((t) => {
             const visible = t.sourceId === activeTabId;
             return (
@@ -234,13 +233,8 @@ export function CenterPane({
                 aria-hidden={!visible}
               >
                 <ManuscriptEditor
-                  mode={t.kind === "md-source" ? "source" : "document"}
-                  documentId={t.sourceId}
-                  revision={
-                    (t.kind === "md-source"
-                      ? sourceRevisions?.[t.sourceId]
-                      : docRevisions?.[t.sourceId]) ?? 0
-                  }
+                  sourceId={t.sourceId}
+                  revision={sourceRevisions?.[t.sourceId] ?? 0}
                   onCitationClick={onCitationClick}
                 />
               </div>

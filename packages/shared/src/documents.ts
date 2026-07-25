@@ -1,10 +1,3 @@
-export interface Document {
-  id: string;
-  title: string;
-  bodyMd: string;
-  createdAt: number;
-}
-
 /** Selection bbox stored on a note, normalized to page-space percent so it
  *  survives zoom (the highlight overlay is rendered later). */
 export interface NoteRect {

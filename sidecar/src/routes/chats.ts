@@ -11,13 +11,13 @@ import {
   getCurrentProject,
   getSettings,
   insertChatMessage,
-  listDocuments,
   listChatMessages,
   listChats,
   listReferences,
   updateChat,
 } from "../db";
 import { getAgentPersona, readPreferences } from "../agent-files.ts";
+import { listSources } from "../ingest/index.ts";
 import {
   runAgentLoop,
   type AgentStreamEvent,
@@ -263,10 +263,10 @@ export function registerChats(app: Hono): void {
         );
       }
       {
-        const docs = await listDocuments();
+        const docs = listSources().filter((s) => s.ext === "md");
         if (docs.length) {
           const lines = docs.map((doc) => {
-            const title = doc.title?.trim() || "(untitled)";
+            const title = doc.filename.replace(/\.[^.]+$/, "").trim() || "(untitled)";
             const bullet = activeDocId === doc.id ? `* "${title}" (id: ${doc.id})` : `- "${title}" (id: ${doc.id})`;
             return bullet;
           });

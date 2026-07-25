@@ -124,12 +124,13 @@ export const CHUNK_NEW_COLUMNS: Array<{ name: string; type: string }> = [
 ];
 
 /** lowercase, trim, collapse non-[a-z0-9] runs to '-', strip edges; 'untitled' if empty. */
-export function slugify(title: string): string {
+export function filenameFromTitle(title: string): string {
   const s = (title ?? "")
-    .toLowerCase()
+    .replace(/[\\/:*?"<>|\x00-\x1f]/g, " ")
+    .replace(/\s+/g, " ")
     .trim()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
+    .replace(/\.+$/g, "")
+    .trim();
   return s || "untitled";
 }
 
@@ -300,7 +301,7 @@ export function migrate(db: Database, projectPath: string): void {
           "VALUES (?, ?, ?, 'md', 'text', 'text/markdown', NULL, ?, NULL, NULL, 'new', NULL, NULL, NULL, NULL, NULL, ?)",
       );
       for (const row of rows) {
-        const slug = slugify(row.title);
+        const slug = filenameFromTitle(row.title);
         const relPath = `papers/${slug}.md`;
         if (
           (findSrc.get(relPath) as { id?: string } | undefined)?.id

@@ -4,11 +4,16 @@ import { join } from "node:path";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 
 import {
-  createDocument,
-  getDocument,
+  createManuscript,
+  getSourceById,
   initProject,
-  updateDocument,
 } from "../db";
+import { readSourceMarkdown, writeSourceMarkdown } from "../ingest/index.ts";
+import type { SourceFile } from "@dissertator/shared";
+
+const src = (id: string): SourceFile => getSourceById(id)!;
+const getBody = (id: string) => readSourceMarkdown(src(id));
+const setBody = (id: string, md: string) => writeSourceMarkdown(src(id), md);
 import type { LoopMessage, StreamChatOptions, StreamResult } from "../chat/openai.ts";
 import { runAgentLoop, type AgentStreamEvent } from "./loop.ts";
 import { dispatchTool, type ToolContext } from "./tools.ts";
@@ -97,14 +102,14 @@ test("loop: create then final answer emits tool_call + tool_result + edit + delt
   const edit = events.find((e) => e.type === "edit")!;
   expect(edit.type === "edit" && edit.bodyMd).toBe("# Hi\n");
   // The doc really was created.
-  const doc = await getDocument((edit as { documentId: string }).documentId);
-  expect(doc?.title).toBe("test-doc");
-  expect(doc?.bodyMd).toBe("# Hi\n");
+  const docId = (edit as { documentId: string }).documentId;
+  expect(getSourceById(docId)?.filename.replace(/\.[^.]+$/, "")).toBe("Test Doc");
+  expect(await getBody(docId)).toBe("# Hi\n");
 });
 
 test("loop: multiple sequential tool calls in one round each execute", async () => {
-  const doc = await createDocument({ title: "Multi" });
-  await updateDocument(doc.id, { bodyMd: "alpha beta gamma" });
+  const doc = await createManuscript({ title: "Multi" });
+  await setBody(doc.id, "alpha beta gamma");
   const events: AgentStreamEvent[] = [];
   const stream = scriptedStream(
     [
@@ -155,7 +160,7 @@ test("loop: multiple sequential tool calls in one round each execute", async () 
   const edits = events.filter((e) => e.type === "edit");
   expect(edits.length).toBe(1);
   // Body now reflects the replacement.
-  expect((await getDocument(doc.id))?.bodyMd).toBe("alpha BETA gamma");
+  expect((await getBody(doc.id))).toBe("alpha BETA gamma");
 });
 
 test("loop: step cap stops a tool-only loop and flags capped", async () => {
@@ -300,8 +305,8 @@ test("loop: nudges the model to call suggest when it forgets", async () => {
 // --- dispatchTool unit tests (no loop, no network) -----------------------
 
 test("dispatchTool edit replace replaces first occurrence and returns the new body", async () => {
-  const d = await createDocument({ title: "W" });
-  await updateDocument(d.id, { bodyMd: "one two three" });
+  const d = await createManuscript({ title: "W" });
+  await setBody(d.id, "one two three");
   const r = await dispatchTool(
     "edit",
     { id: d.id, op: "replace", anchor: "two", text: "TWO" },
@@ -309,12 +314,12 @@ test("dispatchTool edit replace replaces first occurrence and returns the new bo
   );
   expect(r.ok).toBe(true);
   expect(r.document?.bodyMd).toBe("one TWO three");
-  expect((await getDocument(d.id))?.bodyMd).toBe("one TWO three");
+  expect((await getBody(d.id))).toBe("one TWO three");
 });
 
 test("dispatchTool edit replace fails when anchor is absent (optimistic)", async () => {
-  const d = await createDocument({ title: "W2" });
-  await updateDocument(d.id, { bodyMd: "abc" });
+  const d = await createManuscript({ title: "W2" });
+  await setBody(d.id, "abc");
   const r = await dispatchTool(
     "edit",
     { id: d.id, op: "replace", anchor: "xyz", text: "nope" },
@@ -322,12 +327,12 @@ test("dispatchTool edit replace fails when anchor is absent (optimistic)", async
   );
   expect(r.ok).toBe(false);
   expect(r.error).toContain("not found");
-  expect((await getDocument(d.id))?.bodyMd).toBe("abc"); // unchanged
+  expect((await getBody(d.id))).toBe("abc"); // unchanged
 });
 
 test("dispatchTool edit replace fixes over-escaped quotes in anchor", async () => {
-  const d = await createDocument({ title: "W3" });
-  await updateDocument(d.id, { bodyMd: 'Atlas: "Sevil mi?" dedi' });
+  const d = await createManuscript({ title: "W3" });
+  await setBody(d.id, 'Atlas: "Sevil mi?" dedi');
   const r = await dispatchTool(
     "edit",
     { id: d.id, op: "replace", anchor: '\\"Sevil mi?\\"', text: "OK" },
@@ -338,8 +343,8 @@ test("dispatchTool edit replace fixes over-escaped quotes in anchor", async () =
 });
 
 test("dispatchTool edit insert anchors after first match; empty anchor prepends", async () => {
-  const d = await createDocument({ title: "I" });
-  await updateDocument(d.id, { bodyMd: "head\nbody" });
+  const d = await createManuscript({ title: "I" });
+  await setBody(d.id, "head\nbody");
   const r1 = await dispatchTool(
     "edit",
     { id: d.id, op: "insert", anchor: "head", text: "\nmiddle" },
@@ -354,7 +359,7 @@ test("dispatchTool edit insert anchors after first match; empty anchor prepends"
     ctxBase
   );
   expect(r2.ok).toBe(true);
-  expect((await getDocument(d.id))?.bodyMd).toBe("TOP\nhead\nmiddle\nbody");
+  expect((await getBody(d.id))).toBe("TOP\nhead\nmiddle\nbody");
 });
 
 test("dispatchTool unknown tool returns ok=false", async () => {
@@ -403,8 +408,8 @@ test("dispatchTool read resolves a citekey to its linked source", async () => {
 });
 
 test("dispatchTool edit replace on a DB document updates the body", async () => {
-  const d = await createDocument({ title: "EditReplaceDoc" });
-  await updateDocument(d.id, { bodyMd: "foo bar baz" });
+  const d = await createManuscript({ title: "EditReplaceDoc" });
+  await setBody(d.id, "foo bar baz");
   const r = await dispatchTool(
     "edit",
     { id: d.id, op: "replace", anchor: "bar", text: "BAR" },
@@ -412,12 +417,12 @@ test("dispatchTool edit replace on a DB document updates the body", async () => 
   );
   expect(r.ok).toBe(true);
   expect(r.document?.bodyMd).toBe("foo BAR baz");
-  expect((await getDocument(d.id))?.bodyMd).toBe("foo BAR baz");
+  expect((await getBody(d.id))).toBe("foo BAR baz");
 });
 
 test("dispatchTool edit insert on a DB document inserts after first match", async () => {
-  const d = await createDocument({ title: "EditInsertDoc" });
-  await updateDocument(d.id, { bodyMd: "head tail" });
+  const d = await createManuscript({ title: "EditInsertDoc" });
+  await setBody(d.id, "head tail");
   const r = await dispatchTool(
     "edit",
     { id: d.id, op: "insert", anchor: "head", text: " MID" },
@@ -425,13 +430,13 @@ test("dispatchTool edit insert on a DB document inserts after first match", asyn
   );
   expect(r.ok).toBe(true);
   expect(r.document?.bodyMd).toBe("head MID tail");
-  expect((await getDocument(d.id))?.bodyMd).toBe("head MID tail");
+  expect((await getBody(d.id))).toBe("head MID tail");
 });
 
 test("dispatchTool read returns a page on a document with data.pages.total", async () => {
   const body = "0123456789".repeat(100);
-  const d = await createDocument({ title: "WindowDoc" });
-  await updateDocument(d.id, { bodyMd: body });
+  const d = await createManuscript({ title: "WindowDoc" });
+  await setBody(d.id, body);
   const r = await dispatchTool(
     "read",
     { id: d.id },
@@ -475,7 +480,7 @@ test("dispatchTool retention: toast/show are ephemeral, list is keep", async () 
   );
   expect(toast.retention).toBe("ephemeral");
 
-  const d = await createDocument({ title: "ShowRetentionDoc" });
+  const d = await createManuscript({ title: "ShowRetentionDoc" });
   const show = await dispatchTool("show", { id: d.id }, ctxBase);
   expect(show.retention).toBe("ephemeral");
 

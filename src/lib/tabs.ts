@@ -23,7 +23,7 @@
 // `kindForSource`: anything that isn't a PDF or image becomes a text view
 // (docx/xlsx/text/markdown/unsupported all show their extracted text).
 
-export type TabKind = "pdf" | "image" | "text" | "doc" | "md-source" | "references";
+export type TabKind = "pdf" | "image" | "text" | "md-source" | "references";
 
 /** Sentinel id for the singleton References-manager tab (kind "references").
  *  Not a UUID, so it can never collide with a source/doc id. */

@@ -23,7 +23,6 @@ import {
 import type {
   Chat,
   ChatMessage,
-  Document,
   EmbeddingStatus,
   GuiEvent,
   GuiOption,
@@ -48,9 +47,7 @@ interface Props {
   configured: boolean;
   apiKey: string;
   embeddingApiKey?: string;
-  onDocumentEdited?: (doc: Document) => void;
   onOpenSource?: (sourceId: string) => void;
-  onOpenDocument?: (documentId: string) => void;
   onOpenSettings?: () => void;
 }
 
@@ -66,9 +63,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
     configured,
     apiKey,
     embeddingApiKey,
-    onDocumentEdited,
     onOpenSource,
-    onOpenDocument,
     onOpenSettings,
   },
   ref,
@@ -274,15 +269,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             ),
           ),
         onEdit: (e) => {
-          const existing = useContentStore
-            .getState()
-            .documents.find((d) => d.id === e.documentId);
-          onDocumentEdited?.({
-            id: e.documentId,
-            title: e.title,
-            bodyMd: e.bodyMd,
-            createdAt: existing?.createdAt ?? Date.now(),
-          });
+          useContentStore.getState().bumpSourceRevision(e.documentId);
         },
         onGui: (g: GuiEvent) => {
           switch (g.kind) {
@@ -322,9 +309,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       activeDocumentId,
       embeddingApiKey,
       loadMessages,
-      onDocumentEdited,
       onOpenSource,
-      onOpenDocument,
       pushToast,
     ],
   );
@@ -379,15 +364,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             ),
           ),
         onEdit: (e) => {
-          const existing = useContentStore
-            .getState()
-            .documents.find((d) => d.id === e.documentId);
-          onDocumentEdited?.({
-            id: e.documentId,
-            title: e.title,
-            bodyMd: e.bodyMd,
-            createdAt: existing?.createdAt ?? Date.now(),
-          });
+          useContentStore.getState().bumpSourceRevision(e.documentId);
         },
         onGui: (g: GuiEvent) => {
           switch (g.kind) {
@@ -438,9 +415,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       loadMessages,
       activeDocumentId,
       embeddingApiKey,
-      onDocumentEdited,
       onOpenSource,
-      onOpenDocument,
       pushToast,
       maybeAutotitle,
       flow.autoTitle,

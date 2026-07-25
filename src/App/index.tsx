@@ -69,13 +69,10 @@ export default function App() {
     handleRescan,
     handleNewDocument,
     openSource,
-    openDocument,
     openReferencesView,
     openSourceByIdAtPage,
     handleCitationClick,
-    handleDocumentEdited,
     handleOpenSourceById,
-    handleOpenDocumentById,
     handleSettingsChange,
     refreshSources,
   } = useApp();
@@ -128,7 +125,6 @@ export default function App() {
           chatKey={apiKey}
           onOpen={openSource}
           onNewDocument={handleNewDocument}
-          onOpenDocument={openDocument}
           onOpenSettings={() => setShowSettings(true)}
           onOpenReferences={openReferencesView}
           onOpenNote={openSourceByIdAtPage}
@@ -150,9 +146,7 @@ export default function App() {
           configured={configured}
           apiKey={apiKey}
           embeddingApiKey={embeddingApiKey}
-          onDocumentEdited={handleDocumentEdited}
           onOpenSource={handleOpenSourceById}
-          onOpenDocument={handleOpenDocumentById}
           onOpenSettings={() => setShowSettings(true)}
         />
       </main>

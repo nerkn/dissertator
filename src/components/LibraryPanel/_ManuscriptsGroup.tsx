@@ -1,24 +1,15 @@
 import { useState } from "react";
 import { CaretDown, CaretRight } from "@phosphor-icons/react";
-import type { Document, SourceFile } from "@dissertator/shared";
+import type { SourceFile } from "@dissertator/shared";
 
 interface Props {
-  documents: Document[];
   mdSources: SourceFile[];
-  onOpenDocument?: (doc: Document) => void;
-  onOpenMd?: (src: SourceFile) => void;
+  onOpen?: (src: SourceFile) => void;
   onNewDocument?: () => void;
 }
 
-export function ManuscriptsGroup({
-  documents,
-  mdSources,
-  onOpenDocument,
-  onOpenMd,
-  onNewDocument,
-}: Props) {
+export function ManuscriptsGroup({ mdSources, onOpen, onNewDocument }: Props) {
   const [open, setOpen] = useState(false);
-  const total = documents.length + mdSources.length;
 
   return (
     <div className="group yellow">
@@ -26,7 +17,7 @@ export function ManuscriptsGroup({
         <span
           className="group-head-toggle"
           onClick={() => setOpen((v) => !v)}
-          title="Your papers, theses & markdown manuscripts"
+          title="Your editable markdown manuscripts"
         >
           {open ? (
             <CaretDown size={13} weight="bold" />
@@ -46,25 +37,14 @@ export function ManuscriptsGroup({
         )}
       </div>
       {open &&
-        (total > 0 ? (
+        (mdSources.length > 0 ? (
           <div className="source-tree">
-            {documents.map((d) => (
-              <div
-                key={d.id}
-                className="source-row"
-                title={d.title}
-                onClick={() => onOpenDocument?.(d)}
-              >
-                <span className="source-dot doc" />
-                <span className="source-name">{d.title}</span>
-              </div>
-            ))}
             {mdSources.map((s) => (
               <div
                 key={s.id}
                 className="source-row"
                 title={s.filename}
-                onClick={() => onOpenMd?.(s)}
+                onClick={() => onOpen?.(s)}
               >
                 <span className="source-dot doc" />
                 <span className="source-name">{s.filename}</span>

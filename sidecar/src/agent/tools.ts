@@ -1,7 +1,7 @@
 import type { GuiEvent, Reference, SourceFile } from "@dissertator/shared";
 import type { ToolSpec } from "../chat/openai.ts";
 import {
-  createDocument,
+  createManuscript,
   getReferenceByCitekey,
   listReferences,
   getSourceById,
@@ -71,7 +71,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "read",
       description:
-        "Read a manuscript or source file, one page at a time. `id` resolves via filename, source id, or citekey; omit for the active manuscript. `page` (default 1) selects the page; use the returned `pages.total` to page through.",
+        "Read a file. `id` resolves via filename, source id, or citekey; omit for the active manuscript. `page` (default 1) selects the page; use the returned `pages.total` to page through.",
       parameters: {
         type: "object",
         properties: {
@@ -223,12 +223,15 @@ function resolveHandle(h: string): Handle | null {
   if (!h) return null;
   const byId = getSourceById(h);
   if (byId) return mdOrNot(byId);
-  const norm = h.replace(/\\/g, "/");
+  const lc = h.replace(/\\/g, "/").toLowerCase();
+  const lcMd = lc.endsWith(".md") ? lc : lc + ".md";
   const sources = listSources();
-  const byRel = sources.find((s) => s.relPath.replace(/\\/g, "/") === norm);
-  if (byRel) return mdOrNot(byRel);
-  const byFile = sources.find((s) => s.filename.replace(/\\/g, "/") === norm);
-  if (byFile) return mdOrNot(byFile);
+  const match = sources.find((s) => {
+    const rel = s.relPath.replace(/\\/g, "/").toLowerCase();
+    const fn = s.filename.replace(/\\/g, "/").toLowerCase();
+    return rel === lc || rel === lcMd || fn === lc || fn === lcMd;
+  });
+  if (match) return mdOrNot(match);
   const ref = getReferenceByCitekey(h);
   if (ref?.source_file_id) {
     const s = getSourceById(ref.source_file_id);
@@ -269,16 +272,12 @@ async function mutateBody(
   } catch (e) {
     return { ok: false, summary: "⚠️ write failed", error: (e as Error)?.message ?? String(e) };
   }
-  ctx.emitGui({ kind: "source_edited", sourceId: target.source.id });
   const title = target.source.filename.replace(/\.[^.]+$/, "");
-  const isManuscript = target.source.relPath.replace(/\\/g, "/").startsWith("papers/");
   return {
     ok: true,
     summary: summaryFor(title),
-    data: { id: target.source.id, title, ok: true },
-    ...(isManuscript
-      ? { document: { id: target.source.id, title, bodyMd: res.next } }
-      : {}),
+    data: { id: target.source.id, title, ok: true, bodyMd: res.next },
+    document: { id: target.source.id, title, bodyMd: res.next },
   };
 }
 
@@ -511,13 +510,14 @@ async function createTool(args: Record<string, unknown>): Promise<ToolResult> {
   const title = (args.title as string)?.trim();
   if (!title) return { ok: false, summary: "create: title required", error: "title required" };
   const text = typeof args.text === "string" ? args.text : "";
-  const doc = await createDocument({ title, bodyMd: text });
+  const src = await createManuscript({ title, bodyMd: text });
+  const t = src.filename.replace(/\.[^.]+$/, "");
   return {
     ok: true,
-    summary: `📄 Created manuscript "${doc.title}"`,
+    summary: `📄 Created manuscript "${t}"`,
     retention: "default",
-    data: { id: doc.id, title: doc.title, bodyMd: doc.bodyMd },
-    document: { id: doc.id, title: doc.title, bodyMd: doc.bodyMd },
+    data: { id: src.id, title: t, bodyMd: text },
+    document: { id: src.id, title: t, bodyMd: text },
   };
 }
 
@@ -567,13 +567,8 @@ function showTool(args: Record<string, unknown>, ctx: ToolContext): ToolResult {
   if (!raw) return { ok: false, summary: "show: id required", error: "id required" };
   const h = resolveHandle(raw);
   if (!h) return { ok: false, summary: "show: not found", error: `id ${raw} not found` };
-  const isManuscript =
-    h.source.relPath.replace(/\\/g, "/").startsWith("papers/") &&
-    (h.source.mimeType ?? "").toLowerCase() === "text/markdown";
   ctx.emitGui({ kind: "open", sourceId: h.source.id });
-  const label = isManuscript
-    ? h.source.filename.replace(/\.[^.]+$/, "")
-    : h.source.filename;
+  const label = h.source.filename.replace(/\.[^.]+$/, "");
   return { ok: true, summary: `📂 Opened "${label}"`, retention: "ephemeral", data: { opened: true } };
 }
 

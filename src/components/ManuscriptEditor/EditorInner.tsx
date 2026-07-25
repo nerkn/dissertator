@@ -26,33 +26,22 @@ import { StatusBar } from "./StatusBar";
 import type { CitationClickHandler, SaveState } from "./_shared";
 
 interface InnerProps {
-  mode: "document" | "source";
   document: { id: string; title: string };
   initialMarkdown: string;
   onCitationClick?: CitationClickHandler;
 }
 
-// Source mode (.md files on disk) uses a longer debounce than document mode:
-// every save triggers a sidecar re-ingest (rechunk + embedding invalidation),
-// so coalescing bursts of typing into one write avoids corpus thrash.
-const AUTOSAVE_DEBOUNCE_MS_DOC = 800;
-const AUTOSAVE_DEBOUNCE_MS_SOURCE = 3000;
+const AUTOSAVE_DEBOUNCE_MS = 3000;
 // Must match sidecar routes/sources.ts REINGEST_SETTLE_MS: after a source-mode
 // save lands, the on-disk content is ahead of the indexed chunks until the
 // settle timer fires `enqueuePath`. We surface that gap to the user as a
 // "chunks dirty" indicator in the status bar.
 const REINGEST_SETTLE_MS = 10000;
 
-export function EditorInner({ mode, document, initialMarkdown, onCitationClick }: InnerProps) {
-  const autosaveDebounceMs =
-    mode === "source" ? AUTOSAVE_DEBOUNCE_MS_SOURCE : AUTOSAVE_DEBOUNCE_MS_DOC;
+export function EditorInner({ document, initialMarkdown, onCitationClick }: InnerProps) {
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [showSource, setShowSource] = useState<boolean>(false);
-  // P5: the agent edited this doc while we had unsaved local changes. Show a
-  // banner offering to reload (discard local) — we never auto-clobber edits.
   const [staleExternal, setStaleExternal] = useState<boolean>(false);
-  // Live markdown mirror — drives the read-only source view without round-
-  // tripping through the editor.
   const [sourceMd, setSourceMd] = useState<string>(initialMarkdown);
   // Word/character count from the markdown
   const [docStats, setDocStats] = useState<{ words: number; chars: number }>({ words: 0, chars: 0 });
@@ -82,27 +71,19 @@ export function EditorInner({ mode, document, initialMarkdown, onCitationClick }
     async (md: string) => {
       setSaveState("saving");
       try {
-        if (mode === "source") {
-          await api.updateSourceMarkdown(document.id, md);
-          // The sidecar schedules a settled reingest (REINGEST_SETTLE_MS);
-          // until it fires, indexed chunks are stale. Surface that window to
-          // the user. Each successive save resets the timer so a burst of
-          // edits keeps the indicator lit until typing truly pauses.
-          setChunksDirty(true);
-          if (chunksDirtyTimer.current) clearTimeout(chunksDirtyTimer.current);
-          chunksDirtyTimer.current = setTimeout(() => {
-            chunksDirtyTimer.current = null;
-            setChunksDirty(false);
-          }, REINGEST_SETTLE_MS);
-        } else {
-          await api.updateDocument(document.id, { bodyMd: md });
-        }
+        await api.updateSourceMarkdown(document.id, md);
+        setChunksDirty(true);
+        if (chunksDirtyTimer.current) clearTimeout(chunksDirtyTimer.current);
+        chunksDirtyTimer.current = setTimeout(() => {
+          chunksDirtyTimer.current = null;
+          setChunksDirty(false);
+        }, REINGEST_SETTLE_MS);
         setSaveState("saved");
       } catch {
         setSaveState("error");
       }
     },
-    [mode, document.id],
+    [document.id],
   );
 
   // Record the freshly-saved body so a revision bump comparing against it can
@@ -129,7 +110,7 @@ export function EditorInner({ mode, document, initialMarkdown, onCitationClick }
       saveTimer.current = setTimeout(() => {
         saveTimer.current = null;
         void doSaveWithTrack(latestMd.current);
-      }, autosaveDebounceMs);
+      }, AUTOSAVE_DEBOUNCE_MS);
     },
     [doSaveWithTrack],
   );

@@ -668,7 +668,7 @@ export function getSourceCounts(): SourceCounts {
     return { total: 0, done: 0, needsOcr: 0, failed: 0, extracting: 0 };
   }
   const rows = project.db
-    .query("SELECT text_status AS s, COUNT(*) AS c FROM source_files WHERE rel_path NOT LIKE 'papers/%' GROUP BY text_status")
+    .query("SELECT text_status AS s, COUNT(*) AS c FROM source_files GROUP BY text_status")
     .all() as { s: string; c: number }[];
   const counts: SourceCounts = {
     total: 0,
