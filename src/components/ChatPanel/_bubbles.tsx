@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Bug, CaretDown } from "@phosphor-icons/react";
+import { Bug, CaretDown, Warning } from "@phosphor-icons/react";
 import type { ChatMessage } from "@dissertator/shared";
 import type { DebugEvent } from "../../lib/api";
 import { Markdown } from "./Markdown";
@@ -91,9 +91,11 @@ export function LiveAssistantBubble({
 export const MessageBubble = memo(function MessageBubble({
   msg,
   live = false,
+  errorText,
 }: {
   msg: ChatMessage;
   live?: boolean;
+  errorText?: string;
 }) {
   const isUser = msg.role === "user";
   return (
@@ -131,6 +133,11 @@ export const MessageBubble = memo(function MessageBubble({
           (live ? "…" : "")
         )}
       </div>
+      {!isUser && errorText && (
+        <div className="msg-error">
+          <Warning size={14} weight="bold" /> {errorText}
+        </div>
+      )}
     </div>
   );
 });

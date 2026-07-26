@@ -369,6 +369,19 @@ code {
   border-color: var(--yellow);
   color: #fef3c7;
 }
+.msg-error {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  background: rgba(239, 68, 68, 0.12);
+  color: #fecaca;
+  font-size: 12px;
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  word-break: break-word;
+}
 
 /* Markdown rendering inside assistant bubbles. Overrides .msg-body's
    pre-wrap (blocks manage their own spacing) and scopes typography. */

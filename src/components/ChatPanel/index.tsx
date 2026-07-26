@@ -177,6 +177,9 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
   const [streaming, setStreaming] = useState(false);
   const [liveAssistant, setLiveAssistant] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [msgError, setMsgError] = useState<{ id: string; text: string } | null>(
+    null,
+  );
   const [toolBeats, setToolBeats] = useState<ToolBeat[]>([]);
   const [pendingOptions, setPendingOptions] = useState<GuiOption[] | null>(null);
   const [toasts, setToasts] = useState<ChatToast[]>([]);
@@ -297,6 +300,8 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       abortRef.current = null;
       if (result.error && !result.aborted) {
         setError(result.error);
+        if (result.assistantMessageId)
+          setMsgError({ id: result.assistantMessageId, text: result.error });
       } else if (result.capped) {
         pushToast("warn", "Agent hit its step cap — it may not have finished.");
       }
@@ -321,6 +326,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
       if (!text || !activeChatId || streaming) return;
       lastSentRef.current = text;
       setError(null);
+      setMsgError(null);
       if (!isRetry) setInput("");
       setPendingOptions(null);
       setToolBeats([]);
@@ -394,6 +400,8 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
 
       if (result.error && !result.aborted) {
         setError(result.error);
+        if (result.assistantMessageId)
+          setMsgError({ id: result.assistantMessageId, text: result.error });
       } else if (result.capped) {
         pushToast("warn", "Agent hit its step cap — it may not have finished.");
       }
@@ -832,7 +840,13 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
               </div>
             )}
             {messages.map((m) => (
-              <MessageBubble key={m.id} msg={m} />
+              <MessageBubble
+                key={m.id}
+                msg={m}
+                errorText={
+                  msgError?.id === m.id ? msgError.text : undefined
+                }
+              />
             ))}
             {streaming && (
               <LiveAssistantBubble
