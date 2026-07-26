@@ -23,6 +23,7 @@ import {
 import { citationPlugin } from "../../lib/citationPlugin";
 import { Toolbar } from "./Toolbar";
 import { StatusBar } from "./StatusBar";
+import { HistoryMerge } from "../HistoryMerge";
 import type { CitationClickHandler, SaveState } from "./_shared";
 
 interface InnerProps {
@@ -41,7 +42,7 @@ const REINGEST_SETTLE_MS = 10000;
 export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerProps) {
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [showSource, setShowSource] = useState<boolean>(false);
-  const [staleExternal, setStaleExternal] = useState<boolean>(false);
+  const [showHistory, setShowHistory] = useState<boolean>(false);
   const [sourceMd, setSourceMd] = useState<string>(initialMarkdown);
   // Word/character count from the markdown
   const [docStats, setDocStats] = useState<{ words: number; chars: number }>({ words: 0, chars: 0 });
@@ -373,12 +374,15 @@ export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerP
   // of clobbering them. Skip the very first run (initial mount already set it).
   const firstServerRun = useRef(true);
   const applyServerMarkdown = useCallback(
-    (md: string, force: boolean) => {
+    (md: string) => {
+      if (saveTimer.current) {
+        clearTimeout(saveTimer.current);
+        saveTimer.current = null;
+      }
       serverMdRef.current = md;
       latestMd.current = md;
       setSourceMd(md);
       get()?.action(replaceAll(md));
-      if (force) setStaleExternal(false);
       setSaveState("idle");
     },
     [get],
@@ -398,46 +402,16 @@ export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerP
       serverMdRef.current = initialMarkdown;
       return;
     }
-    // No-op if the server body matches what we already show (e.g. our own
-    // just-saved write echoed back, or a no-op edit).
     if (initialMarkdown === latestMd.current) {
       serverMdRef.current = initialMarkdown;
       return;
     }
-    const dirty =
-      saveStateRef.current === "dirty" || saveStateRef.current === "saving";
-    if (dirty) {
-      setStaleExternal(true);
-      return;
-    }
-    applyServerMarkdownRef.current(initialMarkdown, false);
+    applyServerMarkdownRef.current(initialMarkdown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialMarkdown]);
 
   return (
     <div className="manuscript-editor">
-      {staleExternal && (
-        <div className="editor-stale-banner">
-          <span>
-            The agent edited this manuscript. You have unsaved changes that would
-            be lost.
-          </span>
-          <button
-            type="button"
-            className="btn small primary"
-            onClick={() => applyServerMarkdown(initialMarkdown, true)}
-          >
-            Reload agent version
-          </button>
-          <button
-            type="button"
-            className="btn small ghost"
-            onClick={() => setStaleExternal(false)}
-          >
-            Keep mine
-          </button>
-        </div>
-      )}
       <Toolbar
         getEditor={get}
         title={source.title}
@@ -445,6 +419,7 @@ export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerP
         showSource={showSource}
         onToggleSource={() => setShowSource((v) => !v)}
         onInsertFile={pickFile}
+        onHistory={() => setShowHistory(true)}
         canUndo={canUndo}
         canRedo={canRedo}
       />
@@ -458,6 +433,13 @@ export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerP
       <StatusBar saveState={saveState} docStats={docStats} chunksDirty={chunksDirty} />
       {notice && (
         <div className={`editor-toast ${notice.kind}`}>{notice.msg}</div>
+      )}
+      {showHistory && (
+        <HistoryMerge
+          sourceId={source.id}
+          title={source.title}
+          onClose={() => setShowHistory(false)}
+        />
       )}
     </div>
   );

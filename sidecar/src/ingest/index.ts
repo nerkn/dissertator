@@ -37,6 +37,7 @@ import {
   getCurrentProject,
   getSettings,
   getSourceById,
+  insertSourceHistory,
   lockDimensions,
   mapSourceFile,
   type SourceFileRow,
@@ -430,10 +431,23 @@ export async function readSourceMarkdown(src: SourceFile): Promise<string> {
 export async function writeSourceMarkdown(
   src: SourceFile,
   bodyMd: string,
+  meta?: { author?: "agent" | "user"; op?: string; summary?: string },
 ): Promise<void> {
   const absPath = join(getCurrentProject()!.projectPath, src.relPath);
   await writeFile(absPath, bodyMd, "utf8");
   scheduleReingest(src.relPath);
+  try {
+    insertSourceHistory({
+      sourceId: src.id,
+      relPath: src.relPath,
+      author: meta?.author ?? "user",
+      op: meta?.op,
+      summary: meta?.summary,
+      bodyAfter: bodyMd,
+    });
+  } catch {
+    // history is best-effort; never block a write
+  }
 }
 
 /**

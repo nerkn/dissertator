@@ -4,10 +4,12 @@ import { TESSERACT_TYPE } from "@dissertator/shared";
 import {
   createManuscript,
   deleteSource,
+  deleteSourceHistoryByIds,
   getCurrentProject,
   getSettings,
   getSourceById,
   getSourceText,
+  listSourceHistory,
   setSourceNote,
 } from "../db";
 import { detectReference } from "../cite/detect.ts";
@@ -253,7 +255,7 @@ export function registerSources(app: Hono): void {
       return c.json({ error: "bodyMd required" }, 400);
     }
     try {
-      await writeSourceMarkdown(src, body.bodyMd);
+      await writeSourceMarkdown(src, body.bodyMd, { author: "user", op: "manual", summary: "Manual edit" });
     } catch (e) {
       return c.json({ error: (e as Error)?.message ?? String(e) }, 500);
     }
@@ -385,5 +387,21 @@ export function registerSources(app: Hono): void {
     } catch (e) {
       return c.json({ error: (e as Error)?.message ?? String(e) }, 500);
     }
+  });
+
+  app.get("/sources/:id/history", (c) => {
+    if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+    const id = c.req.param("id");
+    return c.json({ items: listSourceHistory(id) });
+  });
+
+  app.post("/history/delete", async (c) => {
+    if (!getCurrentProject()) return c.json({ error: "no project" }, 400);
+    const body = await c.req
+      .json<{ ids?: string[] }>()
+      .catch(() => ({}) as { ids?: string[] });
+    const ids = Array.isArray(body?.ids) ? body.ids : [];
+    const deleted = deleteSourceHistoryByIds(ids);
+    return c.json({ deleted });
   });
 }

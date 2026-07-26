@@ -108,7 +108,7 @@ export const TOOL_SPECS: ToolSpec[] = [
     function: {
       name: "edit",
       description:
-        "Edit a `.md` source (content-addressed). `op`=\"replace\": swap the first verbatim `anchor` for `text`. `op`=\"insert\": add `text` after the first `anchor` (empty/omitted `anchor` = top). `id` resolves via filename, source id, or citekey; omit for the active manuscript. Non-markdown sources aren't editable. If `anchor` isn't found, `read` again.",
+        "Edit a `.md` source (content-addressed). `op`=\"replace\": swap the first verbatim `anchor` for `text`. `op`=\"insert\": ADD `text` after the first `anchor` (empty/omitted `anchor` = top) — it never deletes old text, so do NOT use it to rewrite. `op`=\"overwrite\": replace the ENTIRE body with `text` (use for full or section rewrites when an exact anchor is impractical; read all pages first). `id` resolves via filename, source id, or citekey; omit for the active manuscript. Non-markdown sources aren't editable. If `anchor` isn't found, `read` again.",
       parameters: {
         type: "object",
         properties: {
@@ -118,8 +118,8 @@ export const TOOL_SPECS: ToolSpec[] = [
           },
           op: {
             type: "string",
-            enum: ["replace", "insert"],
-            description: "replace = swap first anchor match; insert = add text after first anchor match (or top if anchor empty/omitted).",
+            enum: ["replace", "insert", "overwrite"],
+            description: "replace = swap first anchor match; insert = add text after first anchor match (or top if anchor empty/omitted); overwrite = replace the whole body.",
           },
           anchor: {
             type: "string",
@@ -251,6 +251,7 @@ function mdOrNot(
 async function mutateBody(
   target: Handle,
   ctx: ToolContext,
+  op: string,
   summaryFor: (name: string) => string,
   transform: (
     body: string,
@@ -267,15 +268,16 @@ async function mutateBody(
   }
   const res = transform(body);
   if ("error" in res) return { ok: false, summary: "⚠️ edit failed", error: res.error };
+  const title = target.source.filename.replace(/\.[^.]+$/, "");
+  const summary = summaryFor(title);
   try {
-    await writeSourceMarkdown(target.source, res.next);
+    await writeSourceMarkdown(target.source, res.next, { author: "agent", op, summary });
   } catch (e) {
     return { ok: false, summary: "⚠️ write failed", error: (e as Error)?.message ?? String(e) };
   }
-  const title = target.source.filename.replace(/\.[^.]+$/, "");
   return {
     ok: true,
-    summary: summaryFor(title),
+    summary,
     data: { id: target.source.id, title, ok: true, bodyMd: res.next },
     source: { id: target.source.id, title, bodyMd: res.next },
   };
@@ -525,9 +527,9 @@ async function editTool(
   args: Record<string, unknown>,
   ctx: ToolContext,
 ): Promise<ToolResult> {
-  const op = args.op as "replace" | "insert" | undefined;
-  if (op !== "replace" && op !== "insert")
-    return { ok: false, summary: "edit: bad op", error: "op must be replace|insert" };
+  const op = args.op as "replace" | "insert" | "overwrite" | undefined;
+  if (op !== "replace" && op !== "insert" && op !== "overwrite")
+    return { ok: false, summary: "edit: bad op", error: "op must be replace|insert|overwrite" };
   const text = args.text as string | undefined;
   if (text === undefined) return { ok: false, summary: "edit: text required", error: "text required" };
   const anchor = typeof args.anchor === "string" ? args.anchor : "";
@@ -544,8 +546,13 @@ async function editTool(
     target = mdOrNot(src);
   }
   const summaryFor = (n: string) =>
-    op === "replace" ? `✏️ Replaced text in "${n}"` : `✏️ Inserted text into "${n}"`;
-  return mutateBody(target, ctx, summaryFor, (body) => {
+    op === "replace"
+      ? `✏️ Replaced text in "${n}"`
+      : op === "overwrite"
+        ? `✏️ Overwrote "${n}"`
+        : `✏️ Inserted text into "${n}"`;
+  return mutateBody(target, ctx, op, summaryFor, (body) => {
+    if (op === "overwrite") return { next: text };
     if (op === "replace") {
       if (!anchor) return { error: "anchor required for replace" };
       const { idx, len } = looseIndex(body, anchor);

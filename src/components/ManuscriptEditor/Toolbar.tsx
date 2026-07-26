@@ -32,6 +32,7 @@ import {
   LinkSimple,
   ArrowCounterClockwise,
   ArrowClockwise,
+  ClockCounterClockwise,
   Code,
   Eye,
   FileArrowDown,
@@ -49,6 +50,7 @@ interface ToolbarProps {
   showSource: boolean;
   onToggleSource: () => void;
   onInsertFile: () => void;
+  onHistory: () => void;
   canUndo: boolean;
   canRedo: boolean;
 }
@@ -62,6 +64,7 @@ export function Toolbar({
   showSource,
   onToggleSource,
   onInsertFile,
+  onHistory,
   canUndo,
   canRedo,
 }: ToolbarProps) {
@@ -228,6 +231,9 @@ export function Toolbar({
       >
         <Eye size={16} weight="bold" />
       </button>
+      <Btn label="Version history" onClick={onHistory}>
+        <ClockCounterClockwise size={16} weight="bold" />
+      </Btn>
       <details className="export-menu" ref={exportMenuRef}>
         <summary className="tb" title="Export document">
           <FileArrowDown size={16} weight="bold" />

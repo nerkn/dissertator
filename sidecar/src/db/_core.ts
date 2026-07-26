@@ -198,6 +198,16 @@ export function migrate(db: Database, projectPath: string): void {
   }
   db.exec("DROP TABLE IF EXISTS sections");
 
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS source_history (" +
+      "id TEXT PRIMARY KEY, source_id TEXT NOT NULL, rel_path TEXT NOT NULL, " +
+      "author TEXT NOT NULL DEFAULT 'user', op TEXT, summary TEXT, " +
+      "body_after TEXT NOT NULL, created_at INTEGER NOT NULL)"
+  );
+  db.exec(
+    "CREATE INDEX IF NOT EXISTS idx_source_history_source ON source_history(source_id, created_at DESC)"
+  );
+
   // Chats (P4): freeform chat threads, scoped by chat_id. On a FRESH db the
   // `chats` + `chat_messages` tables are created by schema.sql (above). On an
   // OLD db that predates the `chats` table, create it here. SQLite makes

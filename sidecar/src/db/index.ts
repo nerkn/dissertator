@@ -20,3 +20,4 @@ export * from "./lists.ts";
 export * from "./notes.ts";
 export * from "./manuscripts.ts";
 export * from "./chats.ts";
+export * from "./history.ts";

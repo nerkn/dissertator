@@ -28,3 +28,4 @@ export { resolveSidecarBase, resetSidecarBase, sidecarBase } from "./_client";
 export { streamChat } from "./stream";
 export type { ToolCallEvent, ToolResultEvent, EditEvent, DebugEvent } from "./events";
 export type { SourceFile, SourcesResponse } from "@dissertator/shared";
+export type { SourceHistoryEntry } from "./sources";

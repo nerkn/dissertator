@@ -7,6 +7,7 @@ import {
   createManuscript,
   getSourceById,
   initProject,
+  listSourceHistory,
 } from "../db";
 import { readSourceMarkdown, writeSourceMarkdown } from "../ingest/index.ts";
 import type { SourceFile } from "@dissertator/shared";
@@ -214,33 +215,30 @@ test("loop: no-activity watchdog aborts a stalled provider and throws a clear er
 
 test("loop: watchdog does not trip while the provider is actively streaming", async () => {
   // Streams a token every 5ms (well under the 200ms budget) → must finish.
-  // Two-phase fake: first call offers quick replies (so the suggest-replies
-  // nudge never fires), second call streams the text answer.
+  // Single-phase fake: streams the text answer AND closes the turn with
+  // suggest in the same step (so the loop ends after phase 1).
   let phase = 0;
   const slow = async (opts: StreamChatOptions): Promise<StreamResult> => {
     phase++;
-    if (phase === 1) {
-      return {
-        toolCalls: [
-          {
-            id: "t1",
-            type: "function",
-            function: {
-              name: "suggest",
-              arguments: JSON.stringify({
-                options: [{ short: "A", prompt: "a" }],
-              }),
-            },
-          },
-        ],
-        finishReason: "tool_calls",
-      };
-    }
     for (let i = 0; i < 4; i++) {
       await new Promise((r) => setTimeout(r, 5));
       opts.onDelta("x");
     }
-    return { toolCalls: [], finishReason: "stop" };
+    return {
+      toolCalls: [
+        {
+          id: "t1",
+          type: "function",
+          function: {
+            name: "suggest",
+            arguments: JSON.stringify({
+              options: [{ short: "A", prompt: "a" }],
+            }),
+          },
+        },
+      ],
+      finishReason: "tool_calls",
+    };
   };
   const res = await runAgentLoop({
     apiKey: "k",
@@ -360,6 +358,64 @@ test("dispatchTool edit insert anchors after first match; empty anchor prepends"
   );
   expect(r2.ok).toBe(true);
   expect((await getBody(d.id))).toBe("TOP\nhead\nmiddle\nbody");
+});
+
+test("dispatchTool edit overwrite replaces the entire body", async () => {
+  const d = await createManuscript({ title: "OverwriteDoc" });
+  await setBody(d.id, "old\nleftover\nremnants");
+  const r = await dispatchTool(
+    "edit",
+    { id: d.id, op: "overwrite", text: "brand new body" },
+    ctxBase
+  );
+  expect(r.ok).toBe(true);
+  expect(r.source?.bodyMd).toBe("brand new body");
+  expect((await getBody(d.id))).toBe("brand new body");
+});
+
+test("edits are recorded in source_history (agent + manual)", async () => {
+  const d = await createManuscript({ title: "HistDoc" });
+  await setBody(d.id, "first manual body");
+  await dispatchTool(
+    "edit",
+    { id: d.id, op: "overwrite", text: "agent body" },
+    ctxBase
+  );
+  const rows = listSourceHistory(d.id);
+  expect(rows.length).toBe(2);
+  expect(rows[0].author).toBe("agent");
+  expect(rows[0].bodyAfter).toBe("agent body");
+  expect(rows[0].op).toBe("overwrite");
+  expect(rows[1].author).toBe("user");
+  expect(rows[1].bodyAfter).toBe("first manual body");
+});
+
+test("coalesces rapid same-author edits into one history entry", async () => {
+  const d = await createManuscript({ title: "Coalesce" });
+  await setBody(d.id, "v0");
+  await dispatchTool(
+    "edit",
+    { id: d.id, op: "overwrite", text: "v1" },
+    ctxBase,
+  );
+  await dispatchTool(
+    "edit",
+    { id: d.id, op: "overwrite", text: "v2" },
+    ctxBase,
+  );
+  await dispatchTool(
+    "edit",
+    { id: d.id, op: "overwrite", text: "v3" },
+    ctxBase,
+  );
+  const rows = listSourceHistory(d.id);
+  expect(rows.length).toBe(2);
+  expect(rows[0].author).toBe("agent");
+  expect(rows[0].editCount).toBe(3);
+  expect(rows[0].ids.length).toBe(3);
+  expect(rows[0].bodyAfter).toBe("v3");
+  expect(rows[1].author).toBe("user");
+  expect(rows[1].editCount).toBe(1);
 });
 
 test("dispatchTool unknown tool returns ok=false", async () => {

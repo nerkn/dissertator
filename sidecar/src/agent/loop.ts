@@ -227,6 +227,10 @@ export async function runAgentLoop(
       });
     }
     prevStepIds = currentStepIds;
+    if (suggestedReplies) {
+      finalAnswer = true;
+      break;
+    }
   }
   if (!aborted && !finalAnswer) capped = true;
   return { content, toolCalls: toolCallCount, aborted, usage, capped };

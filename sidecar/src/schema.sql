@@ -145,3 +145,15 @@ CREATE TABLE IF NOT EXISTS notes (
 );
 CREATE INDEX IF NOT EXISTS idx_notes_file ON notes(source_file_id);
 CREATE INDEX IF NOT EXISTS idx_notes_list ON notes(list_id);
+
+CREATE TABLE IF NOT EXISTS source_history (
+  id          TEXT PRIMARY KEY,
+  source_id   TEXT NOT NULL REFERENCES source_files(id) ON DELETE CASCADE,
+  rel_path    TEXT NOT NULL,
+  author      TEXT NOT NULL DEFAULT 'user',
+  op          TEXT,
+  summary     TEXT,
+  body_after  TEXT NOT NULL,
+  created_at  INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_source_history_source ON source_history(source_id, created_at DESC);

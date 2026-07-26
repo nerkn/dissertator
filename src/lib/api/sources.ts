@@ -7,6 +7,19 @@ import type {
 } from "@dissertator/shared";
 import { req, sidecarBase } from "./_client";
 
+export interface SourceHistoryEntry {
+  id: string;
+  sourceId: string;
+  relPath: string;
+  author: "agent" | "user";
+  op: string;
+  summary: string;
+  bodyAfter: string;
+  createdAt: number;
+  ids: string[];
+  editCount: number;
+}
+
 export const sourcesApi = {
   // --- Ingest surface (Track G+H) -------------------------------------------
 
@@ -45,6 +58,17 @@ export const sourcesApi = {
       title: string;
       bodyMd: string;
     }>(`/sources/${encodeURIComponent(id)}/markdown`),
+
+  getSourceHistory: (id: string) =>
+    req<{ items: SourceHistoryEntry[] }>(
+      `/sources/${encodeURIComponent(id)}/history`,
+    ),
+
+  deleteSourceHistory: (ids: string[]) =>
+    req<{ deleted: number }>(`/history/delete`, {
+      method: "POST",
+      body: JSON.stringify({ ids }),
+    }),
 
   /** Write the markdown body of a .md source back to disk; the sidecar
    *  re-ingests the file so chunks/embeddings/content_hash stay fresh. */
