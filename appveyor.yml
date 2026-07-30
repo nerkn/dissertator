@@ -17,7 +17,9 @@
 # The Linux .deb is NOT built here — it's built locally and uploaded to the same
 # GitHub Release with `gh release upload --clobber`.
 
-image: Visual Studio 2022
+image:
+  - Visual Studio 2022
+  - Ubuntu2204
 
 branches:
   only:
@@ -47,6 +49,32 @@ install:
       bun --version
 
 build_script:
+  # ---- Linux (Ubuntu2204): builds .deb + .rpm --------------------------------
+  # `sh:` steps run ONLY on Linux/macOS images; the `ps:` block below runs ONLY
+  # on Windows — AppVeyor routes them by worker image, so neither needs a guard.
+  - sh: |
+      set -euo pipefail
+      export PATH="$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"
+      sudo apt-get update
+      sudo apt-get install -y \
+        libwebkit2gtk-4.1-dev build-essential curl wget file \
+        libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev rpm
+      command -v rustc >/dev/null 2>&1 || curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+      command -v bun   >/dev/null 2>&1 || curl -fsSL https://bun.sh/install | bash
+      export PATH="$HOME/.cargo/bin:$HOME/.bun/bin:$PATH"
+      cd "$APPVEYOR_BUILD_FOLDER"
+      bun install --frozen-lockfile
+      bun --filter sidecar build
+      bun run sidecar/scripts/fetch-granite-model.ts
+      mkdir -p src-tauri/binaries
+      cp sidecar/dist/dissertator-sidecar src-tauri/binaries/dissertator-sidecar-x86_64-unknown-linux-gnu
+      export CI=true
+      # beforeBuildCommand (tauri.conf) runs `bun run build && bun run stage:resources`,
+      # which stages the Linux .so libs (sqlite-vec/onnxruntime from npm) + granite model.
+      bun run tauri build --bundles deb,rpm
+      echo "=== Linux bundles ==="
+      ls -la src-tauri/target/release/bundle/deb/*.deb src-tauri/target/release/bundle/rpm/*.rpm
+  # ---- Windows (Visual Studio 2022): .msi + NSIS .exe --------------------------
   - ps: |
       $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:USERPROFILE\.bun\bin;$env:PATH"
       cd $env:APPVEYOR_BUILD_FOLDER
@@ -101,6 +129,41 @@ build_script:
 # via `gh release upload v<tag> <deb> --clobber`.
 # -----------------------------------------------------------------------------
 on_success:
+  # ---- Linux: publish .deb + .rpm on a v* tag (ODD patch only) ----------------
+  # Mirrors the Windows gate below: only when a v* tag points at THIS commit and
+  # the patch is odd (public release). Even patches = internal build (skip).
+  - sh: |
+      set -uo pipefail
+      [ -n "${GH_TOKEN:-}" ] || { echo "GH_TOKEN not set — skip Linux publish"; exit 0; }
+      owner=nerkn; repo=dissertator
+      HA="Authorization: Bearer $GH_TOKEN"; HJ="Accept: application/vnd.github+json"
+      TAG=$(curl -fsSL -H "$HA" -H "$HJ" "https://api.github.com/repos/$owner/$repo/tags?per_page=100" \
+            | jq -r --arg sha "${APPVEYOR_REPO_COMMIT:-}" '.[] | select(.commit.sha==$sha) | .name' \
+            | grep -E '^v[0-9]' | head -1 || true)
+      [ -n "$TAG" ] || TAG="${APPVEYOR_REPO_TAG_NAME:-}"
+      case "$TAG" in v[0-9]*) ;; *) echo "no v* tag at ${APPVEYOR_REPO_COMMIT:-} — skip Linux publish"; exit 0;; esac
+      rest=${TAG#v}; rest=${rest#*.}; patch=${rest#*.}; patch=${patch%%.*}
+      case "$patch" in ''|*[!0-9]*) patch=0;; esac
+      if [ $((patch % 2)) -eq 0 ]; then echo "$TAG is EVEN patch (internal) — skip Linux publish"; exit 0; fi
+      echo "Publishing Linux assets for $TAG"
+      UPLOAD=$(curl -sSL -H "$HA" -H "$HJ" "https://api.github.com/repos/$owner/$repo/releases/tags/$TAG" | jq -r '.upload_url // empty')
+      if [ -z "$UPLOAD" ]; then
+        echo "Creating release $TAG"
+        BODY=$(jq -n --arg t "$TAG" '{tag_name:$t,name:("Dissertator "+$t),target_commitish:"main",generate_release_notes:true}')
+        UPLOAD=$(curl -fsSL -H "$HA" -H "$HJ" -H "Content-Type: application/json" -X POST -d "$BODY" "https://api.github.com/repos/$owner/$repo/releases" | jq -r '.upload_url')
+      fi
+      UPLOAD_BASE=$(printf '%s' "$UPLOAD" | sed 's/{?name,label}$//')
+      for f in src-tauri/target/release/bundle/deb/*.deb src-tauri/target/release/bundle/rpm/*.rpm; do
+        [ -f "$f" ] || continue
+        name=$(basename "$f"); enc=$(jq -rn --arg n "$name" '$n|@uri')
+        echo "  upload $name"
+        curl -fsSL -H "$HA" -H "Content-Type: application/octet-stream" --data-binary "@$f" "${UPLOAD_BASE}?name=$enc" \
+          || { aid=$(curl -sSL -H "$HA" -H "$HJ" "https://api.github.com/repos/$owner/$repo/releases/tags/$TAG" | jq -r ".assets[]?|select(.name==\"$name\")|.id" | head -1); \
+               [ -n "$aid" ] && curl -fsSL -H "$HA" -X DELETE "https://api.github.com/repos/$owner/$repo/releases/assets/$aid" || true; \
+               curl -fsSL -H "$HA" -H "Content-Type: application/octet-stream" --data-binary "@$f" "${UPLOAD_BASE}?name=$enc"; }
+      done
+      echo "Linux publish done for $TAG"
+  # ---- Windows: publish .msi + NSIS .exe (existing) ---------------------------
   - ps: |
       # Publish when THIS commit is exactly at a release tag — detected
       # DETERMINISTICALLY via the GitHub API ("which v* tag points at this
@@ -203,3 +266,7 @@ artifacts:
     name: Dissertator-msi
   - path: 'src-tauri\target\release\bundle\nsis\*.exe'
     name: Dissertator-nsis
+  - path: 'src-tauri/target/release/bundle/deb/*.deb'
+    name: Dissertator-deb
+  - path: 'src-tauri/target/release/bundle/rpm/*.rpm'
+    name: Dissertator-rpm
