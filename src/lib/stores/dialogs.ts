@@ -10,7 +10,13 @@
 
 import { create } from "zustand";
 
-export type DialogKind = "prompt" | "confirm" | "alert";
+export type DialogKind = "prompt" | "confirm" | "alert" | "select";
+
+export interface DialogOption {
+  id: string;
+  label: string;
+  description?: string;
+}
 
 export interface DialogOptions {
   /** Dialog title (bold heading). */
@@ -26,6 +32,8 @@ export interface DialogOptions {
   cancelLabel?: string;
   /** Style the OK button as danger (confirm/alert for delete actions). */
   destructive?: boolean;
+  /** Selectable options (select kind only). */
+  options?: DialogOption[];
 }
 
 interface DialogRequest extends DialogOptions {
@@ -82,6 +90,18 @@ export function confirmDialog(opts: DialogOptions): Promise<boolean> {
       id: nextId++,
       kind: "confirm",
       resolve: (v) => resolve(v === true),
+      ...opts,
+    });
+  });
+}
+
+/** Pick one option from a list. Returns the chosen option id, or null if cancelled. */
+export function selectDialog(opts: DialogOptions): Promise<string | null> {
+  return new Promise((resolve) => {
+    useDialogStore.getState().push({
+      id: nextId++,
+      kind: "select",
+      resolve: (v) => resolve(typeof v === "string" ? v : null),
       ...opts,
     });
   });

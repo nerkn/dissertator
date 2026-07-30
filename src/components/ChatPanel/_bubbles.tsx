@@ -143,10 +143,9 @@ export const MessageBubble = memo(function MessageBubble({
 });
 
 /**
- * Dev-only panel: shows exactly what was sent to the LLM each agent step
- * (model config, advertised tools, and the full message array). Collapsed by
- * default; the header carries a live step counter. Rendered only when
- * `import.meta.env.DEV` so production builds stay clean.
+ * Per-step LLM payload panel (model config, advertised tools, full message
+ * array). Collapsed by default; the header carries a live step counter.
+ * Toggled via Settings → Agent → “Show LLM debug panel”.
  */
 export function DevDebugPanel({
   events,

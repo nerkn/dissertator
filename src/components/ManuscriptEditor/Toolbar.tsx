@@ -45,6 +45,7 @@ import type { SaveState } from "./_shared";
 
 interface ToolbarProps {
   getEditor: () => Editor | undefined;
+  getMarkdown: () => string;
   title: string;
   saveState: SaveState;
   showSource: boolean;
@@ -59,6 +60,7 @@ type ExportFormat = "pdf" | "docx" | "doc";
 
 export function Toolbar({
   getEditor,
+  getMarkdown,
   title,
   saveState,
   showSource,
@@ -146,6 +148,33 @@ export function Toolbar({
     } finally {
       setExporting(null);
     }
+  };
+
+  const exportScreenplay = async () => {
+    if (exportMenuRef.current) exportMenuRef.current.open = false;
+    const md = getMarkdown();
+    if (!md) return;
+    const { markdownToScreenplayHtml } = await import("../../lib/screenplay");
+    const html = markdownToScreenplayHtml(md);
+    const iframe = document.createElement("iframe");
+    iframe.style.cssText =
+      "position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;";
+    document.body.appendChild(iframe);
+    const win = iframe.contentWindow;
+    if (!win) return;
+    const d = win.document;
+    d.open();
+    d.write(html);
+    d.close();
+    setTimeout(() => {
+      try {
+        win.focus();
+        win.print();
+      } catch {
+        /* print blocked */
+      }
+      setTimeout(() => iframe.remove(), 3000);
+    }, 350);
   };
 
   const Btn = ({
@@ -248,6 +277,10 @@ export function Toolbar({
           </button>
           <button type="button" disabled={exporting !== null} onClick={() => exportDoc("doc")}>
             {exporting === "doc" ? "Exporting…" : "Word 97-2003 (.doc)"}
+          </button>
+          <div className="export-sep" />
+          <button type="button" onClick={exportScreenplay}>
+            Screenplay (print / PDF)
           </button>
           {exportErr && <div className="export-err small">{exportErr}</div>}
           {savedTo && !exportErr && (

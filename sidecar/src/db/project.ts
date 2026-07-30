@@ -39,6 +39,7 @@ import { setEmbeddingProviderId } from "./providers.ts";
 import { getGlobalSetting, setGlobalSetting } from "./globalDb.ts";
 import { backfillSourceReferences } from "./references.ts";
 import { ensureAgentFiles } from "../agent-files.ts";
+import { clearReadCache } from "../agent/read-cache.ts";
 
 /**
  * Resolve the sqlite-vec vec0 extension path.
@@ -201,6 +202,7 @@ export async function initProject(
   await ensureAgentFiles(dissertatorDir);
 
   setCurrentProject({ projectPath, dissertatorDir, dbPath, db, createdAt, vecExtensionOk });
+  clearReadCache();
 
   // Backfill: ensure every source has a citekey-bearing reference so no note
   // is ever cite-less (greyed cite button). No-op on a steady-state reopen.

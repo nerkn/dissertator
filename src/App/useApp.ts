@@ -12,7 +12,8 @@ import type { Tab } from "../lib/tabs";
 import { useTabsStore } from "../lib/stores/tabs";
 import { useContentStore } from "../lib/stores/content";
 import { useSessionStore } from "../lib/stores/session";
-import { promptDialog } from "../lib/stores/dialogs";
+import { promptDialog, selectDialog } from "../lib/stores/dialogs";
+import { MANUSCRIPT_TEMPLATES, templateFor, type ManuscriptFormat } from "../lib/manuscriptTemplates";
 import type { CitationClickHandler } from "../lib/citationPlugin";
 
 // All application state + handlers live here; App() is a thin JSX shell.
@@ -412,14 +413,25 @@ export function useApp() {
     }
   };
 
-  // Create a blank manuscript and open it. Title via the in-app prompt with
-  // a sensible default; empty/cancel aborts. Replaces the P4 wizard for now.
+  // Create a new manuscript and open it. Format picker → title prompt →
+  // seeded body. Empty format yields a truly blank document.
   const handleNewDocument = async () => {
     setError(null);
+    const fmt = await selectDialog({
+      title: "New manuscript",
+      message: "Choose a format",
+      options: MANUSCRIPT_TEMPLATES.map((m) => ({
+        id: m.id,
+        label: m.label,
+        description: m.description,
+      })),
+    });
+    if (fmt == null) return; // cancelled
+    const tpl = templateFor(fmt as ManuscriptFormat);
     const title = await promptDialog({
       title: "New manuscript",
       label: "Manuscript title",
-      defaultValue: "Untitled manuscript",
+      defaultValue: `Untitled ${tpl.label.toLowerCase()}`,
       okLabel: "Create",
     });
     if (title == null) return; // cancelled
@@ -427,7 +439,7 @@ export function useApp() {
     if (!trimmed) return;
     setBusy(true);
     try {
-      const src = await api.createManuscript(trimmed);
+      const src = await api.createManuscript(trimmed, tpl.seed(trimmed));
       await refreshSources();
       openSource(src);
       void chatPanelRef.current?.startNewDocumentChat();

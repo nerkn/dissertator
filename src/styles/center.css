@@ -250,6 +250,29 @@
 .source-row:hover {
   background: var(--panel-2);
 }
+.source-row-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0;
+  flex-shrink: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.source-row:hover .source-row-delete,
+.source-row:focus-within .source-row-delete {
+  opacity: 1;
+}
+.source-row-delete:hover {
+  background: rgba(220, 50, 50, 0.16);
+  color: #e5484d;
+}
 .source-row .source-name {
   flex: 1;
   min-width: 0;
@@ -383,6 +406,10 @@
 .source-card-edit:hover {
   background: var(--panel-3);
   color: var(--text);
+}
+.source-card-delete:hover {
+  background: rgba(220, 50, 50, 0.16);
+  color: #e5484d;
 }
 .source-card-identify {
   display: inline-flex;

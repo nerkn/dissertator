@@ -389,6 +389,12 @@ function AgentTab({ apiKey }: Props) {
           checked={chatFlow.promptsOpen}
           onChange={(v) => setChatFlow((f) => ({ ...f, promptsOpen: v }))}
         />
+        <FlowToggle
+          label="Show LLM debug panel"
+          hint="Reveal the raw LLM payloads (model, tools, messages) for each agent step."
+          checked={chatFlow.llmDebug}
+          onChange={(v) => setChatFlow((f) => ({ ...f, llmDebug: v }))}
+        />
         <div className="prompts-foot">
           {flowSavedAt && !flowDirty && (
             <span className="muted small">Saved.</span>

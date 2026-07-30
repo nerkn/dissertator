@@ -1,6 +1,10 @@
-import { useState } from "react";
-import { CaretDown, CaretRight } from "@phosphor-icons/react";
+import { useCallback, useState } from "react";
+import { CaretDown, CaretRight, Trash } from "@phosphor-icons/react";
 import type { SourceFile } from "@dissertator/shared";
+import { api } from "../../lib/api";
+import { useContentStore } from "../../lib/stores/content";
+import { alertDialog, confirmDialog } from "../../lib/stores/dialogs";
+import { useTabsStore } from "../../lib/stores/tabs";
 
 interface Props {
   mdSources: SourceFile[];
@@ -10,6 +14,41 @@ interface Props {
 
 export function ManuscriptsGroup({ mdSources, onOpen, onNewDocument }: Props) {
   const [open, setOpen] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const setSources = useContentStore((s) => s.setSources);
+  const setReferences = useContentStore((s) => s.setReferences);
+  const closeTab = useTabsStore((s) => s.closeTab);
+
+  const deleteOne = useCallback(
+    async (src: SourceFile) => {
+      const ok = await confirmDialog({
+        title: "Delete manuscript?",
+        message: `"${src.filename}" will be permanently deleted from disk. This cannot be undone.`,
+        okLabel: "Delete",
+        cancelLabel: "Cancel",
+        destructive: true,
+      });
+      if (!ok) return;
+      setDeletingId(src.id);
+      try {
+        await api.deleteSource(src.id);
+        closeTab(src.id);
+        setSources(await api.getSources());
+        try {
+          setReferences(await api.listReferences());
+        } catch {
+        }
+      } catch (e) {
+        await alertDialog({
+          title: "Delete failed",
+          message: (e as Error)?.message ?? String(e),
+        });
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [closeTab, setSources, setReferences],
+  );
 
   return (
     <div className="group yellow">
@@ -48,6 +87,18 @@ export function ManuscriptsGroup({ mdSources, onOpen, onNewDocument }: Props) {
               >
                 <span className="source-dot doc" />
                 <span className="source-name">{s.filename}</span>
+                <button
+                  className="source-row-delete"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void deleteOne(s);
+                  }}
+                  disabled={deletingId === s.id}
+                  title="Delete manuscript"
+                  aria-label={`Delete ${s.filename}`}
+                >
+                  <Trash size={12} weight="bold" />
+                </button>
               </div>
             ))}
           </div>

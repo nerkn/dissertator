@@ -856,7 +856,7 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             )}
           </div>
 
-          {import.meta.env.DEV && debugEvents.length > 0 && (
+          {flow.llmDebug && debugEvents.length > 0 && (
             <DevDebugPanel
               events={debugEvents}
               open={debugOpen}
@@ -865,19 +865,61 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
             />
           )}
 
-          {pendingOptions && pendingOptions.length > 0 && !streaming && (
-            <div className="option-chips">
-              {pendingOptions.map((o, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  className="option-chip"
-                  title={o.prompt}
-                  onClick={() => void send(o.prompt)}
-                >
-                  {o.short}
-                </button>
-              ))}
+          {(pendingOptions?.length || prompts.length) > 0 && (
+            <div className="chat-chips-area">
+              {pendingOptions && pendingOptions.length > 0 && !streaming && (
+                <>
+                  {pendingOptions.map((o, i) => (
+                    <button
+                      key={i}
+                      type="button"
+                      className="option-chip"
+                      title={o.prompt}
+                      onClick={() => void send(o.prompt)}
+                    >
+                      {o.short}
+                    </button>
+                  ))}
+                </>
+              )}
+              {prompts.length > 0 && (
+                <>
+                  <button
+                    type="button"
+                    className={`chat-prompts-toggle${promptsOpen ? " open" : ""}`}
+                    onClick={() => setPromptsOpen((v) => !v)}
+                    aria-expanded={promptsOpen}
+                    title={promptsOpen ? "Hide prompts" : "Show prompts"}
+                  >
+                    <Lightbulb size={12} weight="bold" />
+                    Prompts
+                    <span className="chat-prompts-count">
+                      {prompts.length}
+                    </span>
+                    <CaretDown
+                      size={12}
+                      weight="bold"
+                      className="chat-prompts-caret"
+                    />
+                  </button>
+                  {promptsOpen &&
+                    prompts.map((p, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        className="prompt-btn"
+                        title={p.prompt}
+                        onClick={() => {
+                          setInput(p.prompt);
+                          inputRef.current?.focus();
+                        }}
+                      >
+                        {p.category ? `${p.category}: ` : ""}
+                        {p.label}
+                      </button>
+                    ))}
+                </>
+              )}
             </div>
           )}
 
@@ -894,48 +936,6 @@ export const ChatPanel = forwardRef<ChatPanelHandle, Props>(function ChatPanel(
                   {t.text}
                 </div>
               ))}
-            </div>
-          )}
-
-          {prompts.length > 0 && (
-            <div className="chat-prompts">
-              <button
-                type="button"
-                className={`chat-prompts-toggle${promptsOpen ? " open" : ""}`}
-                onClick={() => setPromptsOpen((v) => !v)}
-                aria-expanded={promptsOpen}
-                title={promptsOpen ? "Hide prompts" : "Show prompts"}
-              >
-                <Lightbulb size={12} weight="bold" />
-                Prompts
-                <span className="chat-prompts-count">
-                  {prompts.length}
-                </span>
-                <CaretDown
-                  size={12}
-                  weight="bold"
-                  className="chat-prompts-caret"
-                />
-              </button>
-              {promptsOpen && (
-                <div className="chat-prompts-row">
-                  {prompts.map((p, i) => (
-                    <button
-                      key={i}
-                      type="button"
-                      className="prompt-btn"
-                      title={p.prompt}
-                      onClick={() => {
-                        setInput(p.prompt);
-                        inputRef.current?.focus();
-                      }}
-                    >
-                      {p.category ? `${p.category}: ` : ""}
-                      {p.label}
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
           )}
 

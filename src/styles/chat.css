@@ -498,10 +498,12 @@ code {
 }
 
 /* prompts */
-.chat-prompts {
+.chat-chips-area {
   display: flex;
-  flex-direction: column;
-  gap: 6px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
 }
 .chat-prompts-toggle {
   display: inline-flex;
@@ -550,9 +552,7 @@ code {
   gap: 4px;
 }
 .chat-prompts-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  display: contents;
 }
 .prompt-btn {
   padding: 3px 8px;
@@ -580,7 +580,9 @@ code {
 }
 .chat-input {
   flex: 1;
-  resize: none;
+  resize: vertical;
+  min-height: 42px;
+  max-height: 50vh;
   padding: 8px 10px;
   border-radius: 10px;
   border: 1px solid var(--border);
@@ -589,7 +591,6 @@ code {
   font-size: 13px;
   font-family: inherit;
   line-height: 1.4;
-  min-height: 42px;
 }
 .chat-input:focus {
   outline: none;

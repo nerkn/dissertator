@@ -52,9 +52,10 @@ export function SystemDialog() {
     else resolve(null);
   };
   const cancel = () => {
-    // prompt/alert → null/void; confirm → false.
+    // prompt/alert/select → null/void; confirm → false.
     resolve(current.kind === "confirm" ? false : null);
   };
+  const pick = (id: string) => resolve(id);
 
   return (
     <div
@@ -92,8 +93,25 @@ export function SystemDialog() {
             />
           </label>
         )}
+        {current.kind === "select" && (
+          <div className="dialog-options">
+            {(current.options ?? []).map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                className="dialog-option"
+                onClick={() => pick(opt.id)}
+              >
+                <span className="dialog-option-label">{opt.label}</span>
+                {opt.description && (
+                  <span className="dialog-option-desc">{opt.description}</span>
+                )}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="actions">
-          {current.kind !== "alert" && (
+          {current.kind === "alert" || current.kind === "select" ? null : (
             <button className="btn ghost" onClick={cancel}>
               {current.cancelLabel ?? "Cancel"}
             </button>
@@ -102,6 +120,7 @@ export function SystemDialog() {
             ref={okRef}
             className={`btn ${current.destructive ? "danger" : "primary"}`}
             onClick={ok}
+            style={current.kind === "select" ? { display: "none" } : undefined}
           >
             {current.okLabel ?? "OK"}
           </button>

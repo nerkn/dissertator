@@ -43,6 +43,8 @@ export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerP
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [showSource, setShowSource] = useState<boolean>(false);
   const [showHistory, setShowHistory] = useState<boolean>(false);
+  const [staleRemote, setStaleRemote] = useState<string | null>(null);
+  const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
   const [sourceMd, setSourceMd] = useState<string>(initialMarkdown);
   // Word/character count from the markdown
   const [docStats, setDocStats] = useState<{ words: number; chars: number }>({ words: 0, chars: 0 });
@@ -58,6 +60,7 @@ export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerP
   // Latest markdown + pending timer, in refs so the Milkdown factory closure
   // (created once) always reads current values without re-creating the editor.
   const latestMd = useRef<string>(initialMarkdown);
+  const milkdownMdRef = useRef<string>(initialMarkdown);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const initialMdRef = useRef<string>(initialMarkdown);
   // The server's current body (from the latest fetch). Updated on every
@@ -83,6 +86,7 @@ export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerP
           setChunksDirty(false);
         }, REINGEST_SETTLE_MS);
         setSaveState("saved");
+        setLastSavedAt(Date.now());
       } catch {
         setSaveState("error");
       }
@@ -161,6 +165,7 @@ export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerP
         // Autosave hook. Reads through the ref so the editor is never rebuilt
         // when the callback identity changes.
         ctx.get(listenerCtx).markdownUpdated((_c, md) => {
+          milkdownMdRef.current = md;
           scheduleSaveRef.current(md);
         });
       })
@@ -381,6 +386,7 @@ export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerP
       }
       serverMdRef.current = md;
       latestMd.current = md;
+      milkdownMdRef.current = md;
       setSourceMd(md);
       get()?.action(replaceAll(md));
       setSaveState("idle");
@@ -396,6 +402,12 @@ export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerP
   const applyServerMarkdownRef = useRef(applyServerMarkdown);
   applyServerMarkdownRef.current = applyServerMarkdown;
 
+  const loadRemote = useCallback(() => {
+    if (staleRemote == null) return;
+    applyServerMarkdownRef.current(staleRemote);
+    setStaleRemote(null);
+  }, [staleRemote]);
+
   useEffect(() => {
     if (firstServerRun.current) {
       firstServerRun.current = false;
@@ -404,16 +416,37 @@ export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerP
     }
     if (initialMarkdown === latestMd.current) {
       serverMdRef.current = initialMarkdown;
+      setStaleRemote(null);
+      return;
+    }
+    if (initialMarkdown === serverMdRef.current) {
+      setStaleRemote(null);
+      return;
+    }
+    if (latestMd.current !== serverMdRef.current) {
+      setStaleRemote(initialMarkdown);
       return;
     }
     applyServerMarkdownRef.current(initialMarkdown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [initialMarkdown]);
 
+  useEffect(() => {
+    if (showSource) return;
+    initialMdRef.current = latestMd.current;
+    const ed = get();
+    if (ed && milkdownMdRef.current !== latestMd.current) {
+      milkdownMdRef.current = latestMd.current;
+      ed.action(replaceAll(latestMd.current));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSource]);
+
   return (
     <div className="manuscript-editor">
       <Toolbar
         getEditor={get}
+        getMarkdown={() => (showSource ? sourceMd : latestMd.current)}
         title={source.title}
         saveState={saveState}
         showSource={showSource}
@@ -425,14 +458,26 @@ export function EditorInner({ source, initialMarkdown, onCitationClick }: InnerP
       />
       <div className="editor-surface" onPasteCapture={handlePaste}>
         {showSource ? (
-          <pre className="editor-source-view">{sourceMd || "(empty)"}</pre>
+          <textarea
+            className="editor-source-view"
+            value={sourceMd}
+            onChange={(e) => scheduleSave(e.target.value)}
+            spellCheck={true}
+          />
         ) : (
           <EditorPage onCitationClick={onCitationClick} />
         )}
       </div>
-      <StatusBar saveState={saveState} docStats={docStats} chunksDirty={chunksDirty} />
+      <StatusBar saveState={saveState} docStats={docStats} chunksDirty={chunksDirty} lastSavedAt={lastSavedAt} />
       {notice && (
         <div className={`editor-toast ${notice.kind}`}>{notice.msg}</div>
+      )}
+      {staleRemote != null && (
+        <div className="editor-stale-banner">
+          <span>Remote changed while you had unsaved edits — yours are kept and saved.</span>
+          <button type="button" onClick={loadRemote}>Load remote</button>
+          <button type="button" onClick={() => setStaleRemote(null)}>Keep mine</button>
+        </div>
       )}
       {showHistory && (
         <HistoryMerge

@@ -528,6 +528,47 @@ test("dispatchTool list returns lean hits: filename===relPath and a string note"
   expect(hit!.note).toBe("");
 });
 
+test("dispatchTool read md pages on paragraph boundaries (no mid-anchor split)", async () => {
+  const para1 = "intro with an ANCHOR spot.";
+  const big = "B".repeat(4500);
+  const para3 = "tail.";
+  const body = `${para1}\n\n${big}\n\n${para3}`;
+  const d = await createManuscript({ title: "PagedMdDoc" });
+  await setBody(d.id, body);
+  const r = await dispatchTool("read", { id: d.id, page: 1 }, ctxBase);
+  expect(r.ok).toBe(true);
+  const pages = (r.data as { pages: { given: number; total: number } }).pages;
+  expect(pages.total).toBe(3);
+  expect((r.rawContent ?? "").includes("ANCHOR spot.")).toBe(true);
+});
+
+test("dispatchTool read pdf returns ALL chunks of a page, not just the first", async () => {
+  const project = (await import("../db")).getCurrentProject()!;
+  const sid = "src-pdf-pages-test";
+  project.db
+    .prepare(
+      `INSERT OR REPLACE INTO source_files
+       (id, rel_path, filename, ext, kind, mime_type, page_count, text_status, added_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(sid, "papers/multi.pdf", "multi.pdf", "pdf", "pdf", "application/pdf", 2, "done", 1700000004);
+  const ins = project.db.prepare(
+    `INSERT INTO chunks (id, source_file_id, ord, physical_page, text) VALUES (?, ?, ?, ?, ?)`,
+  );
+  ins.run("c1", sid, 1, 1, "chunk-a");
+  ins.run("c2", sid, 2, 1, "chunk-b");
+  ins.run("c3", sid, 3, 1, "chunk-c");
+  ins.run("c4", sid, 4, 2, "page-two");
+  const r = await dispatchTool("read", { id: "multi.pdf", page: 1 }, ctxBase);
+  expect(r.ok).toBe(true);
+  const content = r.rawContent ?? "";
+  expect(content.includes("chunk-a")).toBe(true);
+  expect(content.includes("chunk-b")).toBe(true);
+  expect(content.includes("chunk-c")).toBe(true);
+  const pages = (r.data as { pages: { given: number; total: number } }).pages;
+  expect(pages.total).toBe(2);
+});
+
 test("dispatchTool retention: toast/show are ephemeral, list is keep", async () => {
   const toast = await dispatchTool(
     "toast",

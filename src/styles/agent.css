@@ -52,14 +52,9 @@
   color: #fca5a5;
 }
 
-/* Quick-reply chips the agent offers via gui_options. Sit just above the
-   composer; clickable to send the option's prompt as a new turn. */
-.option-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  padding: 4px 10px;
-}
+/* Quick-reply chips the agent offers via gui_options; they flow inline
+   inside .chat-chips-area alongside the Prompts toggle. Clickable to send
+   the option's prompt as a new turn. */
 .option-chip {
   padding: 4px 10px;
   border-radius: 999px;

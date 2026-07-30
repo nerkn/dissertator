@@ -17,6 +17,7 @@ import {
   Gear,
   PencilSimple,
   Sparkle,
+  Trash,
 } from "@phosphor-icons/react";
 import type {
   EmbeddingStatus,
@@ -26,7 +27,8 @@ import type {
 } from "@dissertator/shared";
 import { api } from "../../lib/api";
 import { useContentStore } from "../../lib/stores/content";
-import { alertDialog } from "../../lib/stores/dialogs";
+import { alertDialog, confirmDialog } from "../../lib/stores/dialogs";
+import { useTabsStore } from "../../lib/stores/tabs";
 import { fmtAuthors } from "../ReferenceFields";
 import { ReferenceEditDialog } from "../ReferenceEditDialog";
 import { StatusBadge } from "../StatusBadge";
@@ -76,6 +78,7 @@ export function SourcesGroup({
   const [menuOpen, setMenuOpen] = useState(false);
   const refsById = useContentStore((s) => s.referencesBySource);
   const setReferences = useContentStore((s) => s.setReferences);
+  const setSources = useContentStore((s) => s.setSources);
   const [editingId, setEditingId] = useState<string | null>(null);
 
   // Aggregate embedding progress (5s poll). Cheap; drives the one-line
@@ -115,6 +118,7 @@ export function SourcesGroup({
     return !r || (r.authors.length === 0 && !r.doi);
   };
 
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [identifying, setIdentifying] = useState(false);
   const [identifyProg, setIdentifyProg] = useState<{
     done: number;
@@ -131,6 +135,37 @@ export function SourcesGroup({
       setOneResult((cur) => (cur && cur.id === id ? null : cur));
     }, 2500);
   }, []);
+
+  const closeTab = useTabsStore((s) => s.closeTab);
+
+  const deleteOne = useCallback(
+    async (src: SourceFile) => {
+      const title = refsById?.get(src.id)?.title?.trim() || src.filename;
+      const ok = await confirmDialog({
+        title: "Delete file?",
+        message: `"${title}" will be permanently removed from disk and the corpus. This cannot be undone.`,
+        okLabel: "Delete",
+        cancelLabel: "Cancel",
+        destructive: true,
+      });
+      if (!ok) return;
+      setDeletingId(src.id);
+      try {
+        await api.deleteSource(src.id);
+        closeTab(src.id);
+        setSources(await api.getSources());
+        await reloadRefs();
+      } catch (e) {
+        await alertDialog({
+          title: "Delete failed",
+          message: (e as Error)?.message ?? String(e),
+        });
+      } finally {
+        setDeletingId(null);
+      }
+    },
+    [refsById, closeTab, setSources, reloadRefs],
+  );
 
   const identifyOne = useCallback(
     async (id: string) => {
@@ -553,6 +588,18 @@ export function SourcesGroup({
                         aria-label="Edit details"
                       >
                         <PencilSimple size={12} weight="bold" />
+                      </button>
+                      <button
+                        className="source-card-edit source-card-delete"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void deleteOne(src);
+                        }}
+                        disabled={deletingId === src.id}
+                        title="Delete file"
+                        aria-label="Delete file"
+                      >
+                        <Trash size={12} weight="bold" />
                       </button>
                     </div>
                     <div className="source-card-popover">

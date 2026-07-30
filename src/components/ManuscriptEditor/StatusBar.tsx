@@ -3,6 +3,7 @@
 // bottom strip; both are tiny presentational components driven by the shared
 // SaveState type.
 
+import { useEffect, useState } from "react";
 import type { SaveState } from "./_shared";
 
 function SavePip({ state }: { state: SaveState }) {
@@ -29,9 +30,34 @@ interface StatusBarProps {
    *  chunks (a save landed but the sidecar's settle timer hasn't fired the
    *  trailing reingest yet). */
   chunksDirty?: boolean;
+  /** Epoch ms of the last successful autosave, or null if none this session. */
+  lastSavedAt?: number | null;
 }
 
-function StatusBar({ saveState, docStats, chunksDirty }: StatusBarProps) {
+function useNow(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 15000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
+function agoLabel(ts: number | null | undefined, now: number): string | null {
+  if (!ts) return null;
+  const s = Math.max(0, Math.floor((now - ts) / 1000));
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
+function StatusBar({ saveState, docStats, chunksDirty, lastSavedAt }: StatusBarProps) {
+  const now = useNow();
+  const ago = agoLabel(lastSavedAt, now);
   const map: Record<SaveState, { label: string; icon: string }> = {
     idle: { label: "All changes saved", icon: "✓" },
     dirty: { label: "Unsaved changes", icon: "●" },
@@ -47,6 +73,7 @@ function StatusBar({ saveState, docStats, chunksDirty }: StatusBarProps) {
       <div className="statusbar-left">
         <span className={`status-indicator ${statusClass}`}>{m.icon}</span>
         <span className="status-text">{m.label}</span>
+        {ago && <span className="stat-item lts">· saved {ago}</span>}
       </div>
       <div className="statusbar-right">
         {chunksDirty && (

@@ -27,6 +27,8 @@ export interface ChatFlowSettings {
   autoTitle: boolean;
   /** Message count that triggers auto-title (user+assistant turns). */
   autoTitleTurns: number;
+  /** Show the LLM debug panel (raw payloads per agent step). Off by default. */
+  llmDebug: boolean;
 }
 
 /** Defaults applied when no `chatFlow` blob is stored yet. */
@@ -36,6 +38,7 @@ export const DEFAULT_CHAT_FLOW: ChatFlowSettings = {
   autoGreet: true,
   autoTitle: true,
   autoTitleTurns: 4,
+  llmDebug: false,
 };
 
 /**

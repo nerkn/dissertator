@@ -10,6 +10,7 @@ import {
 import { listSources, readSourceMarkdown, writeSourceMarkdown } from "../ingest/index.ts";
 import { searchCorpus } from "../search.ts";
 import { appendPreference } from "../agent-files.ts";
+import { cacheRead } from "./read-cache.ts";
 
 function looseIndex(body: string, needle: string): { idx: number; len: number } {
   const exact = body.indexOf(needle);
@@ -275,6 +276,7 @@ async function mutateBody(
   } catch (e) {
     return { ok: false, summary: "⚠️ write failed", error: (e as Error)?.message ?? String(e) };
   }
+  cacheRead(target.source.relPath, res.next);
   return {
     ok: true,
     summary,
@@ -289,6 +291,7 @@ const BODY_PAGE_SIZE = 4000;
 interface ListHit {
   filename: string;
   size: number | null;
+  pages?: number;
   title?: string;
   authors?: string[];
   year?: number;
@@ -296,11 +299,20 @@ interface ListHit {
   note: string;
 }
 
+function pagesForSource(s: SourceFile): number {
+  if ((s.mimeType ?? "").toLowerCase() === "text/markdown") {
+    const size = s.fileSize ?? 0;
+    return Math.max(1, Math.ceil(size / BODY_PAGE_SIZE));
+  }
+  return s.pageCount ?? 1;
+}
+
 function hitFromSource(s: SourceFile, r?: Reference): ListHit {
   const h: ListHit = {
     filename: s.relPath,
     size: s.fileSize,
     note: s.note ?? "",
+    pages: pagesForSource(s),
   };
   if (r) {
     h.citekey = r.citekey;
@@ -313,11 +325,53 @@ function hitFromSource(s: SourceFile, r?: Reference): ListHit {
   return h;
 }
 
-function slicePage(text: string, page: number): string {
-  const parts = text.split(/(?=\[p\.\d+\])/);
-  const want = `[p.${page}]`;
-  const seg = parts.find((p) => p.startsWith(want));
-  return seg ?? "";
+function pdfPageOrder(text: string): number[] {
+  const seen = new Set<number>();
+  const order: number[] = [];
+  for (const m of text.matchAll(/\[p\.(\d+)\]/g)) {
+    const n = Number(m[1]);
+    if (!seen.has(n)) {
+      seen.add(n);
+      order.push(n);
+    }
+  }
+  return order;
+}
+
+function pdfPageText(text: string, physicalPage: number): string {
+  const re = /\[p\.(\d+)\]/g;
+  let startIdx = -1;
+  let endIdx = text.length;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const num = Number(m[1]);
+    if (num === physicalPage && startIdx === -1) {
+      startIdx = m.index;
+    } else if (startIdx !== -1 && num !== physicalPage) {
+      endIdx = m.index;
+      break;
+    }
+  }
+  if (startIdx === -1) return "";
+  return text.slice(startIdx, endIdx);
+}
+
+function mdPages(text: string, size: number): string[] {
+  if (text.length <= size) return [text];
+  const pages: string[] = [];
+  let buf = "";
+  const paras = text.split(/\n{2,}/);
+  for (const para of paras) {
+    const candidate = buf ? buf + "\n\n" + para : para;
+    if (candidate.length > size && buf) {
+      pages.push(buf);
+      buf = para;
+    } else {
+      buf = candidate;
+    }
+  }
+  if (buf) pages.push(buf);
+  return pages;
 }
 
 export async function dispatchTool(
@@ -443,7 +497,7 @@ async function readTool(
       return {
         ok: false,
         summary: "read: not found",
-        error: `id ${raw} not found (pass a source-file id, filename, or citekey)`,
+        error: `id/citekey/filename "${raw}" not found`,
       };
     }
     handle = h;
@@ -459,15 +513,20 @@ async function readTool(
   }
 
   if (handle.kind === "non-md-source" && (handle.source.pageCount ?? 0) > 0) {
-    const { text, pageCount } = getSourceText(handle.source.id);
-    const total = pageCount;
+    const { text } = getSourceText(handle.source.id);
+    cacheRead(handle.source.relPath, text);
+    const order = pdfPageOrder(text);
+    const pages = order.length > 0
+      ? order.map((phys) => pdfPageText(text, phys))
+      : mdPages(text, BODY_PAGE_SIZE);
+    const total = pages.length || 1;
     const page = Math.min(Math.max(1, wantPage), total);
-    let shown = slicePage(text, page);
+    let shown = pages[page - 1] ?? "";
     const truncated = shown.length > DOC_READ_CAP;
     if (truncated) shown = shown.slice(0, DOC_READ_CAP);
     return {
       ok: true,
-      summary: `📖 Read ${handle.source.filename} p.${page}${truncated ? " (truncated)" : ""}`,
+      summary: `📖 Read ${handle.source.filename} p.${page}/${total}${truncated ? " (truncated)" : ""}`,
       retention: "default",
       data: {
         filename: handle.source.filename,
@@ -488,10 +547,12 @@ async function readTool(
   } else {
     text = getSourceText(handle.source.id).text;
   }
+  cacheRead(handle.source.relPath, text);
 
-  const total = Math.max(1, Math.ceil(text.length / BODY_PAGE_SIZE));
+  const pages = mdPages(text, BODY_PAGE_SIZE);
+  const total = pages.length;
   const page = Math.min(Math.max(1, wantPage), total);
-  let shown = text.slice((page - 1) * BODY_PAGE_SIZE, page * BODY_PAGE_SIZE);
+  let shown = pages[page - 1] ?? "";
   const truncated = shown.length > DOC_READ_CAP;
   if (truncated) shown = shown.slice(0, DOC_READ_CAP);
 
@@ -513,6 +574,7 @@ async function createTool(args: Record<string, unknown>): Promise<ToolResult> {
   if (!title) return { ok: false, summary: "create: title required", error: "title required" };
   const text = typeof args.text === "string" ? args.text : "";
   const src = await createManuscript({ title, bodyMd: text });
+  cacheRead(src.relPath, text);
   const t = src.filename.replace(/\.[^.]+$/, "");
   return {
     ok: true,

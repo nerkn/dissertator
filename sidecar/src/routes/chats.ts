@@ -24,6 +24,7 @@ import {
 } from "../agent/loop.ts";
 import { completeChat, streamOpenAIChat, type LoopMessage, type ToolSpec } from "../chat/openai.ts";
 import type { ToolContext } from "../agent/tools.ts";
+import { serializeReadCache } from "../agent/read-cache.ts";
 
 const OPENER_INSTRUCTION =
   "This is a brand-new chat and the user hasn't said anything yet. Greet them in ONE short sentence, then orient: you can already see the full corpus and the active manuscript above. Propose 2–3 concrete next steps (e.g. read a specific source, draft or revise a section, compare sources, fill a citation gap) and surface them as one-tap choices via suggest. Keep it brief — do NOT read documents or run heavy tools yet; just propose and let the user pick.";
@@ -267,7 +268,7 @@ export function registerChats(app: Hono): void {
         if (docs.length) {
           const lines = docs.map((doc) => {
             const title = doc.filename.replace(/\.[^.]+$/, "").trim() || "(untitled)";
-            const bullet = activeDocId === doc.id ? `* "${title}" (id: ${doc.id})` : `- "${title}" (id: ${doc.id})`;
+            const bullet = activeDocId === doc.id ? `* "${title}"` : `- "${title}"`;
             return bullet;
           });
           const note = activeDocId
@@ -337,6 +338,14 @@ export function registerChats(app: Hono): void {
             `\nThe user has these source files open (full text below) as grounding context:\n\n${ctx}`,
           );
         }
+      }
+      const cached = serializeReadCache();
+      if (cached) {
+        systemParts.push(
+          "",
+          "# Files already read this session (fresh; do NOT re-read unless editing)",
+          cached,
+        );
       }
       const messages: LoopMessage[] = [
         { role: "system", content: systemParts.join("\n") },
