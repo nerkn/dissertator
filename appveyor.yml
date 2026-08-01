@@ -14,8 +14,8 @@
 # `tauri build` (whose beforeBuildCommand runs `stage:resources` to bundle the
 # native libs + model) → upload .msi/.exe to GitHub on tag builds.
 #
-# The Linux .deb is NOT built here — it's built locally and uploaded to the same
-# GitHub Release with `gh release upload --clobber`.
+# Linux (.deb + .rpm) is also built here on the Ubuntu image and published to
+# the same GitHub Release alongside the Windows installers.
 
 image:
   - Visual Studio 2022
@@ -129,13 +129,11 @@ build_script:
 # → tick "encrypted"). Without GH_TOKEN the step is skipped (artifacts remain
 # downloadable from the build's "Artifacts" tab) and the build still succeeds.
 #
-# The Linux .deb is uploaded to the same release separately, from a Linux host,
-# via `gh release upload v<tag> <deb> --clobber`.
+# Linux .deb + .rpm are uploaded by the `sh:` block below on the Ubuntu image.
 # -----------------------------------------------------------------------------
 on_success:
-  # ---- Linux: publish .deb + .rpm on a v* tag (ODD patch only) ----------------
-  # Mirrors the Windows gate below: only when a v* tag points at THIS commit and
-  # the patch is odd (public release). Even patches = internal build (skip).
+  # ---- Linux: publish .deb + .rpm on any v* tag ------------------------------
+  # Publishes whenever a v* tag points at THIS commit (any patch).
   - sh: |
       set -uo pipefail
       [ -n "${GH_TOKEN:-}" ] || { echo "GH_TOKEN not set — skip Linux publish"; exit 0; }
@@ -146,9 +144,6 @@ on_success:
             | grep -E '^v[0-9]' | head -1 || true)
       [ -n "$TAG" ] || TAG="${APPVEYOR_REPO_TAG_NAME:-}"
       case "$TAG" in v[0-9]*) ;; *) echo "no v* tag at ${APPVEYOR_REPO_COMMIT:-} — skip Linux publish"; exit 0;; esac
-      rest=${TAG#v}; rest=${rest#*.}; patch=${rest#*.}; patch=${patch%%.*}
-      case "$patch" in ''|*[!0-9]*) patch=0;; esac
-      if [ $((patch % 2)) -eq 0 ]; then echo "$TAG is EVEN patch (internal) — skip Linux publish"; exit 0; fi
       echo "Publishing Linux assets for $TAG"
       UPLOAD=$(curl -sSL -H "$HA" -H "$HJ" "https://api.github.com/repos/$owner/$repo/releases/tags/$TAG" | jq -r '.upload_url // empty')
       if [ -z "$UPLOAD" ]; then
@@ -200,18 +195,7 @@ on_success:
         if (-not $tag) {
           Write-Host "No v* tag points at commit $env:APPVEYOR_REPO_COMMIT — skip GitHub release upload."
         } elseif ($tag -match '^v(\d+)\.(\d+)\.(\d+)') {
-          # Odd/even publish gate: ODD patch = public release (auto-publish);
-          # EVEN patch = internal/CI build (build + archive, skip the public
-          # Releases page). Lets us cut throwaway even builds — e.g. v0.6.2 —
-          # without spamming Releases. To publish an even build anyway, run
-          # `gh release create` by hand (bypasses this gate entirely).
-          $patch = [int]$Matches[3]
-          if ($patch % 2 -eq 0) {
-            Write-Host "$tag is an EVEN patch (internal build) — skipping GitHub publish. Artifacts stay in this build's Artifacts tab."
-            $tag = $null
-          } else {
-            Write-Host "$tag is an ODD patch (public release) — publishing to GitHub."
-          }
+          Write-Host "$tag — publishing to GitHub."
         } else {
           Write-Host "$tag is not semver — skip GitHub release upload."
           $tag = $null
