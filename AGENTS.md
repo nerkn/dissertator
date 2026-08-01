@@ -9,3 +9,4 @@ No barrel export for less than 5 things
 No comments in code
 No install packages
 Dont assume, investigate deeply
+When told to publish/release, do it immediately — no clarifying questions
